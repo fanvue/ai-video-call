@@ -11,9 +11,7 @@ function base64url(input: Buffer) {
 
 export function generatePkce() {
   const verifier = base64url(randomBytes(32));
-  const challenge = base64url(
-    createHash("sha256").update(verifier).digest(),
-  );
+  const challenge = base64url(createHash("sha256").update(verifier).digest());
   return { verifier, challenge, method: "S256" as const };
 }
 
@@ -32,13 +30,15 @@ export function getAuthorizeUrl({
   const params = new URLSearchParams({
     response_type: "code",
     client_id: oauthConfig.clientId,
-    redirect_uri: redirectUri ?? env.OAUTH_REDIRECT_URI ?? oauthConfig.redirectUri ?? "",
+    redirect_uri:
+      redirectUri ?? env.OAUTH_REDIRECT_URI ?? oauthConfig.redirectUri ?? "",
     scope: `${DEFAULT_SCOPES} ${env.OAUTH_SCOPES ?? ""}`,
     state,
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
   });
-  if (env.OAUTH_RESPONSE_MODE) params.set("response_mode", env.OAUTH_RESPONSE_MODE);
+  if (env.OAUTH_RESPONSE_MODE)
+    params.set("response_mode", env.OAUTH_RESPONSE_MODE);
   // Force login prompt to allow switching accounts
   params.set("prompt", env.OAUTH_PROMPT || "login");
   return `${oauthConfig.issuerBaseURL}/oauth2/auth?${params.toString()}`;
@@ -119,5 +119,3 @@ export async function refreshAccessToken(refreshToken: string) {
     id_token?: string;
   };
 }
-
-

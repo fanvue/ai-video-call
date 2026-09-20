@@ -46,5 +46,3 @@ export async function clearSession() {
   const cookieStore = await cookies();
   cookieStore.delete(env.SESSION_COOKIE_NAME);
 }
-
-

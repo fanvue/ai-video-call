@@ -17,7 +17,13 @@ export type ClipToPlay = {
   hasSpeech: boolean;
   // Starts and ends on the same frame: the element loops it natively while the next clip renders.
   loops: boolean;
+  // A requested clip (reply / beat / settle): cuts into a looping idle the moment it is playable
+  // instead of waiting for the loop and any preloaded idle to run out.
+  interrupts: boolean;
 };
+
+// A paused active element that should be playing gets one play() nudge per this window.
+const RESUME_NUDGE_MS = 2000;
 
 export type GaplessPlayerOptions = {
   onStatusChange: (status: PlayerStatus) => void;
@@ -26,6 +32,8 @@ export type GaplessPlayerOptions = {
 const noopProgress = (): void => {};
 const noopClipStarted = (): void => {};
 const noopGetNextClip = (): null => null;
+const noopHasInterruptReady = (): boolean => false;
+const noopClipReturned = (): void => {};
 
 // timeupdate fires only ~4Hz, which alone leaves a visible gap before the swap point.
 const waitForPlayable = (el: HTMLVideoElement): Promise<void> =>
@@ -54,8 +62,10 @@ export class GaplessPlayer {
   private status: PlayerStatus = "empty";
   private disposed = false;
   private currentClipId: string | null = null;
+  private currentClipLoops = false;
   private currentDurationSec = 0;
   private currentTimeSec = 0;
+  private lastResumeNudgeMs = Number.NEGATIVE_INFINITY;
   private userMuted = false;
   private speechMode: SpeechMode = "text";
   private rafId: number | null = null;
@@ -65,8 +75,19 @@ export class GaplessPlayer {
     noopProgress;
   private onClipStarted: (clipId: string) => void = noopClipStarted;
   private getNextClip: () => ClipToPlay | null = noopGetNextClip;
+  private hasInterruptReady: () => boolean = noopHasInterruptReady;
+  // A preloaded idle displaced by a cut-in goes back to the pipeline rather than being lost.
+  private onClipReturned: (clipId: string) => void = noopClipReturned;
 
   constructor(private readonly options: GaplessPlayerOptions) {}
+
+  setInterruptReadyHandler(handler: () => boolean): void {
+    this.hasInterruptReady = handler;
+  }
+
+  setClipReturnedHandler(handler: (clipId: string) => void): void {
+    this.onClipReturned = handler;
+  }
 
   setSpeechMode(mode: SpeechMode): void {
     this.speechMode = mode;
@@ -149,9 +170,36 @@ export class GaplessPlayer {
       this.start();
       return;
     }
+    if (this.maybeCutIn()) {
+      return;
+    }
     if (!this.preloadedClip) {
       this.preloadNextIfNeeded();
     }
+  }
+
+  // While an idle loops, a freshly rendered requested clip takes the screen as soon as it can play.
+  private maybeCutIn(): boolean {
+    if (
+      this.status !== "playing" ||
+      !this.currentClipLoops ||
+      !this.hasInterruptReady() ||
+      this.preloadedClip?.interrupts
+    ) {
+      return false;
+    }
+    const displaced = this.preloadedClip;
+    const clip = this.getNextClip();
+    if (!clip || !clip.interrupts) {
+      return false;
+    }
+    if (displaced) {
+      this.preloadedClip = null;
+      this.preloadedSlot = null;
+      this.onClipReturned(displaced.id);
+    }
+    void this.preload(clip);
+    return true;
   }
 
   private preloadNextIfNeeded(): void {
@@ -181,7 +229,10 @@ export class GaplessPlayer {
       return;
     }
     this.preloadedSlot = targetSlot;
-    if (this.status === "holding") {
+    if (
+      this.status === "holding" ||
+      (clip.interrupts && this.currentClipLoops)
+    ) {
       this.performSwap(clip);
     }
   }
@@ -199,6 +250,7 @@ export class GaplessPlayer {
       return;
     }
     this.currentClipId = clip.id;
+    this.currentClipLoops = clip.loops;
     this.currentDurationSec = clip.durationSec;
     this.currentTimeSec = 0;
     this.applyAudioPolicy(el, clip);
@@ -275,6 +327,7 @@ export class GaplessPlayer {
       return;
     }
     this.currentClipId = clip.id;
+    this.currentClipLoops = clip.loops;
     this.currentDurationSec = clip.durationSec;
     this.currentTimeSec = 0;
     this.applyAudioPolicy(incoming, clip);
@@ -351,10 +404,25 @@ export class GaplessPlayer {
       const active = this.getActive();
       if (active && this.status === "playing") {
         this.checkSwapBoundary(active);
+        this.nudgeIfStalled(active);
       }
       this.rafId = requestAnimationFrame(step);
     };
     this.rafId = requestAnimationFrame(step);
+  }
+
+  // Seen in prod: the greeting sat loaded but paused at frame 0 for a minute with status "playing".
+  // Whatever paused it (tab occlusion, a stray pause), the stream must not wait for a tap.
+  private nudgeIfStalled(active: HTMLVideoElement): void {
+    if (!active.paused || active.ended || active.readyState < 2) {
+      return;
+    }
+    const now = performance.now();
+    if (now - this.lastResumeNudgeMs < RESUME_NUDGE_MS) {
+      return;
+    }
+    this.lastResumeNudgeMs = now;
+    void active.play().catch(() => this.setStatus("needsTap"));
   }
 
   private stopRafLoop(): void {
@@ -382,6 +450,7 @@ export class GaplessPlayer {
     this.preloadedSlot = null;
     this.status = "empty";
     this.currentClipId = null;
+    this.currentClipLoops = false;
     this.currentDurationSec = 0;
     this.currentTimeSec = 0;
     this.activeSlot = "a";

@@ -39,10 +39,24 @@ export const createGroqChatCompletion = async ({
       : {}),
   });
 
-export const GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
+// Groq retires vision models without notice (scout 404s in prod); try each in order, remember the first that works.
+export const GROQ_VISION_MODELS = [
+  "meta-llama/llama-4-scout-17b-16e-instruct",
+  "meta-llama/llama-4-maverick-17b-128e-instruct",
+  "llama-3.2-90b-vision-preview",
+  "llama-3.2-11b-vision-preview",
+] as const;
+export const GROQ_VISION_MODEL = GROQ_VISION_MODELS[0];
+let visionModelIndex = 0;
+
+const isModelNotFound = (error: unknown): boolean =>
+  typeof error === "object" &&
+  error !== null &&
+  "status" in error &&
+  (error as { status?: unknown }).status === 404;
 
 export const createGroqVisionCompletion = async ({
-  model = GROQ_VISION_MODEL,
+  model,
   imageUrl,
   prompt,
   responseFormat,
@@ -56,9 +70,28 @@ export const createGroqVisionCompletion = async ({
     { type: "text", text: prompt },
     { type: "image_url", image_url: { url: imageUrl } },
   ];
-  return getGroqInstance().chat.completions.create({
-    model,
-    response_format: responseFormat,
-    messages: [{ role: "user", content }],
-  });
+  const candidates = model
+    ? [model]
+    : GROQ_VISION_MODELS.slice(visionModelIndex);
+  for (const [offset, candidate] of candidates.entries()) {
+    try {
+      const completion = await getGroqInstance().chat.completions.create({
+        model: candidate,
+        response_format: responseFormat,
+        messages: [{ role: "user", content }],
+      });
+      if (!model) {
+        visionModelIndex += offset;
+      }
+      return completion;
+    } catch (error) {
+      if (!isModelNotFound(error) || offset === candidates.length - 1) {
+        throw error;
+      }
+      console.warn(
+        `groq vision: model ${candidate} not available, trying next`,
+      );
+    }
+  }
+  throw new Error("groq vision: no model available");
 };

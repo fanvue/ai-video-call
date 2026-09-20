@@ -135,6 +135,20 @@ export class ClipPipeline {
     this.tryAdvanceChain();
   }
 
+  // A requested clip is waiting; the player cuts into a looping idle for it rather than queueing behind it.
+  hasChainedReady(): boolean {
+    return this.chainedReady.length > 0;
+  }
+
+  // The player hands back a clip it pulled but will not play (an idle displaced by a cut-in).
+  requeue(clip: ClipResult): void {
+    if (clip.jobKind === "idle") {
+      this.idleReady.unshift(clip);
+      return;
+    }
+    this.chainedReady.unshift(clip);
+  }
+
   // Playback boundary selection: eligibility is purely seed-frame match against the display anchor.
   nextClip(): ClipResult | null {
     const clip = this.pickNext();

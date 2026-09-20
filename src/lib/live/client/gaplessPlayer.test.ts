@@ -58,12 +58,13 @@ class FakeVideo {
   }
 }
 
-const clip = (id: string, loops = false): ClipToPlay => ({
+const clip = (id: string, loops = false, interrupts = false): ClipToPlay => ({
   id,
   videoUrl: `https://cdn.example/${id}.mp4`,
   durationSec: 10,
   hasSpeech: false,
   loops,
+  interrupts,
 });
 
 const flush = async (): Promise<void> => {
@@ -152,6 +153,43 @@ describe("GaplessPlayer", () => {
     await flush();
     expect(player.getActiveSlot()).toBe("b");
     expect(b.loop).toBe(false);
+  });
+
+  it("cuts a requested clip into a looping idle as soon as it is playable, returning the displaced idle", async () => {
+    const queue: ClipToPlay[] = [clip("loop1", true), clip("idle2", true)];
+    const { a, b, player } = setup(queue);
+    const returned: string[] = [];
+    player.setClipReturnedHandler((id) => returned.push(id));
+    player.setInterruptReadyHandler(() => queue.some((c) => c.interrupts));
+    player.start();
+    await flush();
+    // idle2 is preloaded behind the loop; the loop is mid-way through.
+    expect(b.src).toBe(clip("idle2").videoUrl);
+    a.currentTime = 3;
+
+    // The reply lands: it replaces the preloaded idle and takes the screen without waiting.
+    queue.unshift(clip("reply", false, true));
+    player.checkForClip();
+    await flush();
+    expect(returned).toEqual(["idle2"]);
+    expect(b.src).toBe(clip("reply").videoUrl);
+    expect(player.getActiveSlot()).toBe("b");
+    expect(b.paused).toBe(false);
+    expect(b.style.opacity).toBe("1");
+    expect(a.style.opacity).toBe("0");
+  });
+
+  it("resumes an active element that was paused from under it", async () => {
+    const { a, player } = setup([clip("c1")]);
+    player.start();
+    await flush();
+    expect(a.paused).toBe(false);
+    a.paused = true;
+    (
+      player as unknown as { nudgeIfStalled: (el: FakeVideo) => void }
+    ).nudgeIfStalled(a);
+    await flush();
+    expect(a.paused).toBe(false);
   });
 
   it("holds for a still-loading preload instead of pulling another clip from the buffer", async () => {
