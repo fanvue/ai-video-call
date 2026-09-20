@@ -123,6 +123,10 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   const [offline, setOffline] = useState(
     () => typeof navigator !== "undefined" && !navigator.onLine,
   );
+  // Client-only presentation state: private mode pauses the room sim (no ambient chatter, no
+  // viewer requests) without touching the director/pipeline/render engine underneath it.
+  const [privateMode, setPrivateModeState] = useState(false);
+  const privateModeRef = useRef(false);
 
   const directorRef = useRef<LiveDirector | null>(null);
   const pipelineRef = useRef<ClipPipeline | null>(null);
@@ -263,7 +267,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     const room = roomRef.current;
     const director = directorRef.current;
     const pipeline = pipelineRef.current;
-    if (!room || !director || !pipeline) {
+    if (!room || !director || !pipeline || privateModeRef.current) {
       return;
     }
     const nowMs = Date.now();
@@ -486,6 +490,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       currentOwnerRef.current = { type: "studio" };
       currentActRef.current = null;
       pendingTipCentsRef.current = undefined;
+      privateModeRef.current = false;
+      setPrivateModeState(false);
       player.reset();
       const reference = await deps.uploadReference(file);
       setConnectStage("capturingLook");
@@ -635,6 +641,11 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     [player],
   );
 
+  const setPrivateMode = useCallback((next: boolean) => {
+    privateModeRef.current = next;
+    setPrivateModeState(next);
+  }, []);
+
   const session = useMemo(
     () => ({
       status,
@@ -656,6 +667,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       queueStrip,
       offline,
       sessionStartedAtMs,
+      privateMode,
       start,
       send,
       end,
@@ -664,6 +676,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       setMuted,
       setBackend,
       setSpeechMode,
+      setPrivateMode,
     }),
     [
       status,
@@ -685,6 +698,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       queueStrip,
       offline,
       sessionStartedAtMs,
+      privateMode,
       start,
       send,
       end,
@@ -693,6 +707,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       setMuted,
       setBackend,
       setSpeechMode,
+      setPrivateMode,
     ],
   );
 
