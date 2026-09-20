@@ -182,6 +182,68 @@ describe("LiveDirector", () => {
     ]);
   });
 
+  it("queues a viewer reply job tagged with the viewer's handle", () => {
+    const director = makeDirector();
+    director.nextJob();
+    const { entry, job } = director.viewerRequest(
+      { handle: "nightowl_92", text: "wave at me" },
+      1000,
+    );
+    expect(entry.role).toBe("viewer");
+    expect(entry.handle).toBe("nightowl_92");
+    expect(job).toEqual({
+      kind: "reply",
+      requestId: entry.id,
+      text: "wave at me",
+      channel: "chat",
+      from: "viewer",
+      handle: "nightowl_92",
+    });
+    expect(director.getState().jobQueue[0]).toEqual(job);
+  });
+
+  it("marks a tipped viewer request as paid on both the transcript entry and the job", () => {
+    const director = makeDirector();
+    director.nextJob();
+    const { entry, job } = director.viewerRequest(
+      { handle: "kdub", text: "dance for me", tipCents: 500 },
+      1000,
+    );
+    expect(entry.paid).toBe(true);
+    expect(entry.tipCents).toBe(500);
+    expect(job).toMatchObject({ from: "viewer", paid: true });
+  });
+
+  it("lets a fan request pre-empt a viewer request still queued (not yet rendering)", () => {
+    const director = makeDirector();
+    director.nextJob();
+    const { job: viewerJob } = director.viewerRequest(
+      { handle: "kdub", text: "wave at me" },
+      1000,
+    );
+    expect(director.getState().jobQueue).toEqual([viewerJob]);
+
+    const { job: fanJob } = director.fanRequest(
+      { text: "hey", channel: "chat" },
+      2000,
+    );
+    expect(director.getState().jobQueue).toEqual([fanJob, viewerJob]);
+  });
+
+  it("does not let a viewer request jump ahead of an already-queued fan request", () => {
+    const director = makeDirector();
+    director.nextJob();
+    const { job: fanJob } = director.fanRequest(
+      { text: "hey", channel: "chat" },
+      1000,
+    );
+    const { job: viewerJob } = director.viewerRequest(
+      { handle: "kdub", text: "wave at me" },
+      2000,
+    );
+    expect(director.getState().jobQueue).toEqual([fanJob, viewerJob]);
+  });
+
   it("resets idle timers on a new fan request", () => {
     const director = makeDirector(dressedState, 0);
     director.nextJob();
