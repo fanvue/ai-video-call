@@ -150,17 +150,23 @@ const composeLocks = (
   state: LiveState,
   speechMode: SpeechMode,
   lookLock: string,
-): string[] => [
-  CAMERA_LOCK,
-  ANATOMY_LOCK,
-  lookLockLine(lookLock),
-  wardrobeLockLine(state.wardrobe),
-  propLockLine(state.body.prop),
-  bodyLockLine(state.body),
-  PHYSICS_LOCK,
-  NO_OVERLAY_LOCK,
-  speechLockLine(speechMode),
-];
+  // Overrides the body used for the PROP LOCK / CURRENT POSE lines only (e.g. phone typing, which
+  // picks up an object mid-clip that the committed state doesn't hold). Never affects `expectedState`.
+  lockBodyOverride?: Body,
+): string[] => {
+  const lockBody = lockBodyOverride ?? state.body;
+  return [
+    CAMERA_LOCK,
+    ANATOMY_LOCK,
+    lookLockLine(lookLock),
+    wardrobeLockLine(state.wardrobe),
+    propLockLine(lockBody.prop),
+    bodyLockLine(lockBody),
+    PHYSICS_LOCK,
+    NO_OVERLAY_LOCK,
+    speechLockLine(speechMode),
+  ];
+};
 
 const buildPrompt = (params: {
   state: LiveState;
@@ -169,11 +175,13 @@ const buildPrompt = (params: {
   action: string;
   nextWardrobe: Wardrobe;
   nextBody: Body;
+  lockBodyOverride?: Body;
 }): string => {
   const locks = composeLocks(
     params.state,
     params.speechMode,
     params.creator.lookLock,
+    params.lockBodyOverride,
   );
   return [
     ...locks,
@@ -230,10 +238,13 @@ const GARMENT_PATTERN: Record<GarmentId, RegExp> = {
 const RE_ONE_PIECE =
   /\b(dress|one[- ]piece|romper|jumpsuit|lingerie|outfit)\b/i;
 const RE_OFF_VERB = /\b(off|remove|take off|slide off|pull down|down|strip)\b/i;
+// A bare removal verb with no named garment ("take it off") means the top layer.
+const RE_GENERIC_OFF = /\b(take|pull|slide|rip) it off\b/i;
 const RE_DRESS =
   /\b(put (your |the )?(top|shirt|bra|bottoms?|panties|clothes) (back )?on|get dressed|cover (yourself )?up|dress (yourself )?up?)\b/i;
+// Bare "strip" (no qualifier) must match on its own, not only "strip <it all|everything>".
 const RE_EVERYTHING =
-  /\b(naked|nude|get naked|strip (it all|everything)?|everything off|all off|nothing on)\b/i;
+  /\b(naked|nude|get naked|everything off|all off|nothing on)\b|\bstrip\b(?:\s+(?:it all|everything))?/i;
 const RE_TEASE_STRAP = /\b(bra strap|strap tease|shoulder strap)\b/i;
 const RE_TEASE_WAIST =
   /\b(panty tease|waistband (tease|snap|pull)|flash (your |ur )?panties)\b/i;
@@ -243,8 +254,8 @@ const RE_FACE_CAMERA =
   /\b(face (the )?(camera|webcam|lens)|face me|look at me)\b/i;
 const RE_FACE_AWAY =
   /\b(turn around|turn your back|face away|show (me )?(your |ur )?ass|from behind|booty)\b/i;
-const RE_TOY_ANY = /\b(dildo|vibrator|vibe|wand|toy)\b/i;
-const RE_TOY_DILDO = /\bdildo\b/i;
+const RE_TOY_ANY = /\b(dildos?|vibrators?|vibes?|wands?|toys?)\b/i;
+const RE_TOY_DILDO = /\bdildos?\b/i;
 const RE_INSERT =
   /\b(insert|inside (her|your|my)|stick it in|in (her|your|my) (pussy|cunt|ass|butt))\b/i;
 const RE_TOUCH =
@@ -265,7 +276,8 @@ const RE_DOGGY = /\b(doggy\w*|all fours|hands and knees)\b/i;
 const RE_BEND = /\bbend(ing)?\s+over\b/i;
 const RE_CRAWL = /\bcrawl(ing)?\b/i;
 const RE_SPREAD = /\bspread (your |ur )?legs\b/i;
-const RE_TWERK = /\b(shake (your |ur )?(ass|booty)|twerk(ing)?)\b/i;
+const RE_TWERK =
+  /\bshake (your |ur |that |her )?(ass|booty)\b|\bshake it\b|\btwerk\w*\b|\bbooty\b/i;
 const RE_COME_CLOSER =
   /\b(come closer|move closer|get closer|closer to (the )?camera)\b/i;
 const RE_BACK_UP = /\b(back up|move back|step back|further away|get back)\b/i;
@@ -400,7 +412,7 @@ const stripGarmentBeats = (
   if (!RE_OFF_VERB.test(text)) return null;
   const target =
     GARMENT_ORDER.find((id) => GARMENT_PATTERN[id].test(text)) ??
-    (RE_ONE_PIECE.test(text) ? "top" : undefined);
+    (RE_ONE_PIECE.test(text) || RE_GENERIC_OFF.test(text) ? "top" : undefined);
   if (!target) return null;
   if (!isOn(wardrobe, target)) {
     return [
@@ -895,32 +907,203 @@ const putDownBeat = (
       ]
     : [];
 
+// The full catalog, excluding the fallback: null means "this clause doesn't match a known act".
+const matchBeats = (
+  text: string,
+  wardrobe: Wardrobe,
+  body: Body,
+): Beat[] | null =>
+  dressBeats(text, wardrobe, body) ??
+  stripAllBeats(text, wardrobe, body) ??
+  teaseBeats(text, wardrobe, body) ??
+  stripGarmentBeats(text, wardrobe, body) ??
+  gestureBeats(text, wardrobe, body) ??
+  tongueBeats(text, wardrobe, body) ??
+  bounceBeats(text, wardrobe, body) ??
+  doggyBeats(text, wardrobe, body) ??
+  bendOverBeats(text, wardrobe, body) ??
+  crawlBeats(text, wardrobe, body) ??
+  spreadLegsBeats(text, wardrobe, body) ??
+  twerkBeats(text, wardrobe, body) ??
+  comeCloserBeats(text, wardrobe, body) ??
+  backUpBeats(text, wardrobe, body) ??
+  poseBeats(text, wardrobe, body) ??
+  toyBeats(text, wardrobe, body) ??
+  touchBeats(text, wardrobe, body) ??
+  danceBeats(text, wardrobe, body) ??
+  drinkBeats(text, wardrobe, body) ??
+  tipBeats(text, wardrobe, body) ??
+  smallTalkBeats(text, wardrobe, body) ??
+  null;
+
+// --- Negation ----------------------------------------------------------------
+
+// Excludes "no way" (an intensifier, not a negation) so "no way, take it off" still strips.
+const RE_NEGATION_CUE =
+  /\b(don'?t|do not|doesn'?t|does not|didn'?t|did not|never mind|never|won'?t|stop)\b/i;
+const RE_NO_CUE = /\bno\b(?!\s+way\b)/i;
+
+const isNegatedClause = (clause: string): boolean =>
+  RE_NEGATION_CUE.test(clause) || RE_NO_CUE.test(clause);
+
+const negatedBeats = (wardrobe: Wardrobe, body: Body): Beat[] => [
+  {
+    physical:
+      "She hears the request but stays exactly as she is, smiling, and keeps going. " +
+      "NO UNDRESSING LOCK: no clothing changes this clip, nothing new appears.",
+    nextWardrobe: wardrobe,
+    nextBody: body,
+    durationSec: LIVE_TUNABLES.IDLE_CLIP_SEC,
+  },
+];
+
+// "not the top, the bottoms": the second garment inherits the first clause's implied verb, so this
+// runs before clause splitting (which would otherwise treat the comma as a hard act boundary).
+const CORRECTION_GARMENT_WORDS = "top|shirt|bra|bottoms?|panties";
+const RE_GARMENT_CORRECTION = new RegExp(
+  `\\bnot\\s+(?:the\\s+|your\\s+|ur\\s+)?(${CORRECTION_GARMENT_WORDS})\\b[^,]*,\\s*(?:the\\s+|your\\s+|ur\\s+)?(${CORRECTION_GARMENT_WORDS})\\b`,
+  "i",
+);
+
+const garmentWordToId = (word: string): GarmentId => {
+  const lower = word.toLowerCase();
+  if (lower === "shirt") return "top";
+  if (lower.startsWith("bottom")) return "bottom";
+  if (lower === "bra") return "bra";
+  if (lower === "panties") return "panties";
+  return "top";
+};
+
+const garmentCorrectionBeats = (
+  text: string,
+  wardrobe: Wardrobe,
+  body: Body,
+): Beat[] | null => {
+  const match = RE_GARMENT_CORRECTION.exec(text);
+  if (!match?.[2]) return null;
+  const target = garmentWordToId(match[2]);
+  if (!isOn(wardrobe, target)) {
+    return [
+      {
+        physical: `Her ${GARMENT_LABEL[target]} is already off. She stays exactly as she is and smiles.`,
+        nextWardrobe: wardrobe,
+        nextBody: body,
+        durationSec: LIVE_TUNABLES.IDLE_CLIP_SEC,
+      },
+    ];
+  }
+  const desc = describeGarment(wardrobe, target);
+  return [
+    {
+      physical:
+        `STRIP TEASE, one garment only. She slowly takes off her ${GARMENT_LABEL[target]} (${desc}), ` +
+        "the exact garment visible now, no substitute, and it leaves the frame. No other garment moves.",
+      nextWardrobe: removeGarment(wardrobe, target),
+      nextBody: { ...body, hands: "free", contact: "none" },
+      durationSec: ACTION_BEAT_SEC,
+    },
+  ];
+};
+
+// --- Multi-act clause splitting ----------------------------------------------
+
+const STRONG_CLAUSE_SPLIT = /\b(?:and then|after that|then|next)\b|,/gi;
+
+// A bare "and" only splits when both halves independently match a real act, so "bra and panties" stays one clause.
+const splitClauses = (
+  text: string,
+  wardrobe: Wardrobe,
+  body: Body,
+): string[] => {
+  const strongParts = text
+    .split(STRONG_CLAUSE_SPLIT)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const parts = strongParts.length > 0 ? strongParts : [text.trim()];
+  const result: string[] = [];
+  for (const part of parts) {
+    const andMatch = /\band\b/i.exec(part);
+    if (!andMatch) {
+      result.push(part);
+      continue;
+    }
+    const left = part.slice(0, andMatch.index).trim();
+    const right = part.slice(andMatch.index + andMatch[0].length).trim();
+    if (
+      left &&
+      right &&
+      matchBeats(left, wardrobe, body) &&
+      matchBeats(right, wardrobe, body)
+    ) {
+      result.push(left, right);
+    } else {
+      result.push(part);
+    }
+  }
+  return result;
+};
+
+const dedupeConsecutiveBeats = (beats: Beat[]): Beat[] =>
+  beats.filter(
+    (beat, i) => i === 0 || beat.physical !== beats[i - 1]?.physical,
+  );
+
+// Contract caps followUps at 6, plus the primary beat itself.
+const MAX_TOTAL_BEATS = 7;
+
 const resolveBeats = (text: string, wardrobe: Wardrobe, body: Body): Beat[] => {
-  const groundedBody = dropUnrelatedProp(text, body);
-  const beats =
-    dressBeats(text, wardrobe, groundedBody) ??
-    stripAllBeats(text, wardrobe, groundedBody) ??
-    teaseBeats(text, wardrobe, groundedBody) ??
-    stripGarmentBeats(text, wardrobe, groundedBody) ??
-    gestureBeats(text, wardrobe, groundedBody) ??
-    tongueBeats(text, wardrobe, groundedBody) ??
-    bounceBeats(text, wardrobe, groundedBody) ??
-    doggyBeats(text, wardrobe, groundedBody) ??
-    bendOverBeats(text, wardrobe, groundedBody) ??
-    crawlBeats(text, wardrobe, groundedBody) ??
-    spreadLegsBeats(text, wardrobe, groundedBody) ??
-    twerkBeats(text, wardrobe, groundedBody) ??
-    comeCloserBeats(text, wardrobe, groundedBody) ??
-    backUpBeats(text, wardrobe, groundedBody) ??
-    poseBeats(text, wardrobe, groundedBody) ??
-    toyBeats(text, wardrobe, groundedBody) ??
-    touchBeats(text, wardrobe, groundedBody) ??
-    danceBeats(text, wardrobe, groundedBody) ??
-    drinkBeats(text, wardrobe, groundedBody) ??
-    tipBeats(text, wardrobe, groundedBody) ??
-    smallTalkBeats(text, wardrobe, groundedBody) ??
-    fallbackBeats(wardrobe, groundedBody);
-  return [...putDownBeat(wardrobe, body, groundedBody), ...beats];
+  const correction = garmentCorrectionBeats(text, wardrobe, body);
+  if (correction) {
+    const grounded = dropUnrelatedProp(text, body);
+    return dedupeConsecutiveBeats([
+      ...putDownBeat(wardrobe, body, grounded),
+      ...correction,
+    ]);
+  }
+
+  const clauses = splitClauses(text, wardrobe, body);
+  let currentWardrobe = wardrobe;
+  let currentBody = body;
+  const allBeats: Beat[] = [];
+
+  for (const clause of clauses) {
+    const grounded = dropUnrelatedProp(clause, currentBody);
+    for (const beat of putDownBeat(currentWardrobe, currentBody, grounded)) {
+      allBeats.push(beat);
+      currentWardrobe = beat.nextWardrobe;
+      currentBody = beat.nextBody;
+    }
+
+    if (isNegatedClause(clause)) {
+      for (const beat of negatedBeats(currentWardrobe, currentBody)) {
+        allBeats.push(beat);
+        currentWardrobe = beat.nextWardrobe;
+        currentBody = beat.nextBody;
+      }
+      continue;
+    }
+
+    const beats = matchBeats(clause, currentWardrobe, currentBody);
+    if (!beats) continue;
+    for (const beat of beats) {
+      allBeats.push(beat);
+      currentWardrobe = beat.nextWardrobe;
+      currentBody = beat.nextBody;
+    }
+  }
+
+  if (allBeats.length === 0) {
+    allBeats.push(...fallbackBeats(wardrobe, body));
+  }
+
+  const deduped = dedupeConsecutiveBeats(allBeats);
+  if (deduped.length > MAX_TOTAL_BEATS) {
+    console.warn(
+      `resolveBeats: request resolved to ${deduped.length} beats, dropping tail beyond ${MAX_TOTAL_BEATS}`,
+    );
+    return deduped.slice(0, MAX_TOTAL_BEATS);
+  }
+  return deduped;
 };
 
 // --- Job handlers ------------------------------------------------------------
@@ -1077,28 +1260,43 @@ const planReply = (
   let primaryNextBody = firstBeat.nextBody;
   let durationSec: number;
   let followUpBeats: Beat[];
+  let lockBodyOverride: Body | undefined;
 
   if (canType) {
-    const typingLine = canLaptopType(state.body)
-      ? laptopTypingLine(typingLeadSec)
-      : phoneTypingLine(state.body, typingLeadSec);
-    const fitsInClip =
-      typingLeadSec + firstBeat.durationSec <= LIVE_TUNABLES.MAX_CLIP_SEC;
-    if (fitsInClip) {
-      primaryPhysical = `${typingLine} Then, for the rest of the clip: ${firstBeat.physical}`;
-      durationSec = clampDuration(typingLeadSec + firstBeat.durationSec);
-      followUpBeats = restBeats;
-    } else {
+    const usesPhoneTyping = !canLaptopType(state.body);
+    const typingLine = usesPhoneTyping
+      ? phoneTypingLine(state.body, typingLeadSec)
+      : laptopTypingLine(typingLeadSec);
+    // The phone she picks up mid-clip isn't the committed prop, but the PROP LOCK line must permit
+    // it for this clip's own locks or it contradicts the typing action ("hands empty" vs "picks up her phone").
+    if (usesPhoneTyping) lockBodyOverride = { ...state.body, prop: "phone" };
+
+    // A held-pose beat (small talk) or a fetch stays its own clip; any real action folds into the
+    // reply clip so a chat reply never costs two clips just to fit a typing lead in front of it.
+    const isHoldOnly = firstBeat.durationSec === LIVE_TUNABLES.IDLE_CLIP_SEC;
+    const isFetch = firstBeat.nextBody.prop === "fetching";
+    if (isHoldOnly || isFetch) {
       primaryPhysical = `${typingLine} She finishes typing and holds, ready to act next.`;
       primaryNextWardrobe = state.wardrobe;
       primaryNextBody = state.body;
       durationSec = clampDuration(typingLeadSec + 1);
       followUpBeats = [firstBeat, ...restBeats];
+    } else {
+      primaryPhysical = `${typingLine} Then, for the rest of the clip: ${firstBeat.physical}`;
+      durationSec = LIVE_TUNABLES.MAX_CLIP_SEC;
+      followUpBeats = restBeats;
     }
   } else {
     primaryPhysical = firstBeat.physical;
     durationSec = clampDuration(firstBeat.durationSec);
     followUpBeats = restBeats;
+  }
+
+  if (followUpBeats.length > 6) {
+    console.warn(
+      `planReply: ${followUpBeats.length} follow-up beats resolved, dropping the tail beyond the contract's 6-beat cap`,
+    );
+    followUpBeats = followUpBeats.slice(0, 6);
   }
 
   const expectedState: LiveState = {
@@ -1113,6 +1311,7 @@ const planReply = (
     action: `${primaryPhysical} ${END_STILL_LOCK}`,
     nextWardrobe: primaryNextWardrobe,
     nextBody: primaryNextBody,
+    lockBodyOverride,
   });
 
   const followUps: PlannedBeat[] = followUpBeats.map((beat, index) => ({
@@ -1168,11 +1367,29 @@ const planSettle = (session: LiveSessionSnapshot): ClipPlan => {
   const { state, creator } = session;
   const nextBody = { ...state.baselineBody };
   const bigDelta = state.body.pose === "lying" || nextBody.pose === "lying";
+  // The prop she's holding doesn't just vanish: name it and put it down before settling, on every transition.
+  const propToPutDown =
+    state.body.prop !== "none" &&
+    state.body.prop !== "fetching" &&
+    nextBody.prop === "none"
+      ? state.body.prop
+      : null;
+  const putDownLine = propToPutDown
+    ? `She sets the ${propToPutDown} down, out of frame but within reach, before settling.`
+    : "";
   const action = bigDelta
-    ? `She rises from ${POSE_DESCRIPTION[state.body.pose]} and moves back to ${POSE_DESCRIPTION[nextBody.pose]}, ` +
-      "one grounded step at a time, putting away the current prop if she is holding one."
-    : `She settles back into ${POSE_DESCRIPTION[nextBody.pose]}, hands returning to the keyboard. ` +
-      "Wardrobe stays exactly as it is.";
+    ? [
+        `She rises from ${POSE_DESCRIPTION[state.body.pose]} and moves back to ${POSE_DESCRIPTION[nextBody.pose]}, one grounded step at a time.`,
+        putDownLine,
+      ]
+        .filter(Boolean)
+        .join(" ")
+    : [
+        putDownLine,
+        `She settles back into ${POSE_DESCRIPTION[nextBody.pose]}, hands returning to the keyboard. Wardrobe stays exactly as it is.`,
+      ]
+        .filter(Boolean)
+        .join(" ");
   const expectedState: LiveState = { ...state, body: nextBody };
   const prompt = buildPrompt({
     state,

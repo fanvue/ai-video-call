@@ -624,3 +624,384 @@ describe("planClip: room viewers", () => {
     expect(plan.expectedState.wardrobe).toEqual(s.state.wardrobe);
   });
 });
+
+describe("planClip: negation", () => {
+  const reply = (
+    s: LiveSessionSnapshot,
+    text: string,
+    channel: InputChannel = "voice",
+  ) =>
+    planClip({
+      session: s,
+      job: { kind: "reply", requestId: "r1", text, channel, from: "fan" },
+      speechMode: "text",
+    });
+
+  it("a negated undress request makes no state change and locks against undressing", () => {
+    const s = session();
+    const plan = reply(s, "don't take your top off");
+    expect(plan.expectedState.wardrobe).toEqual(s.state.wardrobe);
+    expect(plan.prompt).toMatch(/NO UNDRESSING LOCK/i);
+  });
+
+  it("negates a bare strip verb without the apostrophe", () => {
+    const s = session();
+    const plan = reply(s, "dont strip");
+    expect(plan.expectedState.wardrobe).toEqual(s.state.wardrobe);
+  });
+
+  it("negates a toy request, never advancing the prop to fetching", () => {
+    const s = session();
+    const plan = reply(s, "no toys please");
+    expect(plan.expectedState.body.prop).toBe("none");
+  });
+
+  it("a request with no removal verb never undresses regardless of wording", () => {
+    const s = session();
+    const plan = reply(s, "keep your clothes on");
+    expect(plan.expectedState.wardrobe).toEqual(s.state.wardrobe);
+  });
+
+  it("a cancelled request followed by an unmatched clause makes no state change", () => {
+    const s = session();
+    const plan = reply(s, "never mind, stay sitting");
+    expect(plan.expectedState.wardrobe).toEqual(s.state.wardrobe);
+    expect(plan.expectedState.body).toEqual(s.state.body);
+  });
+
+  it("'no way' is an intensifier, not a negation, so the strip still happens", () => {
+    const s = session();
+    const plan = reply(s, "no way, take it off");
+    expect(plan.expectedState.wardrobe.top.on).toBe(false);
+  });
+
+  it("a garment correction strips the corrected garment, not the negated one", () => {
+    const s = session();
+    const plan = reply(s, "not the top, the bottoms");
+    expect(plan.expectedState.wardrobe.bottom.on).toBe(false);
+    expect(plan.expectedState.wardrobe.top.on).toBe(true);
+  });
+});
+
+describe("planClip: multi-act requests", () => {
+  const reply = (
+    s: LiveSessionSnapshot,
+    text: string,
+    channel: InputChannel = "voice",
+  ) =>
+    planClip({
+      session: s,
+      job: { kind: "reply", requestId: "r1", text, channel, from: "fan" },
+      speechMode: "text",
+    });
+
+  it("splits on 'then' and resolves each clause in order", () => {
+    const s = session();
+    const plan = reply(s, "take ur top off then shake ur ass");
+    expect(plan.expectedState.wardrobe.top.on).toBe(false);
+    const finalState =
+      plan.followUps[plan.followUps.length - 1]?.nextState ??
+      plan.expectedState;
+    expect(finalState.body.pose).toBe("standing");
+    expect(finalState.body.facing).toBe("away");
+  });
+
+  it("splits on a bare 'and' only when both halves independently match an act", () => {
+    const s = session();
+    const plan = reply(s, "take off your top and dance for me");
+    expect(plan.expectedState.wardrobe.top.on).toBe(false);
+    const finalState =
+      plan.followUps[plan.followUps.length - 1]?.nextState ??
+      plan.expectedState;
+    expect(finalState.body.pose).toBe("standing");
+  });
+
+  it("keeps 'bra and panties' as one clause instead of splitting mid-garment-list", () => {
+    const s = session();
+    const plan = reply(s, "take off your bra and panties");
+    expect(plan.expectedState.wardrobe.bra.on).toBe(false);
+    expect(plan.expectedState.wardrobe.panties.on).toBe(true);
+  });
+
+  it("dedupes consecutive identical beats", () => {
+    const s = session();
+    const plan = reply(s, "wave at me then wave at me");
+    expect(plan.followUps).toHaveLength(0);
+  });
+
+  it("caps the total beat sequence at the contract's follow-up limit", () => {
+    const s = session();
+    const plan = reply(
+      s,
+      "wave at me then blow me a kiss then wink at me then lick your lips " +
+        "then stick out your tongue then jiggle your tits then thanks for the tip then good morning",
+    );
+    expect(plan.followUps.length).toBeLessThanOrEqual(6);
+    for (const beat of plan.followUps) {
+      expect(inRange(beat.durationSec)).toBe(true);
+    }
+  });
+});
+
+describe("planClip: catalog gaps", () => {
+  const reply = (
+    s: LiveSessionSnapshot,
+    text: string,
+    channel: InputChannel = "voice",
+  ) =>
+    planClip({
+      session: s,
+      job: { kind: "reply", requestId: "r1", text, channel, from: "fan" },
+      speechMode: "text",
+    });
+
+  const finalGarmentCount = (plan: ReturnType<typeof reply>) => {
+    const beats = [
+      { nextState: { wardrobe: plan.expectedState.wardrobe } },
+      ...plan.followUps,
+    ];
+    const last = beats[beats.length - 1]?.nextState.wardrobe;
+    return (["top", "bottom", "bra", "panties"] as const).filter(
+      (id) => last?.[id].on,
+    ).length;
+  };
+
+  it.each(["strip", "strip for me", "get naked"])(
+    "%s strips everything, one garment per beat",
+    (text) => {
+      const s = session();
+      const plan = reply(s, text);
+      expect(finalGarmentCount(plan)).toBe(0);
+    },
+  );
+
+  it.each(["shake that ass", "shake it", "twerk for me", "booty"])(
+    "%s turns her to a standing twerk facing away",
+    (text) => {
+      const s = session();
+      const plan = reply(s, text);
+      const finalState =
+        plan.followUps[plan.followUps.length - 1]?.nextState ??
+        plan.expectedState;
+      expect(finalState.body.pose).toBe("standing");
+      expect(finalState.body.facing).toBe("away");
+    },
+  );
+
+  it("still passes the existing false-positive phrases", () => {
+    const s = session();
+    for (const text of [
+      "stop",
+      "coffee please",
+      "down there",
+      "top of the morning",
+    ]) {
+      const plan = reply(s, text);
+      expect(plan.expectedState.wardrobe).toEqual(s.state.wardrobe);
+    }
+  });
+
+  it.each([
+    "take your top off",
+    "remove your bra",
+    "slide your panties off",
+    "pull down your bottoms",
+    "u should get naked",
+    "get nude",
+    "everything off pls",
+    "take it all off",
+    "nothing on",
+    "strip everything",
+    "dance for me",
+    "twerk",
+    "shake ur booty",
+    "get on all fours",
+    "doggy",
+    "bend over",
+    "crawl to the camera",
+    "spread your legs",
+    "come closer",
+    "back up a bit",
+    "use the dildo",
+    "vibe on yourself",
+    "touch urself",
+    "finger yourself",
+    "get me a drink",
+    "coffee please",
+    "wave hello",
+    "blow a kiss",
+    "wink at me",
+    "thx for the tip",
+  ])("resolves '%s' to a valid in-range clip plan", (text) => {
+    const s = session();
+    const plan = reply(s, text);
+    expect(inRange(plan.durationSec)).toBe(true);
+    for (const beat of plan.followUps) {
+      expect(inRange(beat.durationSec)).toBe(true);
+    }
+  });
+});
+
+describe("planClip: single-clip replies (finding 4)", () => {
+  const reply = (s: LiveSessionSnapshot, text: string) =>
+    planClip({
+      session: s,
+      job: {
+        kind: "reply",
+        requestId: "r1",
+        text,
+        channel: "chat",
+        from: "fan",
+      },
+      speechMode: "text",
+    });
+
+  it("folds a real action into the reply clip instead of costing two clips", () => {
+    const s = session();
+    const plan = reply(s, "take your top off");
+    expect(plan.expectedState.wardrobe.top.on).toBe(false);
+    expect(plan.durationSec).toBe(LIVE_TUNABLES.MAX_CLIP_SEC);
+    expect(plan.prompt).toMatch(/TYPING FIRST/i);
+    expect(plan.prompt).toMatch(/Then, for the rest of the clip/i);
+    expect(plan.replyDraft?.typingLeadSec).toBeLessThanOrEqual(
+      plan.durationSec,
+    );
+  });
+
+  it("keeps a pure typing-only clip for small talk, the beat becomes a follow-up", () => {
+    const s = session();
+    const plan = reply(s, "wave at me");
+    expect(plan.expectedState.wardrobe).toEqual(s.state.wardrobe);
+    expect(plan.expectedState.body).toEqual(s.state.body);
+    expect(plan.followUps.length).toBeGreaterThanOrEqual(1);
+    expect(plan.followUps[0]?.physical).toMatch(/wave/i);
+  });
+
+  it("keeps a pure typing-only clip when the first beat is a fetch", () => {
+    const s = session();
+    const plan = reply(s, "use the vibrator on yourself");
+    expect(plan.expectedState.body.prop).toBe("none");
+    expect(plan.followUps[0]?.nextState.body.prop).toBe("fetching");
+    expect(plan.followUps[1]?.nextState.body.prop).toBe("vibrator");
+  });
+
+  it("never lets the typing lead exceed the clip duration", () => {
+    const s = session();
+    for (const text of [
+      "hi",
+      "take your top off",
+      "everything off",
+      "dance for me",
+    ]) {
+      const plan = reply(s, text);
+      expect(plan.replyDraft?.typingLeadSec ?? 0).toBeLessThanOrEqual(
+        plan.durationSec,
+      );
+    }
+  });
+});
+
+describe("planClip: phone typing vs prop lock (finding 9)", () => {
+  const reply = (s: LiveSessionSnapshot, text: string) =>
+    planClip({
+      session: s,
+      job: {
+        kind: "reply",
+        requestId: "r1",
+        text,
+        channel: "chat",
+        from: "fan",
+      },
+      speechMode: "text",
+    });
+
+  it("permits the phone in the prop lock instead of contradicting the typing action", () => {
+    const s = session({ state: state({ body: body({ pose: "standing" }) }) });
+    const plan = reply(s, "wave at me");
+    expect(plan.prompt).toMatch(/picks up her phone/i);
+    expect(plan.prompt).toMatch(
+      /PROP LOCK: the only object in frame is her phone/i,
+    );
+    expect(plan.prompt).not.toMatch(/hands are empty/i);
+  });
+
+  it("still narrates setting down a held prop before picking up the phone", () => {
+    const s = session({
+      state: state({
+        body: body({
+          pose: "standing",
+          prop: "vibrator",
+          hands: "holdingProp",
+          contact: "self",
+        }),
+      }),
+    });
+    const plan = reply(s, "wave at me");
+    expect(plan.prompt).toMatch(/sets the vibrator she was holding down/i);
+    expect(plan.prompt).toMatch(
+      /PROP LOCK: the only object in frame is her phone/i,
+    );
+  });
+
+  it("does not touch the committed prop state, only the clip's lock text", () => {
+    const s = session({ state: state({ body: body({ pose: "standing" }) }) });
+    const plan = reply(s, "wave at me");
+    expect(plan.expectedState.body.prop).toBe("none");
+  });
+});
+
+describe("planClip: settle prop vanish (finding 5)", () => {
+  it("narrates putting the exact object down before settling on a same-level pose transition", () => {
+    const s = session({
+      state: state({
+        body: body({
+          pose: "sitting",
+          prop: "vibrator",
+          hands: "holdingProp",
+          contact: "self",
+        }),
+        baselineBody: body({ pose: "sitting" }),
+      }),
+    });
+    const plan = planClip({
+      session: s,
+      job: { kind: "settle" },
+      speechMode: "text",
+    });
+    expect(plan.prompt).toMatch(
+      /sets the vibrator down, out of frame but within reach, before settling/i,
+    );
+  });
+
+  it("still narrates putting the object down on a big pose delta (lying)", () => {
+    const s = session({
+      state: state({
+        body: body({
+          pose: "lying",
+          prop: "dildo",
+          hands: "holdingProp",
+          contact: "self",
+        }),
+        baselineBody: body({ pose: "sitting" }),
+      }),
+    });
+    const plan = planClip({
+      session: s,
+      job: { kind: "settle" },
+      speechMode: "text",
+    });
+    expect(plan.prompt).toMatch(
+      /sets the dildo down, out of frame but within reach, before settling/i,
+    );
+  });
+
+  it("says nothing about a prop when she isn't holding one", () => {
+    const s = session();
+    const plan = planClip({
+      session: s,
+      job: { kind: "settle" },
+      speechMode: "text",
+    });
+    expect(plan.prompt).not.toMatch(/out of frame but within reach/i);
+  });
+});
