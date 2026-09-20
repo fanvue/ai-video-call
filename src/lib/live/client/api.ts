@@ -1,0 +1,48 @@
+// Thin fetch wrappers for the two server routes. See docs/LIVE_ENGINE.md.
+import {
+  clipResultSchema,
+  type ClipRequest,
+  type ClipResult,
+} from "@/lib/live/contract";
+import type { ReferenceUploadResult } from "@/lib/live/client/useLiveSession";
+
+const readFileAsBase64 = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const base64 = dataUrl.split(",")[1] ?? "";
+      resolve(base64);
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+
+const postJson = async <T>(url: string, body: unknown): Promise<T> => {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = (await res.json().catch(() => null)) as
+    (T & { error?: string }) | null;
+  if (!res.ok || !data) {
+    throw new Error(data?.error ?? `Request to ${url} failed (${res.status})`);
+  }
+  return data;
+};
+
+export const renderClip = async (req: ClipRequest): Promise<ClipResult> => {
+  const raw = await postJson<unknown>("/api/live/clip", req);
+  return clipResultSchema.parse(raw);
+};
+
+export const uploadReference = async (
+  file: File,
+): Promise<ReferenceUploadResult> => {
+  const imageBase64 = await readFileAsBase64(file);
+  return postJson<ReferenceUploadResult>("/api/live/reference", {
+    imageBase64,
+    fileName: file.name,
+  });
+};
