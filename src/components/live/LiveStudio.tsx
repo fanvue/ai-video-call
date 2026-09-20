@@ -126,16 +126,11 @@ export const LiveStudio = () => {
 
   useEffect(() => stopPrivateMeter, [stopPrivateMeter]);
 
-  const fanRequestPending =
-    session.queueStrip.current?.owner.type === "fan" ||
-    session.queueStrip.queued.some((entry) => entry.owner.type === "fan");
-  const composerDisabled = session.status === "connecting" || fanRequestPending;
+  // The director queues fan requests (insertReplyIndex) rather than dropping extras, so the
+  // composer only needs to block before the session has actually connected.
+  const composerDisabled = session.status === "connecting";
   const composerDisabledReason =
-    session.status === "connecting"
-      ? "Connecting…"
-      : fanRequestPending
-        ? "One at a time, she's already on your request"
-        : null;
+    session.status === "connecting" ? "Connecting…" : null;
 
   const handleSend = useCallback(
     (text: string, paid?: boolean) => {
@@ -315,7 +310,7 @@ export const LiveStudio = () => {
               aria-label={soundOn ? "Mute" : "Unmute"}
               aria-pressed={soundOn}
               onClick={toggleSound}
-              className="grid h-8 w-8 place-items-center rounded-full bg-black/40 text-white"
+              className="grid h-8 w-8 place-items-center rounded-full border border-white/25 bg-white/10 text-white backdrop-blur-md"
             >
               {soundOn ? "🔊" : "🔇"}
             </button>
@@ -323,7 +318,7 @@ export const LiveStudio = () => {
               type="button"
               aria-label="End call"
               onClick={() => setEndConfirmOpen(true)}
-              className="grid h-9 w-9 place-items-center rounded-full bg-black/40 text-white"
+              className="grid h-9 w-9 place-items-center rounded-full border border-white/25 bg-white/10 text-white backdrop-blur-md"
             >
               ✕
             </button>

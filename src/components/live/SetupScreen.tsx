@@ -31,8 +31,10 @@ export const SetupScreen = ({ busy, error, onSubmit }: SetupScreenProps) => {
   const [displayName, setDisplayName] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [voiceExperimental, setVoiceExperimental] = useState(false);
+  // Reference-to-video (single anchor image, periodic identity correction) held up better in
+  // testing than the image-to-video/guard-repair chain, so it's now the default rather than opt-in.
   const [referenceModelExperimental, setReferenceModelExperimental] =
-    useState(false);
+    useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const canSubmit = Boolean(file) && !busy;
@@ -143,7 +145,7 @@ export const SetupScreen = ({ busy, error, onSubmit }: SetupScreenProps) => {
                   setReferenceModelExperimental(event.target.checked)
                 }
               />
-              Reference model (experimental)
+              Reference model (recommended)
             </label>
           </div>
         ) : null}
@@ -167,7 +169,7 @@ export const SetupScreen = ({ busy, error, onSubmit }: SetupScreenProps) => {
         className={
           "rounded-full px-4 py-3 text-sm font-semibold " +
           (canSubmit
-            ? "bg-[var(--accent)] text-[var(--accent-contrast)]"
+            ? "bg-gradient-to-b from-[#ffd21a] to-[var(--accent)] text-[var(--accent-contrast)] shadow-[0_4px_14px_rgba(255,171,0,0.4)]"
             : "bg-[var(--surface-raised)] text-[var(--muted)]")
         }
       >

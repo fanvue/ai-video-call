@@ -78,7 +78,7 @@ export const TopBar = ({
               className="h-1.5 w-full overflow-hidden rounded-full bg-white/20"
             >
               <div
-                className="h-full rounded-full bg-[var(--accent)] transition-[width] duration-500"
+                className="h-full rounded-full bg-gradient-to-r from-[#ffd21a] to-[var(--accent)] transition-[width] duration-500"
                 style={{ width: `${goalPct}%` }}
               />
             </div>
@@ -98,7 +98,7 @@ export const TopBar = ({
             type="button"
             aria-label={`Coin balance ${coinBalance}. Get more coins`}
             onClick={onGetCoinsClick}
-            className="rounded-full bg-black/40 px-2.5 py-1 text-xs font-semibold text-white"
+            className="rounded-full border border-white/25 bg-white/10 px-2.5 py-1 text-xs font-semibold text-white backdrop-blur-md"
           >
             🪙 {coinBalance} +
           </button>
@@ -106,13 +106,13 @@ export const TopBar = ({
             type="button"
             aria-label="Open tip menu"
             onClick={onTipClick}
-            className="grid h-8 w-8 place-items-center rounded-full bg-[var(--accent)] text-xs font-bold text-[var(--accent-contrast)]"
+            className="grid h-8 w-8 place-items-center rounded-full bg-gradient-to-b from-[#ffd21a] to-[var(--accent)] text-xs font-bold text-[var(--accent-contrast)] shadow-[0_4px_14px_rgba(255,171,0,0.4)]"
           >
             Tip
           </button>
         </div>
         {topFan ? (
-          <span className="whitespace-nowrap rounded-full bg-black/40 px-2.5 py-1 text-[11px] font-medium text-white">
+          <span className="whitespace-nowrap rounded-full border border-[var(--accent)]/40 bg-white/10 px-2.5 py-1 text-[11px] font-medium text-white backdrop-blur-md">
             👑 {topFan.handle} {topFan.coins}
           </span>
         ) : null}

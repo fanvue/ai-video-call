@@ -47,7 +47,7 @@ export const BottomBar = ({
   return (
     <div className="flex flex-col gap-2">
       <form
-        className="flex items-end gap-2 rounded-2xl border border-white/15 bg-black/40 px-2 py-1"
+        className="flex items-end gap-2 rounded-2xl border border-white/25 bg-white/[0.09] px-2 py-1 backdrop-blur-md"
         onSubmit={(event) => {
           event.preventDefault();
           submitDraft();
@@ -79,8 +79,8 @@ export const BottomBar = ({
           className={
             "grid h-9 w-9 shrink-0 place-items-center rounded-full text-base disabled:opacity-50 " +
             (micArmed
-              ? "bg-[var(--accent)] text-[var(--accent-contrast)]"
-              : "bg-white/10 text-white")
+              ? "bg-gradient-to-b from-[#ffd21a] to-[var(--accent)] text-[var(--accent-contrast)] shadow-[0_4px_14px_rgba(255,171,0,0.4)]"
+              : "border border-white/25 bg-white/10 text-white")
           }
         >
           🎙️
@@ -89,7 +89,7 @@ export const BottomBar = ({
           type="submit"
           aria-label="Send message"
           disabled={composerDisabled || draft.trim().length < 1}
-          className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/10 text-white disabled:opacity-50"
+          className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-white/25 bg-white/10 text-white disabled:opacity-50"
         >
           ➤
         </button>
@@ -106,7 +106,7 @@ export const BottomBar = ({
           disabled={composerDisabled}
           onClick={onQuickTip}
           aria-label={`Tip ${lastTipCoins} coins`}
-          className="shrink-0 rounded-full bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-[var(--accent-contrast)] disabled:opacity-50"
+          className="shrink-0 rounded-full bg-gradient-to-b from-[#ffd21a] to-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-[var(--accent-contrast)] shadow-[0_4px_14px_rgba(255,171,0,0.4)] disabled:opacity-50"
         >
           Tip {lastTipCoins}
         </button>
@@ -115,7 +115,7 @@ export const BottomBar = ({
           disabled={composerDisabled}
           onClick={onOpenTipMenu}
           aria-label="Open tip menu"
-          className="flex-1 rounded-full border border-white/25 px-3 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
+          className="flex-1 rounded-full border border-white/25 bg-white/[0.06] px-3 py-2.5 text-sm font-semibold text-white backdrop-blur-md disabled:opacity-50"
         >
           🕹️ Tip menu
         </button>
