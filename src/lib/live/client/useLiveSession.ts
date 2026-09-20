@@ -29,7 +29,6 @@ import type {
   TranscriptEntry,
   Wardrobe,
 } from "@/lib/live/contract";
-import { LIVE_TUNABLES } from "@/lib/live/contract";
 
 export type ReferenceUploadResult = {
   anchorFrameUrl: string;
@@ -197,6 +196,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       videoUrl: result.videoUrl,
       durationSec: result.durationSec,
       hasSpeech: speechModeRef.current === "native" && result.reply !== null,
+      loops: result.loops,
     };
   }, []);
 
@@ -292,28 +292,19 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     }
   }, [isSystemIdle, refreshQueueStrip]);
 
+  // Live once the first clip is on screen; the pipeline count reads zero once the player preloads.
   const maybeGoLive = useCallback(() => {
-    const pipeline = pipelineRef.current;
-    if (!pipeline || !greetingPlayedRef.current) {
+    if (!greetingPlayedRef.current) {
       return;
     }
-    const stats = pipeline.getBufferStats();
-    if (stats.idleReady + stats.chainedReady >= LIVE_TUNABLES.PRIME_CLIPS) {
-      setStatus((current) => (current === "connecting" ? "live" : current));
-    }
+    setStatus((current) => (current === "connecting" ? "live" : current));
   }, []);
 
-  const handleClipStarted = useCallback(
-    (clipId: string) => {
-      refreshBufferDepth();
-      const meta = clipMetaRef.current.get(clipId);
-      if (meta?.jobKind === "greeting") {
-        greetingPlayedRef.current = true;
-        maybeGoLive();
-      }
-    },
-    [maybeGoLive, refreshBufferDepth],
-  );
+  const handleClipStarted = useCallback(() => {
+    refreshBufferDepth();
+    greetingPlayedRef.current = true;
+    maybeGoLive();
+  }, [maybeGoLive, refreshBufferDepth]);
 
   useEffect(() => {
     player.setProgressHandler(revealIfDue);

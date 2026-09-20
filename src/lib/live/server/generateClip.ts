@@ -57,8 +57,10 @@ export const generateClip = async (
   const planMs = Date.now() - planStarted;
 
   const videoBackend = renderBackendFor(backend);
-  // Idle on an end-frame backend loops on the anchor, so it skips extract/guard/repair/identity below.
-  const isAnchoredLoop = job.kind === "idle" && videoBackend.supportsEndFrame;
+  // Idle and greeting on an end-frame backend loop on the anchor, so they skip extract/guard/repair/identity below.
+  const isAnchoredLoop =
+    (job.kind === "idle" || job.kind === "greeting") &&
+    videoBackend.supportsEndFrame;
   // reply/beat are mid-chain; only the clip ending the chain (settle/redress/checkIn/greeting) is guarded.
   const isIntermediateBeat = job.kind === "reply" || job.kind === "beat";
 

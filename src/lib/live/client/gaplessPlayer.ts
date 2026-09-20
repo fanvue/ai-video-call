@@ -15,6 +15,8 @@ export type ClipToPlay = {
   videoUrl: string;
   durationSec: number;
   hasSpeech: boolean;
+  // Starts and ends on the same frame: the element loops it natively while the next clip renders.
+  loops: boolean;
 };
 
 export type GaplessPlayerOptions = {
@@ -171,6 +173,7 @@ export class GaplessPlayer {
     const targetSlot = this.activeSlot === "a" ? "b" : "a";
     this.preloadedClip = clip;
     inactive.src = clip.videoUrl;
+    inactive.loop = clip.loops;
     inactive.muted = true;
     inactive.load();
     await waitForPlayable(inactive);
@@ -189,6 +192,7 @@ export class GaplessPlayer {
       return;
     }
     el.src = clip.videoUrl;
+    el.loop = clip.loops;
     el.load();
     await waitForPlayable(el);
     if (this.disposed) {
@@ -320,6 +324,10 @@ export class GaplessPlayer {
         void this.preload(clip);
         return;
       }
+    }
+    // A looping clip keeps playing seamlessly; only a one-shot clip has to hold on its last frame.
+    if (el.loop) {
+      return;
     }
     if (this.status !== "holding") {
       el.pause();

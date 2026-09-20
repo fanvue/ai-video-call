@@ -117,7 +117,12 @@ export class ClipPipeline {
     this.anchor = { frameUrl: snapshot.seedFrameUrl, state: snapshot.state };
     this.displayAnchorFrameUrl = snapshot.seedFrameUrl;
     this.submitChainJob(initialJob, 0);
-    this.fillIdleStockpile();
+    if (this.backend === "turbo") {
+      // The greeting loops on the reference frame on turbo, so idles from the same anchor render alongside it.
+      while (this.idleInflightCount < this.effectiveIdleMaxInflight()) {
+        this.submitIdleJob(this.anchor, 0);
+      }
+    }
   }
 
   // Try to run the just-queued job now; if the chain lane is busy it's picked up when it frees.

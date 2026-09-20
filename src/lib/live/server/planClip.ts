@@ -1119,7 +1119,8 @@ const planGreeting = (
   const nextBody = { ...state.baselineBody };
   const action =
     "GREETING: she looks up and notices the room, a few viewers already here, gives a warm wave and " +
-    "smile, then settles into her baseline pose at the laptop, hands moving to the keyboard.";
+    "smile, then settles back into exactly the pose and framing she started in, hands returning to " +
+    "where they were, so the final frame matches the first frame.";
   const expectedState: LiveState = { ...state, body: nextBody };
   const prompt = buildPrompt({
     state,

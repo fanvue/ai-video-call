@@ -10,6 +10,7 @@ type Listener = (event: { currentTarget: FakeVideo }) => void;
 class FakeVideo {
   src = "";
   style: { opacity: string } = { opacity: "" };
+  loop = false;
   muted = false;
   volume = 1;
   readyState = 2;
@@ -57,11 +58,12 @@ class FakeVideo {
   }
 }
 
-const clip = (id: string): ClipToPlay => ({
+const clip = (id: string, loops = false): ClipToPlay => ({
   id,
   videoUrl: `https://cdn.example/${id}.mp4`,
   durationSec: 10,
   hasSpeech: false,
+  loops,
 });
 
 const flush = async (): Promise<void> => {
@@ -125,6 +127,31 @@ describe("GaplessPlayer", () => {
     expect(a.paused).toBe(false);
     expect(player.getActiveSlot()).toBe("a");
     expect(player.getStatus()).toBe("playing");
+  });
+
+  it("keeps a looping clip playing when nothing else is ready, and swaps once something is", async () => {
+    const queue: ClipToPlay[] = [clip("loop1", true)];
+    const { a, b, player, getNextClip } = setup(queue);
+    player.start();
+    await flush();
+    expect(a.loop).toBe(true);
+
+    // Boundary with an empty buffer: no pause, no hold, the element loops natively.
+    a.fireTimeUpdate(9.95);
+    await flush();
+    expect(a.paused).toBe(false);
+    expect(player.getStatus()).toBe("playing");
+    expect(getNextClip).toHaveBeenCalled();
+
+    // A clip lands: it is preloaded and taken at the next boundary.
+    queue.push(clip("c2"));
+    player.checkForClip();
+    await flush();
+    expect(b.src).toBe(clip("c2").videoUrl);
+    a.fireTimeUpdate(9.95);
+    await flush();
+    expect(player.getActiveSlot()).toBe("b");
+    expect(b.loop).toBe(false);
   });
 
   it("holds for a still-loading preload instead of pulling another clip from the buffer", async () => {

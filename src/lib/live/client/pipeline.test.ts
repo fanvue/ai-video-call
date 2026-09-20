@@ -78,11 +78,11 @@ const makeResult = (
   };
 };
 
-// Default fake render: idle echoes its input seed (a loop), everything else advances to a fresh
-// frame (a chain step). Individual tests override this where they need to control timing/outcome.
+// Default fake render: idle and greeting echo their input seed (loops, as on turbo), everything
+// else advances to a fresh frame (a chain step). Tests override this to control timing/outcome.
 const chainAdvancingResult = (req: ClipRequest): ClipResult =>
-  req.job.kind === "idle"
-    ? makeResult("idle", req.session.seedFrameUrl)
+  req.job.kind === "idle" || req.job.kind === "greeting"
+    ? makeResult(req.job.kind, req.session.seedFrameUrl)
     : makeResult(req.job.kind, freshFrame());
 
 type Deferred<T> = {
@@ -172,11 +172,11 @@ describe("ClipPipeline", () => {
     });
 
     pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
-    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting resolves, promotes anchor
-
+    // On turbo the greeting loops on the reference frame, so idles pre-stock alongside it.
     expect(pipeline.getBufferStats().idleInflight).toBe(
       LIVE_TUNABLES.IDLE_MAX_INFLIGHT,
     );
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting resolves, promotes anchor
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // idle jobs resolve
     const stats = pipeline.getBufferStats();
     expect(stats.idleReady).toBe(LIVE_TUNABLES.IDLE_BUFFER_TARGET);
@@ -280,10 +280,13 @@ describe("ClipPipeline", () => {
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // beat
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // settle
 
-    // greeting seeds from the initial anchor; each later step seeds from the previous step's own
-    // freshly-rendered frame, so all four seeds are pairwise distinct.
+    // greeting loops on the initial anchor so the reply seeds from it too; each later step seeds
+    // from the previous step's own freshly-rendered frame.
+    expect(seeds).toHaveLength(4);
     expect(seeds[0]).toBe(ANCHOR_0);
-    expect(new Set(seeds)).toHaveLength(4);
+    expect(seeds[1]).toBe(ANCHOR_0);
+    expect(seeds[2]).not.toBe(seeds[1]);
+    expect(seeds[3]).not.toBe(seeds[2]);
   });
 
   it("never plays a new-anchor idle before the last chained clip has played", async () => {
@@ -433,6 +436,7 @@ describe("ClipPipeline", () => {
     const pipeline = trackedPipeline({
       now: nowFn,
       onEvent: (e) => events.push(e),
+      backend: "reference",
       render: async (req) => {
         if (req.job.kind !== "idle") {
           return delayed(() => chainAdvancingResult(req));
