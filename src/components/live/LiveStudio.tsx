@@ -1,17 +1,38 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { renderClip, uploadReference } from "@/lib/live/client/api";
-import { DEFAULT_TIP_MENU } from "@/lib/live/client/defaultCreatorProfile";
+import {
+  DEFAULT_TIP_MENU,
+  type TipMenuAction,
+} from "@/lib/live/client/defaultCreatorProfile";
+import {
+  addCoins,
+  coinsToBecomeTopFan,
+  COIN_PACKS,
+  createWalletState,
+  recordTip,
+  spendCoins,
+} from "@/lib/live/client/coins";
 import { useLiveSession } from "@/lib/live/client/useLiveSession";
+import { BottomBar } from "@/components/live/BottomBar";
 import { ChatPanel } from "@/components/live/ChatPanel";
+import { formatQueueLabel } from "@/components/live/QueueStrip";
+import { GetCoinsSheet } from "@/components/live/GetCoinsSheet";
 import { LobbyOverlay } from "@/components/live/LobbyOverlay";
-import { QueueStrip } from "@/components/live/QueueStrip";
+import {
+  PRIVATE_SHOW_PER_MINUTE_COINS,
+  PRIVATE_SHOW_START_COINS,
+  PrivateShowSheet,
+} from "@/components/live/PrivateShowSheet";
 import { SetupScreen, type SetupSubmit } from "@/components/live/SetupScreen";
-import { StatusPill } from "@/components/live/StatusPill";
 import { StudioOverlay } from "@/components/live/StudioOverlay";
 import { TipMenuDrawer } from "@/components/live/TipMenuDrawer";
+import { TopBar } from "@/components/live/TopBar";
 import { useVoiceInput } from "@/components/live/useVoiceInput";
+
+const PRIVATE_METER_INTERVAL_MS = 60_000;
+const DEFAULT_LAST_TIP_COINS = 10;
 
 const formatElapsed = (startedAtMs: number, nowMs: number): string => {
   const totalSeconds = Math.max(0, Math.floor((nowMs - startedAtMs) / 1000));
@@ -26,11 +47,15 @@ export const LiveStudio = () => {
   const [startError, setStartError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [tipMenuOpen, setTipMenuOpen] = useState(false);
+  const [getCoinsOpen, setGetCoinsOpen] = useState(false);
+  const [privateShowOpen, setPrivateShowOpen] = useState(false);
   const [studioMode, setStudioMode] = useState(false);
   const [soundOn, setSoundOn] = useState(true);
   const [endConfirmOpen, setEndConfirmOpen] = useState(false);
   const [startedAtMs, setStartedAtMs] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [wallet, setWallet] = useState(() => createWalletState());
+  const [lastTipCoins, setLastTipCoins] = useState(DEFAULT_LAST_TIP_COINS);
   const [debugMode] = useState(
     () =>
       typeof window !== "undefined" &&
@@ -39,6 +64,67 @@ export const LiveStudio = () => {
 
   const [session, videoRefs] = useLiveSession({ renderClip, uploadReference });
   const { bindVideoA, bindVideoB } = videoRefs;
+
+  const processedTipEventIdsRef = useRef<Set<string>>(new Set());
+  const privateMeterIntervalRef = useRef<ReturnType<typeof setInterval> | null>(
+    null,
+  );
+
+  // Every room-sim tip (ambient viewer or the fan's own via a viewer-request echo) feeds the
+  // shared goal and crown exactly once, tracked by RoomChatMessage id.
+  useEffect(() => {
+    const unseen = session.roomEvents.filter(
+      (event) =>
+        event.kind === "tip" &&
+        event.tipCents !== undefined &&
+        !processedTipEventIdsRef.current.has(event.id),
+    );
+    if (unseen.length === 0) {
+      return;
+    }
+    for (const event of unseen) {
+      processedTipEventIdsRef.current.add(event.id);
+    }
+    setWallet((current) =>
+      unseen.reduce(
+        (wallet, event) =>
+          recordTip(wallet, event.handle ?? "viewer", event.tipCents ?? 0),
+        current,
+      ),
+    );
+  }, [session.roomEvents]);
+
+  const stopPrivateMeter = useCallback(() => {
+    if (privateMeterIntervalRef.current) {
+      clearInterval(privateMeterIntervalRef.current);
+      privateMeterIntervalRef.current = null;
+    }
+  }, []);
+
+  const endPrivateShow = useCallback(() => {
+    stopPrivateMeter();
+    session.setPrivateMode(false);
+  }, [session, stopPrivateMeter]);
+
+  // Per-minute coin meter for private mode: a local demo billing tick, not a real charge. Ends
+  // the show automatically once the fan's balance can't cover the next minute.
+  useEffect(() => {
+    if (!session.privateMode) {
+      return;
+    }
+    privateMeterIntervalRef.current = setInterval(() => {
+      setWallet((current) => {
+        if (current.balance < PRIVATE_SHOW_PER_MINUTE_COINS) {
+          endPrivateShow();
+          return current;
+        }
+        return spendCoins(current, PRIVATE_SHOW_PER_MINUTE_COINS);
+      });
+    }, PRIVATE_METER_INTERVAL_MS);
+    return stopPrivateMeter;
+  }, [session.privateMode, endPrivateShow, stopPrivateMeter]);
+
+  useEffect(() => stopPrivateMeter, [stopPrivateMeter]);
 
   const fanRequestPending =
     session.queueStrip.current?.owner.type === "fan" ||
@@ -91,11 +177,12 @@ export const LiveStudio = () => {
 
   const handleEnd = useCallback(() => {
     voice.stop();
+    stopPrivateMeter();
     session.end();
     setPhase("setup");
     setEndConfirmOpen(false);
     setStartedAtMs(null);
-  }, [session, voice]);
+  }, [session, voice, stopPrivateMeter]);
 
   const toggleSound = useCallback(() => {
     setSoundOn((current) => {
@@ -112,6 +199,57 @@ export const LiveStudio = () => {
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, [phase, startedAtMs]);
+
+  const handlePickTipMenuItem = useCallback(
+    (item: TipMenuAction) => {
+      setTipMenuOpen(false);
+      setWallet((current) => spendCoins(current, item.priceCents));
+      setLastTipCoins(item.priceCents);
+      handleSend(item.request, true);
+    },
+    [handleSend],
+  );
+
+  const handleQuickTip = useCallback(() => {
+    setWallet((current) => spendCoins(current, lastTipCoins));
+    handleSend(`tips ${lastTipCoins} coins`, true);
+  }, [handleSend, lastTipCoins]);
+
+  const handleBuyCoins = useCallback((pack: (typeof COIN_PACKS)[number]) => {
+    setWallet((current) => addCoins(current, pack.coins));
+  }, []);
+
+  const handleTogglePrivate = useCallback(() => {
+    if (session.privateMode) {
+      endPrivateShow();
+      return;
+    }
+    setPrivateShowOpen(true);
+  }, [session.privateMode, endPrivateShow]);
+
+  const handleStartPrivateShow = useCallback(() => {
+    if (wallet.balance < PRIVATE_SHOW_START_COINS) {
+      return;
+    }
+    setWallet((current) => spendCoins(current, PRIVATE_SHOW_START_COINS));
+    session.setPrivateMode(true);
+    setPrivateShowOpen(false);
+  }, [session, wallet.balance]);
+
+  const nowPlayingLabel = formatQueueLabel(
+    session.queueStrip.current,
+    session.queueStrip.queued.length,
+  );
+
+  const includedActions = useMemo(
+    () =>
+      DEFAULT_TIP_MENU.map((item) => ({
+        id: item.id,
+        label: item.label,
+        emoji: item.emoji,
+      })),
+    [],
+  );
 
   if (phase === "setup") {
     return (
@@ -139,31 +277,23 @@ export const LiveStudio = () => {
           className="absolute inset-0 h-full w-full object-cover transition-opacity duration-150"
         />
 
-        <div className="absolute inset-x-0 top-0 flex items-start justify-between gap-2 p-3">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-white">
-              {displayName}
-            </span>
-            <StatusPill status={session.status} />
-            <span className="text-xs text-white/70">
-              {startedAtMs !== null ? formatElapsed(startedAtMs, now) : "00:00"}
-            </span>
-          </div>
-          <button
-            type="button"
-            aria-label="End call"
-            onClick={() => setEndConfirmOpen(true)}
-            className="grid h-9 w-9 place-items-center rounded-full bg-black/40 text-white"
-          >
-            ✕
-          </button>
-        </div>
-
-        <div className="absolute inset-x-0 top-14 flex items-center justify-between gap-2 px-3">
-          <span className="rounded-full bg-black/40 px-2.5 py-1 text-[11px] font-medium text-white/80">
-            {session.viewerCount} watching
-          </span>
-          <div className="flex gap-2">
+        <div className="absolute inset-x-0 top-0 bg-gradient-to-b from-black/70 to-transparent">
+          <TopBar
+            displayName={displayName}
+            status={session.status}
+            elapsed={
+              startedAtMs !== null ? formatElapsed(startedAtMs, now) : "00:00"
+            }
+            viewerCount={session.viewerCount}
+            privateMode={session.privateMode}
+            goal={wallet.goal}
+            coinBalance={wallet.balance}
+            topFan={wallet.topFan}
+            nowPlayingLabel={nowPlayingLabel}
+            onTipClick={() => setTipMenuOpen(true)}
+            onGetCoinsClick={() => setGetCoinsOpen(true)}
+          />
+          <div className="flex items-center justify-end gap-2 px-3 pb-2">
             {debugMode ? (
               <button
                 type="button"
@@ -189,11 +319,19 @@ export const LiveStudio = () => {
             >
               {soundOn ? "🔊" : "🔇"}
             </button>
+            <button
+              type="button"
+              aria-label="End call"
+              onClick={() => setEndConfirmOpen(true)}
+              className="grid h-9 w-9 place-items-center rounded-full bg-black/40 text-white"
+            >
+              ✕
+            </button>
           </div>
         </div>
 
         {debugMode && studioMode ? (
-          <div className="absolute inset-x-3 top-24">
+          <div className="absolute inset-x-3 top-40">
             <StudioOverlay
               liveState={session.liveState}
               bufferDepth={session.bufferDepth}
@@ -207,6 +345,7 @@ export const LiveStudio = () => {
 
         {session.status === "connecting" ? (
           <LobbyOverlay
+            displayName={displayName}
             stage={session.connectStage}
             viewerCount={session.viewerCount}
           />
@@ -216,7 +355,7 @@ export const LiveStudio = () => {
           <button
             type="button"
             onClick={session.resumeAfterTap}
-            className="absolute inset-x-3 bottom-32 rounded-full bg-white py-3 text-sm font-semibold text-black"
+            className="absolute inset-x-3 bottom-40 rounded-full bg-white py-3 text-sm font-semibold text-black"
           >
             Tap for sound
           </button>
@@ -256,11 +395,7 @@ export const LiveStudio = () => {
           </p>
         ) : null}
 
-        <div className="absolute inset-x-0 bottom-0 flex flex-col gap-2 p-3 pb-[max(12px,env(safe-area-inset-bottom))]">
-          <QueueStrip
-            current={session.queueStrip.current}
-            queued={session.queueStrip.queued}
-          />
+        <div className="absolute inset-x-0 bottom-0 flex flex-col gap-2 bg-gradient-to-t from-black/80 to-transparent p-3 pb-[max(12px,env(safe-area-inset-bottom))]">
           <ChatPanel
             displayName={displayName}
             startedAtMs={session.sessionStartedAtMs ?? now}
@@ -268,32 +403,57 @@ export const LiveStudio = () => {
             roomEvents={session.roomEvents}
             typingCreator={session.typingCreator}
             typingDevice={session.typingDevice}
+            privateMode={session.privateMode}
+          />
+          <BottomBar
+            displayName={displayName}
             micArmed={voice.micArmed}
             micLabel={voice.micArmed ? "Listening" : "Turn mic on"}
             composerDisabled={composerDisabled}
             composerDisabledReason={composerDisabledReason}
+            lastTipCoins={lastTipCoins}
+            privateMode={session.privateMode}
             onSend={(text) => handleSend(text)}
             onMicDown={handleMicDown}
+            onQuickTip={handleQuickTip}
+            onOpenTipMenu={() => setTipMenuOpen(true)}
+            onTogglePrivate={handleTogglePrivate}
           />
-          <button
-            type="button"
-            disabled={composerDisabled}
-            onClick={() => setTipMenuOpen(true)}
-            className="rounded-full border border-white/30 py-3 text-sm font-semibold text-white disabled:opacity-50"
-          >
-            Tip menu
-          </button>
+          <p className="px-1 text-center text-[10px] leading-tight text-white/45">
+            This is an AI interactive show. The character, her videos and her
+            chat replies are AI-generated.
+          </p>
         </div>
       </div>
 
       <TipMenuDrawer
         open={tipMenuOpen}
-        items={DEFAULT_TIP_MENU.map((item) => ({ ...item }))}
+        items={DEFAULT_TIP_MENU}
+        balance={wallet.balance}
+        coinsToTopFan={coinsToBecomeTopFan(wallet)}
         onClose={() => setTipMenuOpen(false)}
-        onPick={(item) => {
+        onPick={handlePickTipMenuItem}
+        onGetCoins={() => {
           setTipMenuOpen(false);
-          handleSend(item.request, true);
+          setGetCoinsOpen(true);
         }}
+      />
+
+      <GetCoinsSheet
+        open={getCoinsOpen}
+        balance={wallet.balance}
+        packs={COIN_PACKS}
+        onClose={() => setGetCoinsOpen(false)}
+        onBuy={handleBuyCoins}
+      />
+
+      <PrivateShowSheet
+        open={privateShowOpen}
+        displayName={displayName}
+        balance={wallet.balance}
+        includedActions={includedActions}
+        onClose={() => setPrivateShowOpen(false)}
+        onStart={handleStartPrivateShow}
       />
 
       {endConfirmOpen ? (

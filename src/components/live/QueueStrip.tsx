@@ -1,15 +1,8 @@
-"use client";
-
 import type { ClipJobKind } from "@/lib/live/contract";
 import type {
   QueueOwner,
   QueueStripEntry,
 } from "@/lib/live/client/useLiveSession";
-
-type QueueStripProps = {
-  current: QueueStripEntry | null;
-  queued: QueueStripEntry[];
-};
 
 const ACT_LABEL: Record<ClipJobKind, string> = {
   greeting: "Saying hi",
@@ -31,33 +24,16 @@ const ownerLabel = (owner: QueueOwner): string | null => {
   return null;
 };
 
-const Chip = ({ entry, muted }: { entry: QueueStripEntry; muted: boolean }) => {
-  const owner = ownerLabel(entry.owner);
-  return (
-    <span
-      className={
-        "shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium " +
-        (muted ? "bg-black/30 text-white/60" : "bg-black/50 text-white")
-      }
-    >
-      {ACT_LABEL[entry.kind]}
-      {owner ? <span className="ml-1 text-white/70">· {owner}</span> : null}
-    </span>
-  );
-};
-
-// Shows what's playing now and what's queued behind it, so the fan sees when the creator is
-// serving someone else in the room instead of them.
-export const QueueStrip = ({ current, queued }: QueueStripProps) => {
-  if (!current && queued.length === 0) {
+// Reference UI shows one compact "Now: <act> for @handle" line under the top bar rather than a
+// chip strip; this formats it (queued entries are still available on the session for a badge count).
+export const formatQueueLabel = (
+  current: QueueStripEntry | null,
+  queuedCount: number,
+): string | null => {
+  if (!current) {
     return null;
   }
-  return (
-    <div className="flex items-center gap-1.5 overflow-x-auto px-1 pb-1">
-      {current ? <Chip entry={current} muted={false} /> : null}
-      {queued.map((entry, index) => (
-        <Chip key={`${entry.kind}-${index}`} entry={entry} muted />
-      ))}
-    </div>
-  );
+  const owner = ownerLabel(current.owner);
+  const base = `Now: ${ACT_LABEL[current.kind]}${owner ? ` for ${owner}` : ""}`;
+  return queuedCount > 0 ? `${base} · ${queuedCount} queued` : base;
 };

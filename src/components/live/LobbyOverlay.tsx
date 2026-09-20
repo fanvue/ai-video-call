@@ -1,8 +1,10 @@
 "use client";
 
 import type { ConnectStage } from "@/lib/live/client/useLiveSession";
+import { RollingNumber } from "@/components/live/RollingNumber";
 
 type LobbyOverlayProps = {
+  displayName: string;
   stage: ConnectStage;
   viewerCount: number;
 };
@@ -15,13 +17,27 @@ const STAGES: { id: ConnectStage; label: string }[] = [
 ];
 
 // Shown while status === "connecting": real pipeline milestones, not a spinner.
-export const LobbyOverlay = ({ stage, viewerCount }: LobbyOverlayProps) => {
+export const LobbyOverlay = ({
+  displayName,
+  stage,
+  viewerCount,
+}: LobbyOverlayProps) => {
   const activeIndex = STAGES.findIndex((entry) => entry.id === stage);
+  const initial = displayName.trim().charAt(0).toUpperCase() || "?";
   return (
     <div
       role="status"
       className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-black/85 px-6 text-center"
     >
+      <span className="grid h-16 w-16 place-items-center rounded-full bg-[var(--accent)] text-2xl font-bold text-[var(--accent-contrast)]">
+        {initial}
+      </span>
+      <div className="flex items-center gap-2">
+        <span className="text-sm font-semibold text-white">{displayName}</span>
+        <span className="rounded-full bg-[var(--live)] px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-white">
+          Live
+        </span>
+      </div>
       <p className="text-sm font-semibold text-white">Connecting to room…</p>
       <ul className="flex flex-col gap-1.5">
         {STAGES.map((entry, index) => (
@@ -41,8 +57,12 @@ export const LobbyOverlay = ({ stage, viewerCount }: LobbyOverlayProps) => {
           </li>
         ))}
       </ul>
-      <p className="text-xs text-white/60">
-        {viewerCount} {viewerCount === 1 ? "viewer" : "viewers"} already here
+      <p className="flex items-center gap-1 text-xs text-white/60">
+        <RollingNumber
+          value={viewerCount}
+          ariaLabel={`${viewerCount} ${viewerCount === 1 ? "viewer" : "viewers"}`}
+        />
+        <span>{viewerCount === 1 ? "viewer" : "viewers"} already here</span>
       </p>
     </div>
   );

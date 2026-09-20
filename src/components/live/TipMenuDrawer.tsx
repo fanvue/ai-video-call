@@ -1,24 +1,27 @@
 "use client";
 
-import type { TipMenuItem } from "@/lib/live/contract";
+import type { TipMenuAction } from "@/lib/live/client/defaultCreatorProfile";
 
 type TipMenuDrawerProps = {
   open: boolean;
-  items: TipMenuItem[];
+  items: TipMenuAction[];
+  balance: number;
+  coinsToTopFan: number;
   onClose: () => void;
-  onPick: (item: TipMenuItem) => void;
+  onPick: (item: TipMenuAction) => void;
+  onGetCoins: () => void;
 };
 
-const formatPrice = (priceCents: number): string =>
-  priceCents === 0 ? "Free" : `$${(priceCents / 100).toFixed(2)}`;
-
-// Sending an item only tags the fan's message as `paid: true` in the transcript for display;
-// real payment execution lives in Fanvue's payment stack, behind human approval, not here.
+// Tapping an item spends its coin price locally and sends its catalog phrase through
+// session.send(request, "chat", true); real payment execution stays outside this demo.
 export const TipMenuDrawer = ({
   open,
   items,
+  balance,
+  coinsToTopFan,
   onClose,
   onPick,
+  onGetCoins,
 }: TipMenuDrawerProps) => {
   if (!open) {
     return null;
@@ -45,17 +48,46 @@ export const TipMenuDrawer = ({
             ✕
           </button>
         </div>
+
+        <div className="flex items-center justify-between px-4 py-1.5">
+          <span className="text-sm font-medium text-[var(--foreground)]">
+            🪙 {balance} coins
+          </span>
+          <button
+            type="button"
+            onClick={onGetCoins}
+            className="rounded-full bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-[var(--accent-contrast)]"
+          >
+            + Get coins
+          </button>
+        </div>
+
+        {coinsToTopFan > 0 ? (
+          <p className="px-4 pb-1 text-xs text-[var(--muted)]">
+            👑 Tip {coinsToTopFan} more coins to become Top fan
+          </p>
+        ) : null}
+
         <ul className="flex max-h-80 flex-col overflow-y-auto px-2">
           {items.map((item) => (
             <li key={item.id}>
               <button
                 type="button"
                 onClick={() => onPick(item)}
-                className="flex w-full items-center justify-between gap-3 rounded-xl px-3 py-3 text-left text-[var(--foreground)]"
+                aria-label={`${item.label}, ${item.priceCents} coins${item.explicit ? ", 18 plus" : ""}`}
+                className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-[var(--foreground)]"
               >
-                <span className="text-sm">{item.label}</span>
+                <span className="text-xl">{item.emoji}</span>
+                <span className="flex-1 text-sm">
+                  {item.label}
+                  {item.explicit ? (
+                    <span className="ml-2 rounded bg-[var(--danger)]/20 px-1.5 py-0.5 text-[10px] font-semibold text-[var(--danger)]">
+                      18+
+                    </span>
+                  ) : null}
+                </span>
                 <span className="text-sm font-semibold text-[var(--accent)]">
-                  {formatPrice(item.priceCents)}
+                  +{item.priceCents}
                 </span>
               </button>
             </li>
