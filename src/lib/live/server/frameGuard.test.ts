@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { LiveState } from "../contract";
-import { guardFrame } from "./frameGuard";
+import { guardFrame, repairFrame } from "./frameGuard";
 
 const createGroqVisionCompletion = vi.fn();
 vi.mock("@/lib/groq", () => ({
@@ -8,8 +8,10 @@ vi.mock("@/lib/groq", () => ({
   createGroqVisionCompletion: (...args: unknown[]) =>
     createGroqVisionCompletion(...args),
 }));
+const correctFrameIdentityDrift = vi.fn();
 vi.mock("@/lib/fal/requestFrameIdentityCorrection", () => ({
-  correctFrameIdentityDrift: vi.fn(),
+  correctFrameIdentityDrift: (...args: unknown[]) =>
+    correctFrameIdentityDrift(...args),
 }));
 
 const completionWith = (content: string) => ({
@@ -44,8 +46,15 @@ const expected: LiveState = {
   surroundings: "bedroom",
 };
 
+const expectedWithProp = (prop: LiveState["body"]["prop"]): LiveState => ({
+  ...expected,
+  body: { ...expected.body, prop },
+});
+
 beforeEach(() => {
   createGroqVisionCompletion.mockReset();
+  correctFrameIdentityDrift.mockReset();
+  correctFrameIdentityDrift.mockResolvedValue("https://x/repaired.jpg");
 });
 
 describe("guardFrame", () => {
@@ -156,5 +165,86 @@ describe("guardFrame", () => {
       expected,
     });
     expect(result.checked).toBe(false);
+  });
+
+  it("flags the wrong prop when a different object is visible instead of the expected one", async () => {
+    createGroqVisionCompletion.mockResolvedValue(
+      completionWith(
+        JSON.stringify({
+          topOn: true,
+          bottomOn: true,
+          braOn: true,
+          pantiesOn: true,
+          visibleProps: ["drink"],
+          extraPeople: false,
+          extraLimbs: false,
+        }),
+      ),
+    );
+    const result = await guardFrame({
+      frameUrl: "https://x/frame.jpg",
+      expected: expectedWithProp("vibrator"),
+    });
+    expect(
+      result.issues.some(
+        (issue) =>
+          issue.includes("wrong prop visible") &&
+          issue.includes("drink") &&
+          issue.includes("vibrator"),
+      ),
+    ).toBe(true);
+  });
+
+  it("does not flag a synonym for the expected prop as wrong", async () => {
+    createGroqVisionCompletion.mockResolvedValue(
+      completionWith(
+        JSON.stringify({
+          topOn: true,
+          bottomOn: true,
+          braOn: true,
+          pantiesOn: true,
+          visibleProps: ["toy"],
+          extraPeople: false,
+          extraLimbs: false,
+        }),
+      ),
+    );
+    const result = await guardFrame({
+      frameUrl: "https://x/frame.jpg",
+      expected: expectedWithProp("vibrator"),
+    });
+    expect(result.issues).toEqual([]);
+  });
+});
+
+describe("repairFrame instructions", () => {
+  it("asks to add the missing prop back into her hand", async () => {
+    await repairFrame({
+      frameUrl: "https://x/frame.jpg",
+      anchorFrameUrl: "https://x/anchor.jpg",
+      expected: expectedWithProp("vibrator"),
+      issues: ["expected prop vibrator is not visible"],
+    });
+    const call = correctFrameIdentityDrift.mock.calls[0]?.[0] as {
+      prompt: string;
+    };
+    expect(call.prompt).toMatch(
+      /add the vibrator back into her hand, same pose, framing and background/i,
+    );
+  });
+
+  it("asks to replace the wrong prop with the expected one", async () => {
+    await repairFrame({
+      frameUrl: "https://x/frame.jpg",
+      anchorFrameUrl: "https://x/anchor.jpg",
+      expected: expectedWithProp("vibrator"),
+      issues: ["wrong prop visible: drink, expected vibrator"],
+    });
+    const call = correctFrameIdentityDrift.mock.calls[0]?.[0] as {
+      prompt: string;
+    };
+    expect(call.prompt).toMatch(
+      /replace the drink in her hand with the vibrator/i,
+    );
   });
 });

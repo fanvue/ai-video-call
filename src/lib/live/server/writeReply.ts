@@ -9,10 +9,15 @@ import {
 
 const MAX_WORLD_LEN = 420;
 
+// Anchored on the AI-refusal pattern (verb + disallowed action) so lines like "i cannot believe
+// you said that" or "i won't lie" pass through instead of being mistaken for a refusal.
 export const isRefusal = (line: string): boolean =>
-  /\b(sorry,? (i|but)|i('m| am) (not able|unable)|i can'?t (continue|do|help)|i won'?t|as an ai|not comfortable|i cannot)\b/i.test(
+  /\b(i can(not|'t)|i won'?t|i'm not able to|i am not able to|i'm unable to)\s+(help|assist|do that|comply|generate|create|provide|engage)\b/i.test(
     line,
-  );
+  ) ||
+  /\bas an ai\b/i.test(line) ||
+  /\bagainst (my|the) (guidelines|policy)\b/i.test(line) ||
+  /\bnot comfortable (with|doing) th(is|at)\b/i.test(line);
 
 const normalize = (text: string): string =>
   text
@@ -61,14 +66,20 @@ export const clampSpokenLine = (
   line: string,
   mode: SpeechMode = "text",
 ): string => {
+  // Text mode keeps emoji (they render fine in a chat bubble); only control chars, em dashes, and
+  // unsafe quotes are stripped. Native speech is read aloud, so it still needs the stricter filter.
   const cleaned = line
     .replace(/[\x00-\x1f]/g, " ")
     .replace(/[—–]/g, ",")
-    .replace(/[^\w\s.,!?'-]/g, " ")
+    .replace(/["""«»]/g, "")
     .replace(/\s+/g, " ")
     .trim();
   if (mode === "native") {
-    const firstEightWords = cleaned.split(" ").filter(Boolean).slice(0, 8);
+    const speakable = cleaned
+      .replace(/[^\w\s.,!?'-]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const firstEightWords = speakable.split(" ").filter(Boolean).slice(0, 8);
     const joined = firstEightWords.join(" ");
     // Native speech is one short sentence: cut at the first sentence end if there is one.
     const sentenceEnd = joined.match(/^[^.!?]*[.!?]/);
@@ -118,8 +129,11 @@ const parseReplyJson = (
     };
     const text = parsed.chatText?.replace(/\s+/g, " ").trim();
     if (!text) return null;
+    const clamped = clampSpokenLine(text, mode);
+    // An emoji-only (or otherwise fully-stripped) line clamps to empty; never surface an empty bubble.
+    if (!clamped) return null;
     return {
-      text: clampSpokenLine(text, mode),
+      text: clamped,
       nextWorld: (parsed.nextWorld ?? world).slice(0, MAX_WORLD_LEN),
     };
   } catch {

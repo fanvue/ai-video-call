@@ -144,11 +144,19 @@ payment stack behind human approval.
   overlay, speech) onto every job, then a job-specific action line, then an explicit end-state
   line naming the post-clip wardrobe/pose. The reply intent catalog is a priority chain of
   small pure matchers (dress, strip-all, tease, strip-one, pose, toy, touch, dance, drink, tip,
-  small-talk, fallback); the first match wins, the fallback never changes state.
+  small-talk, fallback); the first match wins, the fallback never changes state. A request is
+  split into ordered clauses (`then` / `and then` / `after that` / `next` / `,`, and a bare `and`
+  only when both halves independently match an act) and each clause is negation-checked before
+  being resolved, so "take your top off then shake your ass" chains two beats and "don't take
+  your top off" locks against undressing instead of matching the strip verb.
 - Chat-first typing lead is estimated from the fan's own request length at plan time (before the
   reply LLM has run), since render must start immediately in parallel with reply generation. The
   final `ClipResult.reply.typingLeadSec` is recomputed from the actual reply text once it lands,
-  clamped to the clip's already-committed duration.
+  clamped to the clip's already-committed duration. The typed-reply clip folds the first resolved
+  beat into itself — typing for the lead, then that beat's action for the rest of a 15s clip — so
+  a chat reply never costs two clips just to fit the typing lead in front of the act. The clip
+  stays typing-only (the beat becomes a follow-up instead) only when the first beat holds the pose
+  with nothing to fold in (small talk) or is a fetch, since fetch-then-use must stay two clips.
 - `correctFrameIdentityDrift` (in `src/lib/fal/requestFrameIdentityCorrection.ts`) now takes a
   `prompt` override so `frameGuard.repairFrame` can reuse the same nano-banana edit endpoint with
   an issue-specific instruction instead of the generic drift-correction prompt.

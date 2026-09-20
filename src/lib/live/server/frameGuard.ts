@@ -1,6 +1,6 @@
 import { correctFrameIdentityDrift } from "@/lib/fal/requestFrameIdentityCorrection";
 import { createGroqVisionCompletion } from "@/lib/groq";
-import type { FrameGuardReport, GarmentId, LiveState } from "../contract";
+import type { FrameGuardReport, GarmentId, LiveState, Prop } from "../contract";
 
 type VisionReport = {
   topOn?: boolean;
@@ -36,6 +36,17 @@ const GARMENT_SEEN: Record<GarmentId, keyof VisionReport> = {
   panties: "pantiesOn",
 };
 
+// Synonyms the vision model might use for a held prop (e.g. it says "toy" for a vibrator).
+const PROP_SYNONYM: Partial<Record<Prop, RegExp>> = {
+  vibrator: /vibrator|toy/i,
+  dildo: /dildo|toy/i,
+  drink: /drink|glass|cup|bottle/i,
+  phone: /phone|mobile/i,
+};
+
+const matchesExpectedProp = (visible: string, expected: Prop): boolean =>
+  (PROP_SYNONYM[expected] ?? new RegExp(expected, "i")).test(visible);
+
 const compareToExpected = (
   report: VisionReport,
   expected: LiveState,
@@ -58,12 +69,18 @@ const compareToExpected = (
       `unexpected object visible in hand: ${visibleProps.join(", ")}`,
     );
   }
-  if (
-    expectedProp !== "none" &&
-    expectedProp !== "fetching" &&
-    visibleProps.length === 0
-  ) {
-    issues.push(`expected prop ${expectedProp} is not visible`);
+  if (expectedProp !== "none" && expectedProp !== "fetching") {
+    if (visibleProps.length === 0) {
+      issues.push(`expected prop ${expectedProp} is not visible`);
+    } else if (
+      !visibleProps.some((visible) =>
+        matchesExpectedProp(visible, expectedProp),
+      )
+    ) {
+      issues.push(
+        `wrong prop visible: ${visibleProps.join(", ")}, expected ${expectedProp}`,
+      );
+    }
   }
   if (report.extraPeople) issues.push("extra person visible in frame");
   if (report.extraLimbs) issues.push("extra or malformed limbs visible");
@@ -120,6 +137,16 @@ const repairInstructionFor = (issue: string, expected: LiveState): string => {
   }
   if (issue.includes("unexpected object")) {
     return "remove the object in her hand, her hands should be empty";
+  }
+  const missingPropMatch = issue.match(/^expected prop (\S+) is not visible$/);
+  if (missingPropMatch?.[1]) {
+    return `add the ${missingPropMatch[1]} back into her hand, same pose, framing and background`;
+  }
+  const wrongPropMatch = issue.match(
+    /^wrong prop visible: (.+), expected (\S+)$/,
+  );
+  if (wrongPropMatch?.[1] && wrongPropMatch[2]) {
+    return `replace the ${wrongPropMatch[1]} in her hand with the ${wrongPropMatch[2]}`;
   }
   if (issue.includes("extra person")) {
     return "remove the extra person, only one woman should be in frame";

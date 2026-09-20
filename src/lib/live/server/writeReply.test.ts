@@ -55,12 +55,31 @@ describe("clampSpokenLine", () => {
     );
     expect(result).toBe("come here now.");
   });
+
+  it("preserves emoji in text mode", () => {
+    expect(clampSpokenLine("hey there 😉🔥")).toBe("hey there 😉🔥");
+  });
+
+  it("strips emoji in native mode since it can't be spoken", () => {
+    const result = clampSpokenLine("hey there 😉🔥", "native");
+    expect(result).not.toMatch(/😉|🔥/);
+  });
+
+  it("clamps an emoji-only line to empty in native mode", () => {
+    expect(clampSpokenLine("😉🔥", "native")).toBe("");
+  });
 });
 
 describe("isRefusal / isTooSimilarToPrior", () => {
   it("flags a refusal line", () => {
     expect(isRefusal("I'm sorry, I can't do that")).toBe(true);
+    expect(isRefusal("I can't help with that")).toBe(true);
     expect(isRefusal("mm okay watch this")).toBe(false);
+  });
+
+  it("does not flag a lookalike phrase as a refusal", () => {
+    expect(isRefusal("i cannot believe you said that")).toBe(false);
+    expect(isRefusal("i won't lie, that's hot")).toBe(false);
   });
 
   it("flags a line too similar to a prior one", () => {
@@ -154,6 +173,37 @@ describe("writeReply", () => {
       world: "w",
     });
     expect(result.text.length).toBeGreaterThan(0);
+  });
+
+  it("never returns an empty bubble when the reply clamps to nothing (emoji-only, native mode)", async () => {
+    createGroqChatCompletion.mockResolvedValue(
+      completionWith(JSON.stringify({ chatText: "😉🔥", nextWorld: "w" })),
+    );
+    const result = await writeReply({
+      transcript: [],
+      requestText: "wave at me",
+      physical: "she waves",
+      creator,
+      channel: "voice",
+      world: "w",
+      speechMode: "native",
+    });
+    expect(result.text.length).toBeGreaterThan(0);
+  });
+
+  it("keeps an emoji reply in text mode instead of collapsing it", async () => {
+    createGroqChatCompletion.mockResolvedValueOnce(
+      completionWith(JSON.stringify({ chatText: "hey 😉🔥", nextWorld: "w" })),
+    );
+    const result = await writeReply({
+      transcript: [],
+      requestText: "wave at me",
+      physical: "she waves",
+      creator,
+      channel: "chat",
+      world: "w",
+    });
+    expect(result.text).toBe("hey 😉🔥");
   });
 
   it("addresses a room viewer's request by their handle, not any other name", async () => {
