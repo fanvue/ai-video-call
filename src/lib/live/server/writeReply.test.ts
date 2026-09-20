@@ -41,6 +41,20 @@ describe("clampSpokenLine", () => {
     expect(result.split(" ").length).toBeLessThanOrEqual(40);
     expect(result.length).toBeLessThanOrEqual(280);
   });
+
+  it("in native mode, caps to 8 words", () => {
+    const long = "one two three four five six seven eight nine ten";
+    const result = clampSpokenLine(long, "native");
+    expect(result.split(" ").filter(Boolean).length).toBeLessThanOrEqual(8);
+  });
+
+  it("in native mode, truncates at the first sentence end", () => {
+    const result = clampSpokenLine(
+      "come here now. watch me tease you slow",
+      "native",
+    );
+    expect(result).toBe("come here now.");
+  });
 });
 
 describe("isRefusal / isTooSimilarToPrior", () => {
@@ -140,5 +154,76 @@ describe("writeReply", () => {
       world: "w",
     });
     expect(result.text.length).toBeGreaterThan(0);
+  });
+
+  it("addresses a room viewer's request by their handle, not any other name", async () => {
+    createGroqChatCompletion.mockResolvedValueOnce(
+      completionWith(
+        JSON.stringify({ chatText: "thanks @tipfan", nextWorld: "w" }),
+      ),
+    );
+    await writeReply({
+      transcript: [],
+      requestText: "wave at me",
+      physical: "she waves",
+      creator,
+      channel: "chat",
+      world: "w",
+      from: "viewer",
+      handle: "tipfan",
+    });
+    const [, userMessage] =
+      createGroqChatCompletion.mock.calls[0]?.[0].messages ?? [];
+    expect(userMessage.content).toContain("@tipfan");
+    expect(userMessage.content).toMatch(/room viewer/i);
+  });
+
+  it("passes recent room chat, including handles and tips, to the LLM", async () => {
+    createGroqChatCompletion.mockResolvedValueOnce(
+      completionWith(JSON.stringify({ chatText: "hey", nextWorld: "w" })),
+    );
+    const transcript: TranscriptEntry[] = [
+      {
+        id: "1",
+        role: "viewer",
+        handle: "bigtipper",
+        channel: "chat",
+        text: "love the show",
+        atSec: 5,
+        tipCents: 500,
+      },
+    ];
+    await writeReply({
+      transcript,
+      requestText: "hi",
+      physical: "beat",
+      creator,
+      channel: "chat",
+      world: "w",
+    });
+    const [, userMessage] =
+      createGroqChatCompletion.mock.calls[0]?.[0].messages ?? [];
+    expect(userMessage.content).toContain("@bigtipper");
+    expect(userMessage.content).toContain("$5.00");
+  });
+
+  it("adds the short, simple-sentence rule to the system prompt in native mode", async () => {
+    createGroqChatCompletion.mockResolvedValueOnce(
+      completionWith(
+        JSON.stringify({ chatText: "come here now", nextWorld: "w" }),
+      ),
+    );
+    await writeReply({
+      transcript: [],
+      requestText: "wave at me",
+      physical: "she waves",
+      creator,
+      channel: "voice",
+      world: "w",
+      speechMode: "native",
+    });
+    const [systemMessage] =
+      createGroqChatCompletion.mock.calls[0]?.[0].messages ?? [];
+    expect(systemMessage.content).toMatch(/max 8 words/i);
   });
 });

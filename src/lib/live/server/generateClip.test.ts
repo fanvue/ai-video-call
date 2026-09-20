@@ -155,7 +155,7 @@ describe("generateClip: anchored idle loop", () => {
 });
 
 describe("generateClip: chained jobs", () => {
-  it("a reply job extracts the last frame and runs the guard, and does not loop", async () => {
+  it("a reply job extracts the last frame but skips the guard, since it's mid-chain, and does not loop", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
     writeReply.mockResolvedValue({ text: "mmm okay", nextWorld: "w" });
     const req = clipRequest({
@@ -164,6 +164,7 @@ describe("generateClip: chained jobs", () => {
         requestId: "r1",
         text: "wave at me",
         channel: "voice",
+        from: "fan",
       },
     });
 
@@ -173,8 +174,40 @@ describe("generateClip: chained jobs", () => {
       "https://example.com/out.mp4",
       expect.any(Number),
     );
-    expect(guardFrame).toHaveBeenCalled();
+    expect(guardFrame).not.toHaveBeenCalled();
+    expect(repairFrame).not.toHaveBeenCalled();
+    expect(correctFrameIdentityDrift).not.toHaveBeenCalled();
     expect(result.loops).toBe(false);
+  });
+
+  it("a beat job (mid-chain) also extracts the frame but skips the guard", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    const req = clipRequest({
+      job: {
+        kind: "beat",
+        beat: {
+          id: "b1",
+          physical: "she waves",
+          durationSec: 15,
+          nextState: { wardrobe: wardrobe(), body: body() },
+        },
+      },
+    });
+
+    const result = await generateClip(req);
+
+    expect(extractLastFrameUrl).toHaveBeenCalled();
+    expect(guardFrame).not.toHaveBeenCalled();
+    expect(result.guard.checked).toBe(false);
+  });
+
+  it("a settle job (ends the chain) runs the guard", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    const req = clipRequest({ job: { kind: "settle" } });
+
+    await generateClip(req);
+
+    expect(guardFrame).toHaveBeenCalled();
   });
 
   it("skips the periodic identity correction on a clip the guard already repaired", async () => {
@@ -184,18 +217,10 @@ describe("generateClip: chained jobs", () => {
       issues: ["top should be on but frame shows it off"],
     });
     repairFrame.mockResolvedValue("https://example.com/repaired.jpg");
-    // elapsedSec 40 + an 8s clip crosses the 45s identity-anchor cadence, so correction would
-    // otherwise be due this clip.
+    // elapsedSec 40 + a 15s clip crosses the 45s identity-anchor cadence, so correction would
+    // otherwise be due this clip. settle ends the chain, so it runs the full guard.
     const req = clipRequest({
-      job: {
-        kind: "beat",
-        beat: {
-          id: "b1",
-          physical: "she waves",
-          durationSec: 10,
-          nextState: { wardrobe: wardrobe(), body: body() },
-        },
-      },
+      job: { kind: "settle" },
       session: session({ elapsedSec: 40 }),
     });
 

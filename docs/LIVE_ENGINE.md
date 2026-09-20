@@ -152,6 +152,11 @@ payment stack behind human approval.
 - `correctFrameIdentityDrift` (in `src/lib/fal/requestFrameIdentityCorrection.ts`) now takes a
   `prompt` override so `frameGuard.repairFrame` can reuse the same nano-banana edit endpoint with
   an issue-specific instruction instead of the generic drift-correction prompt.
+- Timing rule: `reply`, `beat`, `settle`, `redress`, `checkIn`, and `greeting` clips run the full
+  `ACTION_CLIP_SEC` (15s); only `idle` stays at `IDLE_CLIP_SEC`. `reply` and `beat` are mid-chain
+  (more chained clips follow), so `generateClip` skips `guardFrame`/`repairFrame`/identity
+  correction for them; only the clip that ends the chain (`settle`/`redress`/`checkIn`/`greeting`)
+  runs the full guard.
 - `vitest.config.ts` declares the `@/` alias (vitest does not read `tsconfig.json` paths on its
   own) and stubs the env vars `@/env` requires, so server modules can be unit tested without a
   real `.env`.
