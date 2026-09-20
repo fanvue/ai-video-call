@@ -154,7 +154,6 @@ export default function AiVideoCallPage() {
   const [statusKey, setStatusKey] = useState<
     "connecting" | "listening" | "hearing" | "answering"
   >("connecting");
-  const [draft, setDraft] = useState<string | null>(null);
   const [needsSoundTap, setNeedsSoundTap] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [spentUsd, setSpentUsd] = useState(0);
@@ -240,7 +239,6 @@ export default function AiVideoCallPage() {
     }
     draftTextRef.current = "";
     speechBufferRef.current = "";
-    setDraft(null);
     recognitionRef.current?.stop();
     recognitionRef.current = null;
     setMicArmed(false);
@@ -312,7 +310,6 @@ export default function AiVideoCallPage() {
       lastChannelRef.current = channel;
       draftTextRef.current = "";
       speechBufferRef.current = "";
-      setDraft(null);
       pushLine("you", channel, cleaned);
       if (channel === "voice") {
         setStatusKey("hearing");
@@ -385,19 +382,12 @@ export default function AiVideoCallPage() {
           .replace(/\s+/g, " ")
           .trim();
         draftTextRef.current = "";
-        setDraft(speechBufferRef.current);
         setStatusKey("hearing");
         scheduleUtteranceCommit();
       }
 
       if (interim) {
         draftTextRef.current = interim;
-        setDraft(
-          [speechBufferRef.current, interim]
-            .filter(Boolean)
-            .join(" ")
-            .replace(/\s+/g, " "),
-        );
         setStatusKey("hearing");
         scheduleUtteranceCommit();
       }
@@ -454,7 +444,6 @@ export default function AiVideoCallPage() {
     }
     draftTextRef.current = "";
     speechBufferRef.current = "";
-    setDraft(null);
     setMicArmed(false);
   }, []);
 
@@ -859,9 +848,12 @@ export default function AiVideoCallPage() {
           }
           activeChannel = drained.channel;
           invalidateFiller();
-          const continued = await requestClip(drained.text, {
-            inputChannel: activeChannel,
-          });
+          // Cover with filler here too — this path skipped it, freezing on the last frame for the full generation.
+          const continued = await playUntilReady(
+            requestClip(drained.text, {
+              inputChannel: activeChannel,
+            }),
+          );
           if (!continued?.videoUrl || !callActiveRef.current) {
             break;
           }
@@ -1059,7 +1051,6 @@ export default function AiVideoCallPage() {
     setPhase("setup");
     setStatusKey("connecting");
     setOutfit("clothed");
-    setDraft(null);
     setNeedsSoundTap(false);
   }, [stopRecognition, wakeLoop]);
 
@@ -1103,7 +1094,6 @@ export default function AiVideoCallPage() {
     setPhase("call");
     setError(null);
     setSpentUsd(0);
-    setDraft(null);
     setStatusKey("connecting");
     void (async () => {
       try {

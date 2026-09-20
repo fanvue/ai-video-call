@@ -348,8 +348,9 @@ const clothesLine = (from: ClothesState, to: ClothesState) => {
   }
   if (to === "bottomless") {
     return (
-      "STRIP TEASE, one piece. She hooks her thumbs in the waistband of the exact bottoms visible in the first frame — same color, same fabric, same style, no substitute garment — and pushes them down over her hips, then her thighs. " +
-      `She steps out, one foot at a time. They leave the frame. Panties stay on exactly as they already appear. Her top stays as it was. Fabric has weight. Nothing new is invented. ${HOLD_AFTER_STRIP}`
+      "STRIP TEASE, one piece. Only the bottoms come off — the top is not touched, lifted, or removed at any point in this clip. " +
+      "She hooks her thumbs in the waistband of the exact bottoms visible in the first frame — same color, same fabric, same style, no substitute garment — and pushes them down over her hips, then her thighs. " +
+      `She steps out, one foot at a time. They leave the frame. Panties stay on exactly as they already appear. Her top stays on, unchanged, exactly as it appears in the first frame. Fabric has weight. Nothing new is invented. ${HOLD_AFTER_STRIP}`
     );
   }
   if (to === "nude") {
