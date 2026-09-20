@@ -18,7 +18,9 @@ export type PipelineEvent =
   | { type: "bufferEmpty" }
   | { type: "bufferRecovered" }
   | { type: "anchorChanged"; frameUrl: string; state: LiveState; atMs: number }
-  | { type: "error"; job: ClipJob; message: string };
+  | { type: "error"; job: ClipJob; message: string }
+  // Fires once a chain job leaves the queue and starts rendering (surfaces "she's getting to @handle's request").
+  | { type: "chainJobStarted"; job: ClipJob };
 
 export type ClipPipelineOptions = {
   render: (req: ClipRequest) => Promise<ClipResult>;
@@ -186,6 +188,11 @@ export class ClipPipeline {
     return this.chainInflight !== null || this.chainTail !== null;
   }
 
+  // Nothing is currently being served (used to gate viewer-request eligibility in roomSim).
+  isChainIdle(): boolean {
+    return !this.chainActive();
+  }
+
   private tryAdvanceChain(): void {
     if (this.disposed || this.chainInflight) {
       return;
@@ -239,6 +246,9 @@ export class ClipPipeline {
       speechMode: this.speechMode,
     };
     this.chainInflight = { job };
+    if (attempt === 0) {
+      this.onEvent({ type: "chainJobStarted", job });
+    }
     this.render(request).then(
       (result) => this.handleChainSettled(job, seed, attempt, result, null),
       (error: unknown) =>

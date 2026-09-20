@@ -12,7 +12,13 @@ import {
   type ClipToPlay,
   type PlayerStatus,
 } from "@/lib/live/client/gaplessPlayer";
+import {
+  createSeededRandom,
+  RoomSim,
+  type RoomChatMessage,
+} from "@/lib/live/client/roomSim";
 import type {
+  ClipJobKind,
   ClipRequest,
   ClipResult,
   InputChannel,
@@ -66,6 +72,30 @@ export type StudioTimings = {
   costUsd: number;
 };
 
+// Real join-flow progress, driven by actual pipeline milestones (see useLiveSession.start).
+export type ConnectStage =
+  "uploading" | "capturingLook" | "renderingFirstClip" | "primingBuffer";
+
+export type QueueOwner =
+  { type: "fan" } | { type: "viewer"; handle: string } | { type: "studio" };
+
+export type QueueStripEntry = { kind: ClipJobKind; owner: QueueOwner };
+
+export type TypingDevice = "laptop" | "phone" | null;
+
+const EMPTY_QUEUE_STRIP: {
+  current: QueueStripEntry | null;
+  queued: QueueStripEntry[];
+} = { current: null, queued: [] };
+
+const ownerForReplyJob = (job: {
+  from: "fan" | "viewer";
+  handle?: string;
+}): QueueOwner =>
+  job.from === "viewer"
+    ? { type: "viewer", handle: job.handle ?? "viewer" }
+    : { type: "fan" };
+
 export function useLiveSession(deps: UseLiveSessionDeps) {
   const [status, setStatus] = useState<LiveSessionStatus>("connecting");
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
@@ -82,14 +112,32 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     null,
   );
   const [lastTimings, setLastTimings] = useState<StudioTimings | null>(null);
+  const [connectStage, setConnectStage] = useState<ConnectStage>("uploading");
+  const [roomEvents, setRoomEvents] = useState<RoomChatMessage[]>([]);
+  const [viewerCount, setViewerCount] = useState(0);
+  const [typingDevice, setTypingDevice] = useState<TypingDevice>(null);
+  const [queueStrip, setQueueStrip] = useState(EMPTY_QUEUE_STRIP);
+  // The director's own clock; transcript.atSec is relative to this, set once the director exists.
+  const [sessionStartedAtMs, setSessionStartedAtMs] = useState<number | null>(
+    null,
+  );
+  const [offline, setOffline] = useState(
+    () => typeof navigator !== "undefined" && !navigator.onLine,
+  );
 
   const directorRef = useRef<LiveDirector | null>(null);
   const pipelineRef = useRef<ClipPipeline | null>(null);
+  const roomRef = useRef<RoomSim | null>(null);
   const videoARef = useRef<HTMLVideoElement | null>(null);
   const videoBRef = useRef<HTMLVideoElement | null>(null);
   const speechModeRef = useRef<SpeechMode>("text");
   const tickIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const greetingPlayedRef = useRef(false);
+  const liveStateRef = useRef<LiveState | null>(null);
+  const currentOwnerRef = useRef<QueueOwner>({ type: "studio" });
+  const currentActRef = useRef<QueueStripEntry | null>(null);
+  const pendingTipCentsRef = useRef<number | undefined>(undefined);
+  const errorTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Maps a rendered clip's id to what it was, so the player's onClipStarted (id only) can look
   // up job kind / reply for chat-sync and the connecting -> live transition.
   const clipMetaRef = useRef<Map<string, ClipResult>>(new Map());
@@ -103,6 +151,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   const clearPendingReveal = useCallback(() => {
     pendingRevealRef.current = null;
     setTypingCreator(false);
+    setTypingDevice(null);
   }, []);
 
   const revealIfDue = useCallback((currentTimeSec: number, clipId: string) => {
@@ -116,6 +165,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     }
     pendingRevealRef.current = null;
     setTypingCreator(false);
+    setTypingDevice(null);
     const now = Date.now();
     setTranscript((prev) => [
       ...prev,
@@ -179,6 +229,69 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     });
   }, [player]);
 
+  const applyLiveState = useCallback((next: LiveState) => {
+    liveStateRef.current = next;
+    setLiveState(next);
+  }, []);
+
+  // Snapshot of "what's playing now, what's next, whose request it is" for the queue strip UI.
+  const refreshQueueStrip = useCallback(() => {
+    const director = directorRef.current;
+    if (!director) {
+      return;
+    }
+    const queued = director.getState().jobQueue.map((job): QueueStripEntry => ({
+      kind: job.kind,
+      owner:
+        job.kind === "reply" ? ownerForReplyJob(job) : currentOwnerRef.current,
+    }));
+    setQueueStrip({ current: currentActRef.current, queued });
+  }, []);
+
+  const isSystemIdle = useCallback((): boolean => {
+    const director = directorRef.current;
+    const pipeline = pipelineRef.current;
+    if (!director || !pipeline) {
+      return false;
+    }
+    return director.getState().jobQueue.length === 0 && pipeline.isChainIdle();
+  }, []);
+
+  // Ambient room life: roster drift, chatter, and (when the pipeline is truly idle) a viewer
+  // request submitted through the same job path as the fan's own. See roomSim.ts.
+  const tickRoom = useCallback(() => {
+    const room = roomRef.current;
+    const director = directorRef.current;
+    const pipeline = pipelineRef.current;
+    if (!room || !director || !pipeline) {
+      return;
+    }
+    const nowMs = Date.now();
+    const result = room.tick({
+      nowMs,
+      liveState: liveStateRef.current,
+      systemIdle: isSystemIdle(),
+      tipMenu: director.getState().creator.tipMenu,
+    });
+    setViewerCount(result.viewerCount);
+    let events = result.chatMessages;
+    if (result.viewerRequest) {
+      const { entry } = director.viewerRequest(result.viewerRequest, nowMs);
+      setTranscript((prev) => [...prev, entry]);
+      if (entry.tipCents !== undefined) {
+        events = [
+          ...events,
+          room.tipMessage(entry.handle ?? "viewer", entry.tipCents, nowMs),
+        ];
+      }
+      pipeline.onRequestEnqueued();
+      refreshQueueStrip();
+    }
+    if (events.length > 0) {
+      setRoomEvents((prev) => [...prev, ...events].slice(-120));
+    }
+  }, [isSystemIdle, refreshQueueStrip]);
+
   const maybeGoLive = useCallback(() => {
     const pipeline = pipelineRef.current;
     if (!pipeline || !greetingPlayedRef.current) {
@@ -238,6 +351,38 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       if (event.type === "error") {
         setError(event.message);
         refreshBufferDepth();
+        if (errorTimeoutRef.current) {
+          clearTimeout(errorTimeoutRef.current);
+        }
+        errorTimeoutRef.current = setTimeout(() => setError(null), 6000);
+        return;
+      }
+      if (event.type === "chainJobStarted") {
+        const job = event.job;
+        const owner: QueueOwner =
+          job.kind === "reply"
+            ? ownerForReplyJob(job)
+            : currentOwnerRef.current;
+        currentOwnerRef.current = owner;
+        currentActRef.current = { kind: job.kind, owner };
+        if (job.kind === "reply") {
+          const requestEntry = director
+            .getState()
+            .transcript.find((entry) => entry.id === job.requestId);
+          pendingTipCentsRef.current = requestEntry?.tipCents;
+          if (job.from === "viewer" && job.handle) {
+            setRoomEvents((prev) => [
+              ...prev,
+              {
+                id: `note-${job.requestId}`,
+                kind: "note",
+                text: `she's getting to @${job.handle}'s request`,
+                atMs: Date.now(),
+              },
+            ]);
+          }
+        }
+        refreshQueueStrip();
         return;
       }
 
@@ -249,10 +394,22 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         renderMs: result.timings.renderMs,
         costUsd: result.costUsd,
       });
+      if (result.jobKind === "greeting") {
+        setConnectStage("primingBuffer");
+      }
+      if (event.lane === "chained") {
+        const tipCents = pendingTipCentsRef.current;
+        pendingTipCentsRef.current = undefined;
+        const reactions =
+          roomRef.current?.reactToClip(result, Date.now(), tipCents) ?? [];
+        if (reactions.length > 0) {
+          setRoomEvents((prev) => [...prev, ...reactions].slice(-120));
+        }
+      }
       // The director owns job sequencing (followUps, settle); it must update before the pipeline
       // is polled again, and pollChain() below runs synchronously after this returns.
       director.clipCompleted(result, Date.now());
-      setLiveState(result.state);
+      applyLiveState(result.state);
       if (result.reply) {
         pendingRevealRef.current = {
           clipId: result.clipId,
@@ -261,13 +418,27 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
           typingLeadSec: result.reply.typingLeadSec,
         };
         setTypingCreator(true);
+        setTypingDevice(
+          result.state.body.prop === "phone"
+            ? "phone"
+            : result.state.body.hands === "typing"
+              ? "laptop"
+              : null,
+        );
       }
       pipelineRef.current?.pollChain();
       player.checkForClip();
       refreshBufferDepth();
+      refreshQueueStrip();
       maybeGoLive();
     },
-    [player, refreshBufferDepth, maybeGoLive],
+    [
+      player,
+      refreshBufferDepth,
+      refreshQueueStrip,
+      applyLiveState,
+      maybeGoLive,
+    ],
   );
 
   const attachVideoElements = useCallback(() => {
@@ -318,10 +489,15 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     async (file: File, sceneId: SceneId, options: StartOptions) => {
       setError(null);
       setStatus("connecting");
+      setConnectStage("uploading");
       greetingPlayedRef.current = false;
       clipMetaRef.current = new Map();
+      currentOwnerRef.current = { type: "studio" };
+      currentActRef.current = null;
+      pendingTipCentsRef.current = undefined;
       player.reset();
       const reference = await deps.uploadReference(file);
+      setConnectStage("capturingLook");
       const creator = defaultCreatorProfile(
         options.displayName,
         sceneId,
@@ -336,7 +512,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         now: Date.now(),
       });
       directorRef.current = director;
-      setLiveState(initialLiveState);
+      setSessionStartedAtMs(director.getState().startedAt);
+      applyLiveState(initialLiveState);
       setTranscript([]);
       setCostTotal(0);
       setAnchorChangedAtMs(Date.now());
@@ -344,6 +521,12 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       player.setSpeechMode(speechModeRef.current);
       setBackendState(options.backend ?? "turbo");
       setSpeechModeState(options.speechMode ?? "text");
+
+      const room = new RoomSim({ rng: createSeededRandom(Date.now()) });
+      roomRef.current = room;
+      setRoomEvents([]);
+      setViewerCount(room.getViewerCount());
+      setQueueStrip(EMPTY_QUEUE_STRIP);
 
       const pipeline = new ClipPipeline({
         render: deps.renderClip,
@@ -354,6 +537,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       });
       pipelineRef.current = pipeline;
 
+      setConnectStage("renderingFirstClip");
       pipeline.start(director.nextJob(), snapshotSource, () =>
         director.nextJob(),
       );
@@ -364,9 +548,17 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       tickIntervalRef.current = setInterval(() => {
         directorRef.current?.tick(Date.now());
         pipelineRef.current?.pollChain();
+        tickRoom();
       }, 1000);
     },
-    [deps, handlePipelineEvent, player, snapshotSource],
+    [
+      deps,
+      handlePipelineEvent,
+      player,
+      snapshotSource,
+      applyLiveState,
+      tickRoom,
+    ],
   );
 
   const send = useCallback(
@@ -384,22 +576,47 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       setTranscript((prev) => [...prev, entry]);
       pipeline.onRequestEnqueued();
       refreshBufferDepth();
+      refreshQueueStrip();
     },
-    [refreshBufferDepth],
+    [refreshBufferDepth, refreshQueueStrip],
   );
+
+  const clearError = useCallback(() => {
+    if (errorTimeoutRef.current) {
+      clearTimeout(errorTimeoutRef.current);
+      errorTimeoutRef.current = null;
+    }
+    setError(null);
+  }, []);
 
   const end = useCallback(() => {
     if (tickIntervalRef.current) {
       clearInterval(tickIntervalRef.current);
       tickIntervalRef.current = null;
     }
+    if (errorTimeoutRef.current) {
+      clearTimeout(errorTimeoutRef.current);
+      errorTimeoutRef.current = null;
+    }
     clearPendingReveal();
     player.reset();
     pipelineRef.current?.dispose();
     directorRef.current = null;
     pipelineRef.current = null;
+    roomRef.current = null;
     setStatus("ended");
   }, [clearPendingReveal, player]);
+
+  useEffect(() => {
+    const goOffline = () => setOffline(true);
+    const goOnline = () => setOffline(false);
+    window.addEventListener("offline", goOffline);
+    window.addEventListener("online", goOnline);
+    return () => {
+      window.removeEventListener("offline", goOffline);
+      window.removeEventListener("online", goOnline);
+    };
+  }, []);
 
   const resumeAfterTap = useCallback(() => {
     player.resumeAfterTap();
@@ -435,15 +652,23 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       costTotal,
       bufferDepth,
       typingCreator,
+      typingDevice,
       needsTap,
       error,
       backend,
       speechMode,
       anchorChangedAtMs,
       lastTimings,
+      connectStage,
+      roomEvents,
+      viewerCount,
+      queueStrip,
+      offline,
+      sessionStartedAtMs,
       start,
       send,
       end,
+      clearError,
       resumeAfterTap,
       setMuted,
       setBackend,
@@ -456,15 +681,23 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       costTotal,
       bufferDepth,
       typingCreator,
+      typingDevice,
       needsTap,
       error,
       backend,
       speechMode,
       anchorChangedAtMs,
       lastTimings,
+      connectStage,
+      roomEvents,
+      viewerCount,
+      queueStrip,
+      offline,
+      sessionStartedAtMs,
       start,
       send,
       end,
+      clearError,
       resumeAfterTap,
       setMuted,
       setBackend,

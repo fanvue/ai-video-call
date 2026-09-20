@@ -133,6 +133,44 @@ export class LiveDirector {
     return { entry, job };
   }
 
+  // A later fanRequest naturally jumps ahead of this while it's still queued (pre-emption rule).
+  viewerRequest(
+    payload: { handle: string; text: string; tipCents?: number },
+    now: number,
+  ): { entry: TranscriptEntry; job: ClipJob } {
+    const paid = payload.tipCents !== undefined;
+    const entry: TranscriptEntry = {
+      id: this.nextId("viewer"),
+      role: "viewer",
+      handle: payload.handle,
+      channel: "chat",
+      text: payload.text,
+      atSec: this.elapsedSec(now),
+      ...(paid ? { paid, tipCents: payload.tipCents } : {}),
+    };
+    const job: ClipJob = {
+      kind: "reply",
+      requestId: entry.id,
+      text: payload.text,
+      channel: "chat",
+      from: "viewer",
+      handle: payload.handle,
+      ...(paid ? { paid } : {}),
+    };
+    // Lower priority than the fan: always appended, never ahead of anything already queued. A
+    // fanRequest arriving afterwards still jumps ahead of it via insertReplyIndex's own rule.
+    const queue = [...this.state.jobQueue, job];
+    this.state = {
+      ...this.state,
+      transcript: [...this.state.transcript, entry],
+      jobQueue: queue,
+      lastRequestAt: now,
+      checkedInSinceLastRequest: false,
+      redressScheduledSinceLastRequest: false,
+    };
+    return { entry, job };
+  }
+
   clipCompleted(result: ClipResult, now: number): void {
     let transcript = this.state.transcript;
     if (result.reply) {
