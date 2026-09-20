@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Fanvue App Starter",
-  description: "Minimal Fanvue App example.",
+  title: "Live",
+  description: "Interactive live video.",
   icons: {
     icon: "/logo192.png",
   },
