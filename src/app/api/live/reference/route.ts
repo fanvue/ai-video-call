@@ -70,7 +70,10 @@ export async function POST(request: Request) {
 
   const parsed = bodySchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
-    return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Invalid request", issues: parsed.error.issues },
+      { status: 400 },
+    );
   }
   const { imageBase64, contentType } = parsed.data;
 

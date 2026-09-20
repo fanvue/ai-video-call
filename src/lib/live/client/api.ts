@@ -41,8 +41,13 @@ export const uploadReference = async (
   file: File,
 ): Promise<ReferenceUploadResult> => {
   const imageBase64 = await readFileAsBase64(file);
+  // The server only accepts jpeg/png; HEIC and webp are rejected upfront rather than as a 400.
+  const contentType = file.type === "image/png" ? "image/png" : "image/jpeg";
+  if (file.type && file.type !== "image/jpeg" && file.type !== "image/png") {
+    throw new Error("Please use a JPEG or PNG photo.");
+  }
   return postJson<ReferenceUploadResult>("/api/live/reference", {
     imageBase64,
-    fileName: file.name,
+    contentType,
   });
 };
