@@ -25,9 +25,8 @@ export type ClipPlan = {
   fixedReplyText: string | null;
 };
 
-// A one-off action (a strip, a pose change, a toy beat) reads fine at ~8s; the contract's 10s
-// floor (fal's own minimum) still clamps it up via clampDuration.
-const ACTION_BEAT_SEC = 8;
+// Timing rule: chained action beats run the full ACTION_CLIP_SEC; explicit no-ops stay IDLE_CLIP_SEC.
+const ACTION_BEAT_SEC = LIVE_TUNABLES.ACTION_CLIP_SEC;
 
 const clampDuration = (sec: number): number =>
   Math.min(
@@ -95,6 +94,7 @@ const PROP_LABEL: Record<Prop, string> = {
   vibrator: "a vibrator",
   dildo: "a dildo",
   drink: "a drink",
+  phone: "her phone",
 };
 
 const propLockLine = (prop: Prop): string =>
@@ -109,12 +109,20 @@ const POSE_DESCRIPTION: Record<Pose, string> = {
   kneeling: "kneeling",
   lying: "lying down",
   onAllFours: "on her hands and knees",
+  bentOver: "bent over, hands braced",
 };
 
 const FACING_LABEL: Record<Body["facing"], string> = {
   camera: "the webcam",
   away: "away from the webcam",
   side: "to the side of the webcam",
+};
+
+// Shared by every beat that turns/moves her: the transition beat's own physical line.
+const FACING_TRANSITION_LABEL: Record<Body["facing"], string> = {
+  camera: "facing the webcam",
+  away: "with her back to the webcam",
+  side: "at an angle to the webcam",
 };
 
 const HANDS_LABEL: Record<Body["hands"], string> = {
@@ -232,7 +240,7 @@ const RE_TEASE_WAIST =
 const RE_TEASE_HEM =
   /\b(tease|lift (your |the )?(top|hem|shirt)|flash (your |ur )?(top|chest|tits)|peek)\b/i;
 const RE_FACE_CAMERA =
-  /\b(face (the )?(camera|webcam|lens)|face me|look at me|come closer)\b/i;
+  /\b(face (the )?(camera|webcam|lens)|face me|look at me)\b/i;
 const RE_FACE_AWAY =
   /\b(turn around|turn your back|face away|show (me )?(your |ur )?ass|from behind|booty)\b/i;
 const RE_TOY_ANY = /\b(dildo|vibrator|vibe|wand|toy)\b/i;
@@ -240,19 +248,33 @@ const RE_TOY_DILDO = /\bdildo\b/i;
 const RE_INSERT =
   /\b(insert|inside (her|your|my)|stick it in|in (her|your|my) (pussy|cunt|ass|butt))\b/i;
 const RE_TOUCH =
-  /\b(touch (yourself|your (pussy|clit))|masturbat\w*|finger\w* yourself|play with (yourself|your (pussy|clit))|rub (your (pussy|clit)|yourself)|joi|jerk[\s-]?off)\b/i;
-const RE_DANCE = /\b(dance|sway|twerk)\b/i;
+  /\b(touch (yourself|your (pussy|clit))|masturbat\w*|finger\w* yourself|insert (your |a )?fingers?|play with (yourself|your (pussy|clit))|rub (your (pussy|clit)|yourself)|joi|jerk[\s-]?off)\b/i;
+const RE_DANCE = /\b(dance|sway)\b/i;
 const RE_DRINK = /\b(drink|sip|water|coffee|tea)\b/i;
 const RE_TIP = /\b(tip(ped)?|thank you|thanks)\b/i;
 const RE_SMALL_TALK =
   /\b(hi|hello|hey|how are you|you('re| are) (cute|hot|beautiful|gorgeous)|nice (smile|eyes)|good morning|good evening)\b/i;
+
+const RE_GESTURE =
+  /\b(wave|blow (me |us )?a kiss|wink at me|smile (for|at) (me|us|the camera))\b/i;
+const RE_TONGUE =
+  /\b(show (me |us )?(your |ur )?tongue|stick out (your |ur )?tongue|lick (your |ur )?lips)\b/i;
+const RE_BOUNCE =
+  /\b(jiggle (your |ur |her )?(tits|boobs|chest)|bounce (your |ur |her )?(tits|boobs|chest)|bounce for me)\b/i;
+const RE_DOGGY = /\b(doggy\w*|all fours|hands and knees)\b/i;
+const RE_BEND = /\bbend(ing)?\s+over\b/i;
+const RE_CRAWL = /\bcrawl(ing)?\b/i;
+const RE_SPREAD = /\bspread (your |ur )?legs\b/i;
+const RE_TWERK = /\b(shake (your |ur )?(ass|booty)|twerk(ing)?)\b/i;
+const RE_COME_CLOSER =
+  /\b(come closer|move closer|get closer|closer to (the )?camera)\b/i;
+const RE_BACK_UP = /\b(back up|move back|step back|further away|get back)\b/i;
 
 const RE_POSE: Partial<Record<Pose, RegExp>> = {
   standing: /\b(stand up|get up|on your feet)\b/i,
   sitting: /\b(sit( down)?|sit back down)\b/i,
   leaning: /\blean(ing)?\b/i,
   lying: /\b(lie down|lay down|on your back|on the bed|on the floor)\b/i,
-  onAllFours: /\b(doggy\w*|all fours|hands and knees)\b/i,
   kneeling: /\b(kneel|on your knees)\b/i,
 };
 
@@ -421,19 +443,252 @@ const poseBeats = (
       ? "away"
       : body.facing;
   const nextBody: Body = { ...body, pose: nextPose, facing: nextFacing };
-  const facingText =
-    nextFacing === "camera"
-      ? "facing the webcam"
-      : nextFacing === "away"
-        ? "with her back to the webcam"
-        : "at an angle to the webcam";
   return [
     {
       physical:
-        `She moves from her current pose into ${POSE_DESCRIPTION[nextPose]}, ${facingText}. ` +
+        `She moves from her current pose into ${POSE_DESCRIPTION[nextPose]}, ${FACING_TRANSITION_LABEL[nextFacing]}. ` +
         "The fixed webcam does not move. No clothing changes.",
       nextWardrobe: wardrobe,
       nextBody,
+      durationSec: ACTION_BEAT_SEC,
+    },
+  ];
+};
+
+// A transition beat used whenever a new intent needs a pose/facing the current state isn't in yet.
+const transitionBeat = (
+  wardrobe: Wardrobe,
+  body: Body,
+  targetPose: Pose,
+  targetFacing: Body["facing"],
+): Beat => ({
+  physical:
+    `She moves from her current pose into ${POSE_DESCRIPTION[targetPose]}, ${FACING_TRANSITION_LABEL[targetFacing]}. ` +
+    "The fixed webcam does not move. No clothing changes.",
+  nextWardrobe: wardrobe,
+  nextBody: { ...body, pose: targetPose, facing: targetFacing },
+  durationSec: ACTION_BEAT_SEC,
+});
+
+const gestureBeats = (
+  text: string,
+  wardrobe: Wardrobe,
+  body: Body,
+): Beat[] | null => {
+  if (!RE_GESTURE.test(text)) return null;
+  return [
+    {
+      physical:
+        "She gives a warm wave and smiles at the webcam, maybe a small wink or a blown kiss. " +
+        "No clothing changes, nothing new appears.",
+      nextWardrobe: wardrobe,
+      nextBody: body,
+      durationSec: LIVE_TUNABLES.IDLE_CLIP_SEC,
+    },
+  ];
+};
+
+const tongueBeats = (
+  text: string,
+  wardrobe: Wardrobe,
+  body: Body,
+): Beat[] | null => {
+  if (!RE_TONGUE.test(text)) return null;
+  return [
+    {
+      physical:
+        "She sticks her tongue out playfully or slowly licks her lips, holding her exact pose. " +
+        "No clothing changes, nothing new appears.",
+      nextWardrobe: wardrobe,
+      nextBody: body,
+      durationSec: LIVE_TUNABLES.IDLE_CLIP_SEC,
+    },
+  ];
+};
+
+const bounceBeats = (
+  text: string,
+  wardrobe: Wardrobe,
+  body: Body,
+): Beat[] | null => {
+  if (!RE_BOUNCE.test(text)) return null;
+  const physical = isOn(wardrobe, "top")
+    ? `She bounces gently, her ${describeGarment(wardrobe, "top")} moving with her. Nothing comes off, nothing else changes.`
+    : "She bounces gently, nothing else changes.";
+  return [
+    {
+      physical,
+      nextWardrobe: wardrobe,
+      nextBody: body,
+      durationSec: ACTION_BEAT_SEC,
+    },
+  ];
+};
+
+const doggyBeats = (
+  text: string,
+  wardrobe: Wardrobe,
+  body: Body,
+): Beat[] | null => {
+  if (!RE_DOGGY.test(text)) return null;
+  const beats: Beat[] = [];
+  let current = body;
+  if (current.pose !== "kneeling" && current.pose !== "onAllFours") {
+    const t = transitionBeat(wardrobe, current, "kneeling", current.facing);
+    beats.push(t);
+    current = t.nextBody;
+  }
+  beats.push({
+    physical:
+      "From kneeling, she settles onto her hands and knees, back arched, facing away from the " +
+      "webcam, then glances back over her shoulder at the lens. The fixed webcam does not move.",
+    nextWardrobe: wardrobe,
+    nextBody: { ...current, pose: "onAllFours", facing: "away" },
+    durationSec: ACTION_BEAT_SEC,
+  });
+  return beats;
+};
+
+const bendOverBeats = (
+  text: string,
+  wardrobe: Wardrobe,
+  body: Body,
+): Beat[] | null => {
+  if (!RE_BEND.test(text)) return null;
+  const wantsAway = RE_FACE_AWAY.test(text);
+  const wantsCamera = RE_FACE_CAMERA.test(text);
+  const targetFacing: Body["facing"] = wantsAway
+    ? "away"
+    : wantsCamera
+      ? "camera"
+      : body.facing === "side"
+        ? "camera"
+        : body.facing;
+  if (body.pose === "bentOver" && body.facing === targetFacing) {
+    return [
+      {
+        physical: `She holds her bent-over pose, ${FACING_TRANSITION_LABEL[targetFacing]}. No clothing changes.`,
+        nextWardrobe: wardrobe,
+        nextBody: body,
+        durationSec: ACTION_BEAT_SEC,
+      },
+    ];
+  }
+  return [transitionBeat(wardrobe, body, "bentOver", targetFacing)];
+};
+
+const crawlBeats = (
+  text: string,
+  wardrobe: Wardrobe,
+  body: Body,
+): Beat[] | null => {
+  if (!RE_CRAWL.test(text)) return null;
+  const beats: Beat[] = [];
+  let current = body;
+  if (current.pose !== "onAllFours" || current.facing !== "camera") {
+    const t = transitionBeat(wardrobe, current, "onAllFours", "camera");
+    beats.push(t);
+    current = t.nextBody;
+  }
+  const nextFraming: Body["framing"] =
+    current.framing === "wider" ? "medium" : "torso";
+  beats.push({
+    physical:
+      "On her hands and knees, she crawls toward the fixed webcam, unhurried — the camera itself " +
+      "never moves, only her body gets closer, filling more of the frame.",
+    nextWardrobe: wardrobe,
+    nextBody: { ...current, framing: nextFraming },
+    durationSec: ACTION_BEAT_SEC,
+  });
+  return beats;
+};
+
+const spreadLegsBeats = (
+  text: string,
+  wardrobe: Wardrobe,
+  body: Body,
+): Beat[] | null => {
+  if (!RE_SPREAD.test(text)) return null;
+  const targetPose: Pose =
+    body.pose === "sitting" || body.pose === "lying" ? body.pose : "sitting";
+  const beats: Beat[] = [];
+  let current = body;
+  if (current.pose !== targetPose || current.facing !== "camera") {
+    const t = transitionBeat(wardrobe, current, targetPose, "camera");
+    beats.push(t);
+    current = t.nextBody;
+  }
+  beats.push({
+    physical: `She spreads her legs open, staying ${POSE_DESCRIPTION[targetPose]}, facing the webcam. No clothing changes.`,
+    nextWardrobe: wardrobe,
+    nextBody: current,
+    durationSec: ACTION_BEAT_SEC,
+  });
+  return beats;
+};
+
+const twerkBeats = (
+  text: string,
+  wardrobe: Wardrobe,
+  body: Body,
+): Beat[] | null => {
+  if (!RE_TWERK.test(text)) return null;
+  const beats: Beat[] = [];
+  let current = body;
+  if (current.pose !== "standing" || current.facing !== "away") {
+    const t = transitionBeat(wardrobe, current, "standing", "away");
+    beats.push(t);
+    current = t.nextBody;
+  }
+  beats.push({
+    physical:
+      "Standing with her back to the webcam, she shakes and bounces her hips and ass to a beat " +
+      "only she can hear. No clothing changes.",
+    nextWardrobe: wardrobe,
+    nextBody: current,
+    durationSec: ACTION_BEAT_SEC,
+  });
+  return beats;
+};
+
+const FRAMING_STEPS: Body["framing"][] = ["wider", "medium", "torso"];
+
+const comeCloserBeats = (
+  text: string,
+  wardrobe: Wardrobe,
+  body: Body,
+): Beat[] | null => {
+  if (!RE_COME_CLOSER.test(text)) return null;
+  const idx = FRAMING_STEPS.indexOf(body.framing);
+  const nextFraming =
+    FRAMING_STEPS[Math.min(idx + 1, FRAMING_STEPS.length - 1)] ?? body.framing;
+  return [
+    {
+      physical:
+        "She moves closer to the fixed webcam, unhurried — the camera itself never moves, only her " +
+        "body gets nearer, filling more of the frame.",
+      nextWardrobe: wardrobe,
+      nextBody: { ...body, framing: nextFraming },
+      durationSec: ACTION_BEAT_SEC,
+    },
+  ];
+};
+
+const backUpBeats = (
+  text: string,
+  wardrobe: Wardrobe,
+  body: Body,
+): Beat[] | null => {
+  if (!RE_BACK_UP.test(text)) return null;
+  const idx = FRAMING_STEPS.indexOf(body.framing);
+  const nextFraming = FRAMING_STEPS[Math.max(idx - 1, 0)] ?? body.framing;
+  return [
+    {
+      physical:
+        "She eases back away from the fixed webcam, unhurried — the camera itself never moves, her " +
+        "full body settling further into frame.",
+      nextWardrobe: wardrobe,
+      nextBody: { ...body, framing: nextFraming },
       durationSec: ACTION_BEAT_SEC,
     },
   ];
@@ -446,15 +701,16 @@ const toyBeats = (
 ): Beat[] | null => {
   if (!RE_TOY_ANY.test(text)) return null;
   const toy: Prop = RE_TOY_DILDO.test(text) ? "dildo" : "vibrator";
-  // Policy: any toy use is mouth-only, never vaginal or anal, however the fan phrases the ask.
+  // Policy: no insertion, ever. A direct insertion ask redirects to mouth-only; anything else is external use.
   const useLine = RE_INSERT.test(text)
     ? "She brings it to her mouth and uses it there instead — mouth only, never lower."
-    : "She uses it on her mouth, lips wrapped around it, eyes on the lens.";
+    : "She holds it against herself and uses it externally against her skin, external contact only, eyes on the lens.";
   if (body.prop === "none") {
     return [
       {
         physical:
-          "One hand reaches off-screen to fetch an object. Nothing is visible in her hand yet.",
+          "One hand reaches off-screen to fetch an object and returns; her pose doesn't change. " +
+          "Nothing is visible in her hand yet.",
         nextWardrobe: wardrobe,
         nextBody: { ...body, prop: "fetching", hands: "free" },
         durationSec: ACTION_BEAT_SEC,
@@ -490,11 +746,15 @@ const touchBeats = (
   body: Body,
 ): Beat[] | null => {
   if (!RE_TOUCH.test(text)) return null;
+  const insertionNote = RE_INSERT.test(text)
+    ? " She keeps it external only — no insertion, however it's asked."
+    : "";
   return [
     {
       physical:
-        "One hand moves onto her own body and stays there, fingers visibly attached, touching herself. " +
-        "The other arm supports her. No second person, no toy unless one is already held.",
+        "One hand moves onto her own body and stays there, fingers visibly attached, touching herself, " +
+        `external contact only, never inserting.${insertionNote} The other arm supports her. No second ` +
+        "person, no toy unless one is already held.",
       nextWardrobe: wardrobe,
       nextBody: { ...body, hands: "onBody", contact: "self" },
       durationSec: ACTION_BEAT_SEC,
@@ -610,13 +870,48 @@ const dropUnrelatedProp = (text: string, body: Body): Body => {
   };
 };
 
+const HELD_OBJECT: Partial<Record<Prop, true>> = {
+  vibrator: true,
+  dildo: true,
+  drink: true,
+};
+
+// An unrelated request first sets down whatever hand-held object was in play, as its own beat.
+const putDownBeat = (
+  wardrobe: Wardrobe,
+  body: Body,
+  groundedBody: Body,
+): Beat[] =>
+  body.hands === "holdingProp" &&
+  groundedBody.hands !== "holdingProp" &&
+  HELD_OBJECT[body.prop]
+    ? [
+        {
+          physical: `She sets the ${body.prop} down out of frame. Her hands are empty again.`,
+          nextWardrobe: wardrobe,
+          nextBody: groundedBody,
+          durationSec: ACTION_BEAT_SEC,
+        },
+      ]
+    : [];
+
 const resolveBeats = (text: string, wardrobe: Wardrobe, body: Body): Beat[] => {
   const groundedBody = dropUnrelatedProp(text, body);
-  return (
+  const beats =
     dressBeats(text, wardrobe, groundedBody) ??
     stripAllBeats(text, wardrobe, groundedBody) ??
     teaseBeats(text, wardrobe, groundedBody) ??
     stripGarmentBeats(text, wardrobe, groundedBody) ??
+    gestureBeats(text, wardrobe, groundedBody) ??
+    tongueBeats(text, wardrobe, groundedBody) ??
+    bounceBeats(text, wardrobe, groundedBody) ??
+    doggyBeats(text, wardrobe, groundedBody) ??
+    bendOverBeats(text, wardrobe, groundedBody) ??
+    crawlBeats(text, wardrobe, groundedBody) ??
+    spreadLegsBeats(text, wardrobe, groundedBody) ??
+    twerkBeats(text, wardrobe, groundedBody) ??
+    comeCloserBeats(text, wardrobe, groundedBody) ??
+    backUpBeats(text, wardrobe, groundedBody) ??
     poseBeats(text, wardrobe, groundedBody) ??
     toyBeats(text, wardrobe, groundedBody) ??
     touchBeats(text, wardrobe, groundedBody) ??
@@ -624,13 +919,14 @@ const resolveBeats = (text: string, wardrobe: Wardrobe, body: Body): Beat[] => {
     drinkBeats(text, wardrobe, groundedBody) ??
     tipBeats(text, wardrobe, groundedBody) ??
     smallTalkBeats(text, wardrobe, groundedBody) ??
-    fallbackBeats(wardrobe, groundedBody)
-  );
+    fallbackBeats(wardrobe, groundedBody);
+  return [...putDownBeat(wardrobe, body, groundedBody), ...beats];
 };
 
 // --- Job handlers ------------------------------------------------------------
 
-const GREETING_LINE = "hey, i'm here! say hi or tell me what you want";
+const GREETING_LINE =
+  "hey everyone, so glad you're here! say hi or tell me what you want";
 
 const planGreeting = (
   session: LiveSessionSnapshot,
@@ -639,8 +935,8 @@ const planGreeting = (
   const { state, creator } = session;
   const nextBody = { ...state.baselineBody };
   const action =
-    "GREETING: she notices the fan joining, gives a small wave and warm smile, then settles into her " +
-    "baseline pose with hands moving to the keyboard.";
+    "GREETING: she looks up and notices the room, a few viewers already here, gives a warm wave and " +
+    "smile, then settles into her baseline pose at the laptop, hands moving to the keyboard.";
   const expectedState: LiveState = { ...state, body: nextBody };
   const prompt = buildPrompt({
     state,
@@ -652,7 +948,7 @@ const planGreeting = (
   });
   return {
     prompt,
-    durationSec: LIVE_TUNABLES.IDLE_CLIP_SEC,
+    durationSec: LIVE_TUNABLES.ACTION_CLIP_SEC,
     expectedState,
     followUps: [],
     replyDraft: {
@@ -732,7 +1028,7 @@ const planCheckIn = (
   });
   return {
     prompt,
-    durationSec: LIVE_TUNABLES.IDLE_CLIP_SEC,
+    durationSec: LIVE_TUNABLES.ACTION_CLIP_SEC,
     expectedState: state,
     followUps: [],
     replyDraft: { channel: job.channel, typingLeadSec: 0 },
@@ -741,8 +1037,24 @@ const planCheckIn = (
   };
 };
 
-const canTypeFrom = (body: Body): boolean =>
+// Laptop typing only from her chair with a free hand; every other pose reaches for her phone instead.
+const canLaptopType = (body: Body): boolean =>
   body.pose === "sitting" && (body.hands === "free" || body.hands === "typing");
+
+const laptopTypingLine = (typingLeadSec: number): string =>
+  `TYPING FIRST: for the first ${typingLeadSec.toFixed(1)}s she reads the chat, glances at it, and ` +
+  "types her reply on the off-screen keyboard. Mouth closed, silent.";
+
+const phoneTypingLine = (body: Body, typingLeadSec: number): string => {
+  const setDown = HELD_OBJECT[body.prop]
+    ? `she first sets the ${body.prop} she was holding down out of frame, then `
+    : "";
+  return (
+    `TYPING FIRST: for the first ${typingLeadSec.toFixed(1)}s ${setDown}she picks up her phone from ` +
+    "within reach, reads the chat on its screen, and types her reply with her thumbs, then sets the " +
+    "phone back down out of frame before the action below. Mouth closed, silent."
+  );
+};
 
 const planReply = (
   session: LiveSessionSnapshot,
@@ -757,7 +1069,7 @@ const planReply = (
     throw new Error("planReply: intent catalog resolved no beats");
   }
 
-  const canType = job.channel === "chat" && canTypeFrom(state.body);
+  const canType = job.channel === "chat";
   const typingLeadSec = canType ? typingLeadSecFor(job.text) : 0;
 
   let primaryPhysical: string;
@@ -767,9 +1079,9 @@ const planReply = (
   let followUpBeats: Beat[];
 
   if (canType) {
-    const typingLine =
-      `TYPING FIRST: for the first ${typingLeadSec.toFixed(1)}s she reads the chat, glances at it, and ` +
-      "types her reply on the off-screen keyboard. Mouth closed, silent.";
+    const typingLine = canLaptopType(state.body)
+      ? laptopTypingLine(typingLeadSec)
+      : phoneTypingLine(state.body, typingLeadSec);
     const fitsInClip =
       typingLeadSec + firstBeat.durationSec <= LIVE_TUNABLES.MAX_CLIP_SEC;
     if (fitsInClip) {
@@ -872,7 +1184,7 @@ const planSettle = (session: LiveSessionSnapshot): ClipPlan => {
   });
   return {
     prompt,
-    durationSec: LIVE_TUNABLES.IDLE_CLIP_SEC,
+    durationSec: LIVE_TUNABLES.ACTION_CLIP_SEC,
     expectedState,
     followUps: [],
     replyDraft: null,
@@ -902,10 +1214,7 @@ const planRedress = (
   });
   return {
     prompt,
-    durationSec:
-      ACTION_BEAT_SEC < LIVE_TUNABLES.MIN_CLIP_SEC
-        ? LIVE_TUNABLES.MIN_CLIP_SEC
-        : ACTION_BEAT_SEC,
+    durationSec: ACTION_BEAT_SEC,
     expectedState,
     followUps: [],
     replyDraft: null,

@@ -59,6 +59,8 @@ export const generateClip = async (
   const videoBackend = renderBackendFor(backend);
   // Idle on an end-frame backend loops on the anchor, so it skips extract/guard/repair/identity below.
   const isAnchoredLoop = job.kind === "idle" && videoBackend.supportsEndFrame;
+  // reply/beat are mid-chain; only the clip ending the chain (settle/redress/checkIn/greeting) is guarded.
+  const isIntermediateBeat = job.kind === "reply" || job.kind === "beat";
 
   const renderStarted = Date.now();
   const renderPromise = videoBackend.render({
@@ -77,6 +79,7 @@ export const generateClip = async (
             creator: session.creator,
             channel: job.channel,
             world: session.state.world,
+            speechMode,
           })
         : job.kind === "reply"
           ? writeReply({
@@ -86,6 +89,9 @@ export const generateClip = async (
               creator: session.creator,
               channel: job.channel,
               world: session.state.world,
+              from: job.from,
+              handle: job.handle,
+              speechMode,
             })
           : Promise.resolve(null);
 
@@ -122,62 +128,64 @@ export const generateClip = async (
     }
     frameMs = Date.now() - frameStarted;
 
-    const guardStarted = Date.now();
-    try {
-      guardOutcome = await withTimeout(
-        guardFrame({ frameUrl: seedFrameUrl, expected: plan.expectedState }),
-        GUARD_BUDGET_MS,
-        "guardFrame",
-      );
-    } catch (error) {
-      console.warn(
-        "generateClip: frame guard timed out, skipping check for this clip",
-        error,
-      );
-    }
-    guardMs = Date.now() - guardStarted;
-
-    const repairStarted = Date.now();
-    if (guardOutcome.checked && guardOutcome.issues.length > 0) {
+    if (!isIntermediateBeat) {
+      const guardStarted = Date.now();
       try {
-        seedFrameUrl = await withTimeout(
-          repairFrame({
-            frameUrl: seedFrameUrl,
-            anchorFrameUrl: session.anchorFrameUrl,
-            expected: plan.expectedState,
-            issues: guardOutcome.issues,
-          }),
-          REPAIR_BUDGET_MS,
-          "repairFrame",
+        guardOutcome = await withTimeout(
+          guardFrame({ frameUrl: seedFrameUrl, expected: plan.expectedState }),
+          GUARD_BUDGET_MS,
+          "guardFrame",
         );
-        repaired = true;
       } catch (error) {
         console.warn(
-          "generateClip: frame repair failed or timed out, keeping guarded-but-unrepaired frame",
+          "generateClip: frame guard timed out, skipping check for this clip",
           error,
         );
       }
-    }
-    repairMs = Date.now() - repairStarted;
+      guardMs = Date.now() - guardStarted;
 
-    // A repair already re-anchors identity against the anchor image, so the periodic identity
-    // correction pass is redundant (and off the critical path saved) whenever a repair just ran.
-    if (!repaired && dueForCorrection(session.elapsedSec, plan.durationSec)) {
-      try {
-        seedFrameUrl = await withTimeout(
-          correctFrameIdentityDrift({
-            anchorImageUrl: session.anchorFrameUrl,
-            frameUrl: seedFrameUrl,
-            timeoutMs: IDENTITY_BUDGET_MS,
-          }),
-          IDENTITY_BUDGET_MS,
-          "correctFrameIdentityDrift",
-        );
-      } catch (error) {
-        console.warn(
-          "generateClip: periodic identity anchor correction failed or timed out, keeping drifted frame",
-          error,
-        );
+      const repairStarted = Date.now();
+      if (guardOutcome.checked && guardOutcome.issues.length > 0) {
+        try {
+          seedFrameUrl = await withTimeout(
+            repairFrame({
+              frameUrl: seedFrameUrl,
+              anchorFrameUrl: session.anchorFrameUrl,
+              expected: plan.expectedState,
+              issues: guardOutcome.issues,
+            }),
+            REPAIR_BUDGET_MS,
+            "repairFrame",
+          );
+          repaired = true;
+        } catch (error) {
+          console.warn(
+            "generateClip: frame repair failed or timed out, keeping guarded-but-unrepaired frame",
+            error,
+          );
+        }
+      }
+      repairMs = Date.now() - repairStarted;
+
+      // A repair already re-anchors identity against the anchor image, so the periodic identity
+      // correction pass is redundant (and off the critical path saved) whenever a repair just ran.
+      if (!repaired && dueForCorrection(session.elapsedSec, plan.durationSec)) {
+        try {
+          seedFrameUrl = await withTimeout(
+            correctFrameIdentityDrift({
+              anchorImageUrl: session.anchorFrameUrl,
+              frameUrl: seedFrameUrl,
+              timeoutMs: IDENTITY_BUDGET_MS,
+            }),
+            IDENTITY_BUDGET_MS,
+            "correctFrameIdentityDrift",
+          );
+        } catch (error) {
+          console.warn(
+            "generateClip: periodic identity anchor correction failed or timed out, keeping drifted frame",
+            error,
+          );
+        }
       }
     }
   }

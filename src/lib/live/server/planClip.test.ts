@@ -174,7 +174,7 @@ describe("planClip: reply intent catalog", () => {
   ) =>
     planClip({
       session: s,
-      job: { kind: "reply", requestId: "r1", text, channel },
+      job: { kind: "reply", requestId: "r1", text, channel, from: "fan" },
       speechMode: "text",
     });
 
@@ -364,5 +364,263 @@ describe("planClip: beat", () => {
       speechMode: "text",
     });
     expect(plan.prompt).toMatch(/settle to a still, stable end pose/i);
+  });
+});
+
+describe("planClip: timing rule", () => {
+  const reply = (s: LiveSessionSnapshot, text: string) =>
+    planClip({
+      session: s,
+      job: {
+        kind: "reply",
+        requestId: "r1",
+        text,
+        channel: "voice",
+        from: "fan",
+      },
+      speechMode: "text",
+    });
+
+  it("greeting, settle, redress and checkIn run the full ACTION_CLIP_SEC", () => {
+    const s = session();
+    expect(
+      planClip({ session: s, job: { kind: "greeting" }, speechMode: "text" })
+        .durationSec,
+    ).toBe(LIVE_TUNABLES.ACTION_CLIP_SEC);
+    expect(
+      planClip({ session: s, job: { kind: "settle" }, speechMode: "text" })
+        .durationSec,
+    ).toBe(LIVE_TUNABLES.ACTION_CLIP_SEC);
+    expect(
+      planClip({
+        session: s,
+        job: { kind: "redress", garment: "top" },
+        speechMode: "text",
+      }).durationSec,
+    ).toBe(LIVE_TUNABLES.ACTION_CLIP_SEC);
+    expect(
+      planClip({
+        session: s,
+        job: { kind: "checkIn", channel: "chat" },
+        speechMode: "text",
+      }).durationSec,
+    ).toBe(LIVE_TUNABLES.ACTION_CLIP_SEC);
+  });
+
+  it("idle stays at IDLE_CLIP_SEC", () => {
+    const s = session();
+    const plan = planClip({
+      session: s,
+      job: { kind: "idle" },
+      speechMode: "text",
+    });
+    expect(plan.durationSec).toBe(LIVE_TUNABLES.IDLE_CLIP_SEC);
+  });
+
+  it("a real requested action clip runs the full ACTION_CLIP_SEC", () => {
+    const s = session();
+    const plan = reply(s, "take your top off");
+    expect(plan.durationSec).toBe(LIVE_TUNABLES.ACTION_CLIP_SEC);
+  });
+});
+
+describe("planClip: act catalog additions", () => {
+  const reply = (
+    s: LiveSessionSnapshot,
+    text: string,
+    channel: InputChannel = "voice",
+  ) =>
+    planClip({
+      session: s,
+      job: { kind: "reply", requestId: "r1", text, channel, from: "fan" },
+      speechMode: "text",
+    });
+
+  it("wave / blow a kiss / smile-wink cause no state change", () => {
+    const s = session();
+    for (const text of ["wave at me", "blow me a kiss", "wink at me"]) {
+      const plan = reply(s, text);
+      expect(plan.expectedState.wardrobe).toEqual(s.state.wardrobe);
+      expect(plan.expectedState.body).toEqual(s.state.body);
+    }
+  });
+
+  it("show tongue / lick lips cause no state change", () => {
+    const s = session();
+    const plan = reply(s, "lick your lips");
+    expect(plan.expectedState.body).toEqual(s.state.body);
+    expect(plan.expectedState.wardrobe).toEqual(s.state.wardrobe);
+  });
+
+  it("jiggle tits bounces in the top when it's on, no removal", () => {
+    const s = session();
+    const plan = reply(s, "jiggle your tits");
+    expect(plan.expectedState.wardrobe).toEqual(s.state.wardrobe);
+    expect(plan.prompt).not.toMatch(/settle to a still, stable end pose. She/);
+  });
+
+  it("doggy style transitions through kneeling to on all fours, facing away", () => {
+    const s = session();
+    const plan = reply(s, "get on all fours");
+    expect(plan.followUps.length + 1).toBeGreaterThanOrEqual(1);
+    const finalState =
+      plan.followUps[plan.followUps.length - 1]?.nextState ??
+      plan.expectedState;
+    expect(finalState.body.pose).toBe("onAllFours");
+    expect(finalState.body.facing).toBe("away");
+  });
+
+  it("doggy style from an already-kneeling pose skips the transition beat", () => {
+    const s = session({
+      state: state({ body: body({ pose: "kneeling" }) }),
+    });
+    const plan = reply(s, "doggy style");
+    expect(plan.followUps).toHaveLength(0);
+    expect(plan.expectedState.body.pose).toBe("onAllFours");
+    expect(plan.expectedState.body.facing).toBe("away");
+  });
+
+  it("bend over sets the bentOver pose", () => {
+    const s = session();
+    const plan = reply(s, "bend over for me");
+    const finalState =
+      plan.followUps[plan.followUps.length - 1]?.nextState ??
+      plan.expectedState;
+    expect(finalState.body.pose).toBe("bentOver");
+  });
+
+  it("crawl toward the camera moves the body closer without moving the camera", () => {
+    const s = session({
+      state: state({ body: body({ pose: "onAllFours", facing: "camera" }) }),
+    });
+    const plan = reply(s, "crawl toward me");
+    expect(plan.expectedState.body.framing).toBe("medium");
+    expect(plan.prompt).toMatch(/camera itself never moves/i);
+  });
+
+  it("spread legs keeps her sitting or lying, facing camera, no clothing change", () => {
+    const s = session();
+    const plan = reply(s, "spread your legs");
+    expect(plan.expectedState.wardrobe).toEqual(s.state.wardrobe);
+    const finalState =
+      plan.followUps[plan.followUps.length - 1]?.nextState ??
+      plan.expectedState;
+    expect(["sitting", "lying"]).toContain(finalState.body.pose);
+    expect(finalState.body.facing).toBe("camera");
+  });
+
+  it("twerk / shake ass transitions to standing, facing away", () => {
+    const s = session();
+    const plan = reply(s, "shake your ass");
+    const finalState =
+      plan.followUps[plan.followUps.length - 1]?.nextState ??
+      plan.expectedState;
+    expect(finalState.body.pose).toBe("standing");
+    expect(finalState.body.facing).toBe("away");
+  });
+
+  it("come closer and back up move framing without any wardrobe change", () => {
+    const s = session();
+    const closer = reply(s, "come closer");
+    expect(closer.expectedState.body.framing).toBe("medium");
+    const back = reply(s, "back up a bit");
+    expect(back.expectedState.body.framing).toBe(s.state.body.framing);
+  });
+
+  it("fetches a toy, uses it externally, then puts it down for an unrelated request", () => {
+    const s = session();
+    const used = reply(s, "use the vibrator on yourself");
+    expect(used.expectedState.body.prop).toBe("fetching");
+    expect(used.followUps[0]?.physical).toMatch(/externally/i);
+    const heldState = used.followUps[0]?.nextState;
+    if (!heldState) throw new Error("expected a follow-up beat");
+    const next = session({ state: { ...s.state, ...heldState } });
+    const followUp = reply(next, "wave at me");
+    expect(followUp.prompt).toMatch(/sets the vibrator down/i);
+  });
+
+  it("self-touch stays external only, even when insertion is asked", () => {
+    const s = session();
+    const plan = reply(s, "insert your fingers inside yourself");
+    expect(plan.prompt).toMatch(/external/i);
+    expect(plan.expectedState.body.contact).toBe("self");
+  });
+
+  it("avoids false positives on common lookalike phrases", () => {
+    const s = session();
+    for (const text of [
+      "stop",
+      "coffee please",
+      "down there",
+      "top of the morning",
+    ]) {
+      const plan = reply(s, text);
+      expect(plan.expectedState.wardrobe).toEqual(s.state.wardrobe);
+    }
+    // "coffee" legitimately triggers fetching a drink (intentional, not a garment/undressing match).
+    const coffee = reply(s, "coffee please");
+    expect(coffee.expectedState.body.prop).toBe("fetching");
+  });
+});
+
+describe("planClip: typing realism", () => {
+  const reply = (s: LiveSessionSnapshot, text: string) =>
+    planClip({
+      session: s,
+      job: {
+        kind: "reply",
+        requestId: "r1",
+        text,
+        channel: "chat",
+        from: "fan",
+      },
+      speechMode: "text",
+    });
+
+  it("types on the laptop keyboard when sitting with a free hand", () => {
+    const s = session();
+    const plan = reply(s, "wave at me");
+    expect(plan.prompt).toMatch(/off-screen keyboard/i);
+  });
+
+  it("reaches for her phone when not sitting", () => {
+    const s = session({ state: state({ body: body({ pose: "standing" }) }) });
+    const plan = reply(s, "wave at me");
+    expect(plan.prompt).toMatch(/picks up her phone/i);
+    expect(plan.prompt).toMatch(/thumbs/i);
+  });
+
+  it("sets a held toy down before typing on the phone, and can pick it back up", () => {
+    const s = session({
+      state: state({
+        body: body({
+          pose: "standing",
+          prop: "vibrator",
+          hands: "holdingProp",
+          contact: "self",
+        }),
+      }),
+    });
+    const plan = reply(s, "wave at me");
+    expect(plan.prompt).toMatch(/sets the vibrator she was holding down/i);
+  });
+});
+
+describe("planClip: room viewers", () => {
+  it("plans a reply job for a viewer request the same as a fan's", () => {
+    const s = session();
+    const plan = planClip({
+      session: s,
+      job: {
+        kind: "reply",
+        requestId: "r1",
+        text: "wave at me",
+        channel: "chat",
+        from: "viewer",
+        handle: "someviewer",
+      },
+      speechMode: "text",
+    });
+    expect(plan.expectedState.wardrobe).toEqual(s.state.wardrobe);
   });
 });
