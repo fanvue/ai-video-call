@@ -59,6 +59,7 @@ export const poseSchema = z.enum([
   "kneeling",
   "lying",
   "onAllFours",
+  "bentOver",
 ]);
 export type Pose = z.infer<typeof poseSchema>;
 
@@ -68,6 +69,7 @@ export const propSchema = z.enum([
   "vibrator",
   "dildo",
   "drink",
+  "phone",
 ]);
 export type Prop = z.infer<typeof propSchema>;
 
@@ -100,11 +102,15 @@ export type InputChannel = z.infer<typeof inputChannelSchema>;
 
 export const transcriptEntrySchema = z.object({
   id: z.string().min(1),
-  role: z.enum(["fan", "creator"]),
+  // "viewer" is another member of the room; the server treats their requests like a fan's.
+  role: z.enum(["fan", "viewer", "creator"]),
+  // Display handle for viewers; the fan and creator names come from the profile and session.
+  handle: z.string().max(24).optional(),
   channel: inputChannelSchema,
   text: z.string().max(2000),
   atSec: z.number().min(0),
   paid: z.boolean().optional(),
+  tipCents: z.number().int().min(0).optional(),
 });
 export type TranscriptEntry = z.infer<typeof transcriptEntrySchema>;
 
@@ -130,6 +136,9 @@ export const clipJobSchema = z.discriminatedUnion("kind", [
     text: z.string().min(1).max(2000),
     channel: inputChannelSchema,
     paid: z.boolean().optional(),
+    // Who asked: the fan on this device, or another viewer in the room.
+    from: z.enum(["fan", "viewer"]).default("fan"),
+    handle: z.string().max(24).optional(),
   }),
   z.object({ kind: z.literal("beat"), beat: plannedBeatSchema }),
   z.object({ kind: z.literal("settle") }),
@@ -229,6 +238,8 @@ export const LIVE_TUNABLES = {
   MIN_CLIP_SEC: 10,
   MAX_CLIP_SEC: 15,
   IDLE_CLIP_SEC: 10,
+  // Chained action clips must outlast the render of the next one (~13s incl. frame extraction).
+  ACTION_CLIP_SEC: 15,
   // Idle loops to keep rendered ahead, and how many idle renders may run at once.
   IDLE_BUFFER_TARGET: 2,
   IDLE_MAX_INFLIGHT: 2,
