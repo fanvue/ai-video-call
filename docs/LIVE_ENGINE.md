@@ -119,3 +119,23 @@ payment stack behind human approval.
 - Prompt builders are unit tested per intent: every catalogued request maps to a beat with the
   expected state transition and never removes an unrequested garment or adds a prop.
 - No `any`, no non-null assertions without a stated reason, no swallowed errors without a log.
+
+## Server implementation notes
+
+- `planClip.ts` is pure (no network) and holds the entire prompt library and intent catalog.
+  It composes a fixed set of locks (camera, anatomy, look, wardrobe, prop, body, physics,
+  overlay, speech) onto every job, then a job-specific action line, then an explicit end-state
+  line naming the post-clip wardrobe/pose. The reply intent catalog is a priority chain of
+  small pure matchers (dress, strip-all, tease, strip-one, pose, toy, touch, dance, drink, tip,
+  small-talk, fallback); the first match wins, the fallback never changes state.
+- Chat-first typing lead is estimated from the fan's own request length at plan time (before the
+  reply LLM has run), since render must start immediately in parallel with reply generation. The
+  final `ClipResult.reply.typingLeadSec` is recomputed from the actual reply text once it lands,
+  clamped to the clip's already-committed duration.
+- `correctFrameIdentityDrift` (in `src/lib/fal/requestFrameIdentityCorrection.ts`) now takes a
+  `prompt` override so `frameGuard.repairFrame` can reuse the same nano-banana edit endpoint with
+  an issue-specific instruction instead of the generic drift-correction prompt.
+- `vitest.config.ts` declares the `@/` alias (vitest does not read `tsconfig.json` paths on its
+  own) and stubs the env vars `@/env` requires, so server modules can be unit tested without a
+  real `.env`.
+- Env vars needed at runtime: `FAL_KEY`, `GROQ_API_KEY` (both already required by `@/env`).

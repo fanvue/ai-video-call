@@ -38,3 +38,27 @@ export const createGroqChatCompletion = async ({
       ? { reasoning_effort: reasoningEffort }
       : {}),
   });
+
+export const GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
+
+export const createGroqVisionCompletion = async ({
+  model = GROQ_VISION_MODEL,
+  imageUrl,
+  prompt,
+  responseFormat,
+}: {
+  model?: string;
+  imageUrl: string;
+  prompt: string;
+  responseFormat?: { type: "json_object" };
+}) => {
+  const content: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [
+    { type: "text", text: prompt },
+    { type: "image_url", image_url: { url: imageUrl } },
+  ];
+  return getGroqInstance().chat.completions.create({
+    model,
+    response_format: responseFormat,
+    messages: [{ role: "user", content }],
+  });
+};
