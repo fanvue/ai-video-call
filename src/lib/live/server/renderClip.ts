@@ -32,14 +32,21 @@ export type VideoBackend = {
     prompt: string;
     seedFrameUrl: string;
     durationSec: number;
+    // Anchored idle loops: render start = end on this frame. Ignored by backends that report
+    // supportsEndFrame: false.
+    endFrameUrl?: string;
   }) => Promise<VideoRenderResult>;
+  // Whether `render`'s endFrameUrl is honoured. The reference backend has no end-frame parameter.
+  supportsEndFrame: boolean;
 };
 
 export const turboBackend: VideoBackend = {
-  render: async ({ prompt, seedFrameUrl, durationSec }) => {
+  supportsEndFrame: true,
+  render: async ({ prompt, seedFrameUrl, durationSec, endFrameUrl }) => {
     const submitted = await submitH3MaxVideoGeneration({
       prompt,
       image_url: seedFrameUrl,
+      end_image_url: endFrameUrl,
       duration: durationSec,
       resolution: RENDER_RESOLUTION,
       prompt_expansion_mode: "disabled",
@@ -59,6 +66,8 @@ export const turboBackend: VideoBackend = {
 };
 
 export const referenceBackend: VideoBackend = {
+  supportsEndFrame: false,
+  // endFrameUrl is intentionally ignored: the reference-to-video model has no end-frame parameter.
   render: async ({ prompt, seedFrameUrl, durationSec }) => {
     // Single reference image only — feeding the original photo as a live second reference every
     // clip kept pulling its nudity back in; identity anchoring runs separately via frameGuard's repair.
