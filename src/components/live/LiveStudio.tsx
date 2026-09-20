@@ -171,6 +171,9 @@ export const LiveStudio = () => {
               liveState={session.liveState}
               bufferDepth={session.bufferDepth}
               costTotal={session.costTotal}
+              anchorChangedAtMs={session.anchorChangedAtMs}
+              lastTimings={session.lastTimings}
+              nowMs={now}
             />
           </div>
         ) : null}

@@ -1,5 +1,5 @@
-// 1-ahead clip chain: exactly one in-flight job, at most one ready clip buffered. See
-// docs/LIVE_ENGINE.md "Clip chain invariants" and "Request latency policy".
+// Anchored idle buffer + chained action queue (reply -> beats -> settle). See
+// docs/LIVE_ENGINE.md "Clip chain: anchors and loops" / "Request latency policy".
 
 import {
   LIVE_TUNABLES,
@@ -7,15 +7,18 @@ import {
   type ClipRequest,
   type ClipResult,
   type LiveSessionSnapshot,
+  type LiveState,
   type RenderBackend,
   type SpeechMode,
 } from "@/lib/live/contract";
 
 export type PipelineEvent =
-  | { type: "clipReady"; result: ClipResult }
-  | { type: "clipAbandoned"; job: ClipJob; costUsd: number }
-  | { type: "error"; job: ClipJob; message: string }
-  | { type: "bufferEmpty" };
+  | { type: "clipReady"; result: ClipResult; lane: "idle" | "chained" }
+  | { type: "clipDiscarded"; result: ClipResult; costUsd: number }
+  | { type: "bufferEmpty" }
+  | { type: "bufferRecovered" }
+  | { type: "anchorChanged"; frameUrl: string; state: LiveState; atMs: number }
+  | { type: "error"; job: ClipJob; message: string };
 
 export type ClipPipelineOptions = {
   render: (req: ClipRequest) => Promise<ClipResult>;
@@ -25,14 +28,15 @@ export type ClipPipelineOptions = {
   speechMode?: SpeechMode;
 };
 
-type InFlight = {
-  job: ClipJob;
-  startedAt: number;
-  attempt: number;
-  abandoned: boolean;
-};
-
 export type SnapshotSource = () => LiveSessionSnapshot;
+
+type AnchorPoint = { frameUrl: string; state: LiveState };
+
+export type BufferStats = {
+  idleReady: number;
+  idleInflight: number;
+  chainedReady: number;
+};
 
 export class ClipPipeline {
   private readonly render: ClipPipelineOptions["render"];
@@ -41,14 +45,28 @@ export class ClipPipeline {
   private backend: RenderBackend;
   private speechMode: SpeechMode;
 
-  private inFlight: InFlight | null = null;
-  private ready: ClipResult | null = null;
   private getSnapshot: SnapshotSource | null = null;
   private getNextJob: (() => ClipJob) | null = null;
   private disposed = false;
-  // False until the first clip ever lands, so the initial fill-from-empty isn't itself reported
-  // as a stall; true afterwards, so a later gap (consumer drained the buffer before N+1 arrived) is.
-  private hasDeliveredReady = false;
+
+  private anchor: AnchorPoint = {
+    frameUrl: "",
+    state: null as unknown as LiveState,
+  };
+  // Frame the currently displayed clip left the viewer on; only chained clips move it.
+  private displayAnchorFrameUrl = "";
+
+  private idleReady: ClipResult[] = [];
+  private idleInflightCount = 0;
+  // Reference backend has no end-frame control, so its "idle" clips return loops: false; once seen, idle degrades to one-in-flight.
+  private referenceMode = false;
+
+  private chainInflight: { job: ClipJob } | null = null;
+  // Seed for the next chain job once the current one resolves; null = chain caught up with anchor.
+  private chainTail: AnchorPoint | null = null;
+  private chainedReady: ClipResult[] = [];
+
+  private bufferIsEmpty = false;
 
   constructor(options: ClipPipelineOptions) {
     this.render = options.render;
@@ -66,54 +84,142 @@ export class ClipPipeline {
     this.speechMode = speechMode;
   }
 
-  isBusy(): boolean {
-    return this.inFlight !== null;
-  }
-
-  takeReady(): ClipResult | null {
-    const result = this.ready;
-    this.ready = null;
-    return result;
-  }
-
-  peekReady(): ClipResult | null {
-    return this.ready;
-  }
-
-  // Stops the chain from submitting further renders; a settle already in flight is dropped on arrival.
   dispose(): void {
     this.disposed = true;
   }
 
-  // Kicks off the chain and wires the sources it pulls from every time it submits the next job.
+  getBufferStats(): BufferStats {
+    return {
+      idleReady: this.idleReady.length,
+      idleInflight: this.idleInflightCount,
+      chainedReady: this.chainedReady.length,
+    };
+  }
+
+  getReadyDurationsSec(): number {
+    return [...this.idleReady, ...this.chainedReady].reduce(
+      (sum, clip) => sum + clip.durationSec,
+      0,
+    );
+  }
+
+  // Kicks off the chain with the initial (greeting) job and wires the sources for later steps.
   start(
-    job: ClipJob,
+    initialJob: ClipJob,
     getSnapshot: SnapshotSource,
     getNextJob: () => ClipJob,
   ): void {
     this.getSnapshot = getSnapshot;
     this.getNextJob = getNextJob;
-    this.submit(job, 0);
+    const snapshot = getSnapshot();
+    this.anchor = { frameUrl: snapshot.seedFrameUrl, state: snapshot.state };
+    this.displayAnchorFrameUrl = snapshot.seedFrameUrl;
+    this.submitChainJob(initialJob, 0);
+    this.fillIdleStockpile();
   }
 
-  // A fan request preempts a young in-flight idle: abandon it (cost still reported, result
-  // discarded) and submit the reply from the same seed. Otherwise it waits in the director queue.
-  onRequestEnqueued(replyJob: ClipJob): void {
-    if (!this.inFlight) {
-      this.submit(replyJob, 0);
+  // Try to run the just-queued job now; if the chain lane is busy it's picked up when it frees.
+  onRequestEnqueued(): void {
+    this.tryAdvanceChain();
+  }
+
+  // Call after director.tick() so timer-driven jobs (redress / checkIn) get picked up too.
+  pollChain(): void {
+    this.tryAdvanceChain();
+  }
+
+  // Playback boundary selection: eligibility is purely seed-frame match against the display anchor.
+  nextClip(): ClipResult | null {
+    const clip = this.pickNext();
+    if (!clip) {
+      if (!this.bufferIsEmpty) {
+        this.bufferIsEmpty = true;
+        this.onEvent({ type: "bufferEmpty" });
+      }
+      return null;
+    }
+    if (this.bufferIsEmpty) {
+      this.bufferIsEmpty = false;
+      this.onEvent({ type: "bufferRecovered" });
+    }
+    return clip;
+  }
+
+  private pickNext(): ClipResult | null {
+    const chained = this.chainedReady[0];
+    if (chained) {
+      this.chainedReady.shift();
+      this.displayAnchorFrameUrl = chained.seedFrameUrl;
+      this.fillIdleStockpile();
+      return chained;
+    }
+    const idleIndex = this.idleReady.findIndex(
+      (clip) => clip.seedFrameUrl === this.displayAnchorFrameUrl,
+    );
+    if (idleIndex !== -1) {
+      const [clip] = this.idleReady.splice(idleIndex, 1);
+      this.fillIdleStockpile();
+      return clip;
+    }
+    return null;
+  }
+
+  private hasPlayable(): boolean {
+    return (
+      this.chainedReady.length > 0 ||
+      this.idleReady.some(
+        (clip) => clip.seedFrameUrl === this.displayAnchorFrameUrl,
+      )
+    );
+  }
+
+  private announceIfRecovered(): void {
+    if (this.bufferIsEmpty && this.hasPlayable()) {
+      this.bufferIsEmpty = false;
+      this.onEvent({ type: "bufferRecovered" });
+    }
+  }
+
+  // ---- Chain lane ----
+
+  private chainActive(): boolean {
+    return this.chainInflight !== null || this.chainTail !== null;
+  }
+
+  private tryAdvanceChain(): void {
+    if (this.disposed || this.chainInflight) {
       return;
     }
-    const age = this.now() - this.inFlight.startedAt;
-    if (
-      this.inFlight.job.kind === "idle" &&
-      age < LIVE_TUNABLES.ABANDON_INFLIGHT_MS
-    ) {
-      this.inFlight.abandoned = true;
-      this.submit(replyJob, 0);
+    const getNextJob = this.getNextJob;
+    if (!getNextJob) {
+      return;
     }
+    const job = getNextJob();
+    if (job.kind === "idle") {
+      // Nothing left to chain: if we were mid-sequence, its last result becomes the new anchor.
+      this.promoteChainTailToAnchor();
+      return;
+    }
+    this.submitChainJob(job, 0);
   }
 
-  private submit(job: ClipJob, attempt: number): void {
+  private promoteChainTailToAnchor(): void {
+    if (!this.chainTail) {
+      return;
+    }
+    const newAnchor = this.chainTail;
+    this.chainTail = null;
+    this.anchor = newAnchor;
+    this.onEvent({
+      type: "anchorChanged",
+      frameUrl: newAnchor.frameUrl,
+      state: newAnchor.state,
+      atMs: this.now(),
+    });
+    this.fillIdleStockpile();
+  }
+
+  private submitChainJob(job: ClipJob, attempt: number): void {
     if (this.disposed) {
       return;
     }
@@ -121,80 +227,187 @@ export class ClipPipeline {
     if (!snapshot) {
       return;
     }
+    const seed = this.chainTail ?? this.anchor;
     const request: ClipRequest = {
-      session: snapshot(),
+      session: {
+        ...snapshot(),
+        seedFrameUrl: seed.frameUrl,
+        state: seed.state,
+      },
       job,
       backend: this.backend,
       speechMode: this.speechMode,
     };
-    const entry: InFlight = {
-      job,
-      startedAt: this.now(),
-      attempt,
-      abandoned: false,
-    };
-    this.inFlight = entry;
+    this.chainInflight = { job };
     this.render(request).then(
-      (result) => this.handleSettled(entry, result, null),
-      (error: unknown) => this.handleSettled(entry, null, error),
+      (result) => this.handleChainSettled(job, seed, attempt, result, null),
+      (error: unknown) =>
+        this.handleChainSettled(job, seed, attempt, null, error),
     );
   }
 
-  private handleSettled(
-    entry: InFlight,
+  private handleChainSettled(
+    job: ClipJob,
+    seed: AnchorPoint,
+    attempt: number,
     result: ClipResult | null,
     error: unknown,
   ): void {
-    // Must run before the `this.inFlight !== entry` staleness check: abandon already replaced inFlight with a newer job, so that check would wrongly drop this report.
-    if (entry.abandoned) {
-      this.onEvent({
-        type: "clipAbandoned",
-        job: entry.job,
-        costUsd: result?.costUsd ?? 0,
-      });
-      this.advance();
+    if (this.disposed) {
+      return;
+    }
+    this.chainInflight = null;
+
+    if (error || !result) {
+      if (attempt < 1) {
+        this.chainInflight = { job };
+        this.submitChainJob(job, attempt + 1);
+        return;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      this.onEvent({ type: "error", job, message });
+      // Abandon the rest of this chain (anchor stays put); drain any already-queued follow-on
+      // jobs so a later poll doesn't run them from a seed that never rendered.
+      this.drainDirectorQueue();
+      this.fillIdleStockpile();
       return;
     }
 
-    if (this.inFlight !== entry) {
+    this.chainedReady.push(result);
+    this.chainTail = { frameUrl: result.seedFrameUrl, state: result.state };
+    this.onEvent({ type: "clipReady", result, lane: "chained" });
+    this.announceIfRecovered();
+    this.tryAdvanceChain();
+  }
+
+  private drainDirectorQueue(): void {
+    const getNextJob = this.getNextJob;
+    if (!getNextJob) {
       return;
     }
-    this.inFlight = null;
+    // getNextJob() is a no-op once the queue reports idle, so this terminates.
+    while (getNextJob().kind !== "idle") {
+      // discard: queued against a chain step that failed and was abandoned
+    }
+  }
+
+  // ---- Idle lane ----
+
+  private effectiveIdleBufferTarget(): number {
+    return this.referenceMode ? 1 : LIVE_TUNABLES.IDLE_BUFFER_TARGET;
+  }
+
+  private effectiveIdleMaxInflight(): number {
+    return this.referenceMode ? 1 : LIVE_TUNABLES.IDLE_MAX_INFLIGHT;
+  }
+
+  // Stale idle clips from a superseded anchor may still be sitting in idleReady (kept playable
+  // until the display catches up), so buffer-target occupancy only counts current-anchor stock.
+  private currentAnchorIdleReadyCount(): number {
+    return this.idleReady.filter(
+      (clip) => clip.seedFrameUrl === this.anchor.frameUrl,
+    ).length;
+  }
+
+  private fillIdleStockpile(): void {
+    if (this.disposed || this.chainActive()) {
+      return;
+    }
+    const snapshot = this.getSnapshot;
+    if (!snapshot) {
+      return;
+    }
+    while (
+      this.currentAnchorIdleReadyCount() + this.idleInflightCount <
+        this.effectiveIdleBufferTarget() &&
+      this.idleInflightCount < this.effectiveIdleMaxInflight() &&
+      !this.chainActive()
+    ) {
+      this.submitIdleJob(this.anchor, 0);
+    }
+  }
+
+  private submitIdleJob(anchorAtSubmit: AnchorPoint, attempt: number): void {
+    const snapshot = this.getSnapshot;
+    if (!snapshot || this.disposed) {
+      return;
+    }
+    const request: ClipRequest = {
+      session: {
+        ...snapshot(),
+        seedFrameUrl: anchorAtSubmit.frameUrl,
+        state: anchorAtSubmit.state,
+      },
+      job: { kind: "idle" },
+      backend: this.backend,
+      speechMode: this.speechMode,
+    };
+    this.idleInflightCount += 1;
+    this.render(request).then(
+      (result) => this.handleIdleSettled(anchorAtSubmit, attempt, result, null),
+      (error: unknown) =>
+        this.handleIdleSettled(anchorAtSubmit, attempt, null, error),
+    );
+  }
+
+  private handleIdleSettled(
+    anchorAtSubmit: AnchorPoint,
+    attempt: number,
+    result: ClipResult | null,
+    error: unknown,
+  ): void {
+    this.idleInflightCount -= 1;
     if (this.disposed) {
       return;
     }
 
     if (error || !result) {
-      if (entry.attempt < 1) {
-        this.submit(entry.job, entry.attempt + 1);
+      if (attempt < 1) {
+        this.idleInflightCount += 1;
+        this.submitIdleJob(anchorAtSubmit, attempt + 1);
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
-      this.onEvent({ type: "error", job: entry.job, message });
-      this.submit({ kind: "idle" }, 0);
+      this.onEvent({ type: "error", job: { kind: "idle" }, message });
+      this.fillIdleStockpile();
       return;
     }
 
-    const wasStarved = this.hasDeliveredReady && this.ready === null;
-    this.ready = result;
-    this.hasDeliveredReady = true;
-    this.onEvent({ type: "clipReady", result });
-    if (wasStarved) {
-      this.onEvent({ type: "bufferEmpty" });
+    if (result.seedFrameUrl !== this.anchor.frameUrl) {
+      // Anchor moved on while this idle render was in flight; log the cost and drop it.
+      this.onEvent({
+        type: "clipDiscarded",
+        result,
+        costUsd: result.costUsd,
+      });
+      this.fillIdleStockpile();
+      return;
     }
-    this.advance();
+
+    if (!result.loops) {
+      this.handleNonLoopingIdleResult(result);
+      return;
+    }
+
+    this.idleReady.push(result);
+    this.onEvent({ type: "clipReady", result, lane: "idle" });
+    this.announceIfRecovered();
+    this.fillIdleStockpile();
   }
 
-  // Submits N+1 the instant N resolves. A request that arrived mid-flight was already pushed to
-  // the front of the director's queue, so pulling nextJob() here picks it up next automatically.
-  private advance(): void {
-    if (this.inFlight) {
-      return;
-    }
-    const nextJob = this.getNextJob;
-    if (!nextJob) {
-      return;
-    }
-    this.submit(nextJob(), 0);
+  // Reference backend's "idle" clip actually moves the scene; treat it as a one-off chain hop.
+  private handleNonLoopingIdleResult(result: ClipResult): void {
+    this.referenceMode = true;
+    this.anchor = { frameUrl: result.seedFrameUrl, state: result.state };
+    this.chainedReady.push(result);
+    this.onEvent({ type: "clipReady", result, lane: "chained" });
+    this.onEvent({
+      type: "anchorChanged",
+      frameUrl: result.seedFrameUrl,
+      state: result.state,
+      atMs: this.now(),
+    });
+    this.announceIfRecovered();
+    this.fillIdleStockpile();
   }
 }
