@@ -95,6 +95,15 @@ const ownerForReplyJob = (job: {
     ? { type: "viewer", handle: job.handle ?? "viewer" }
     : { type: "fan" };
 
+const THANKS_LINES = [
+  "aw thank you",
+  "you're sweet, thank you",
+  "thanks babe",
+  "love that, thank you",
+  "hehe thank you",
+] as const;
+const THANKS_EVERY_MS = 25_000;
+
 export function useLiveSession(deps: UseLiveSessionDeps) {
   const [status, setStatus] = useState<LiveSessionStatus>("connecting");
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
@@ -141,6 +150,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   const currentActRef = useRef<QueueStripEntry | null>(null);
   const pendingTipCentsRef = useRef<number | undefined>(undefined);
   const errorTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastThanksAtMsRef = useRef(0);
+  const thanksIndexRef = useRef(0);
   // Maps a rendered clip's id to what it was, so the player's onClipStarted (id only) can look
   // up job kind / reply for chat-sync and the connecting -> live transition.
   const clipMetaRef = useRef<Map<string, ClipResult>>(new Map());
@@ -261,13 +272,11 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     return director.getState().jobQueue.length === 0 && pipeline.isChainIdle();
   }, []);
 
-  // Ambient room life: roster drift, chatter, and (when the pipeline is truly idle) a viewer
-  // request submitted through the same job path as the fan's own. See roomSim.ts.
+  // Ambient room life: roster drift and compliments only. See roomSim.ts.
   const tickRoom = useCallback(() => {
     const room = roomRef.current;
     const director = directorRef.current;
-    const pipeline = pipelineRef.current;
-    if (!room || !director || !pipeline || privateModeRef.current) {
+    if (!room || !director || privateModeRef.current) {
       return;
     }
     const nowMs = Date.now();
@@ -278,23 +287,37 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       tipMenu: director.getState().creator.tipMenu,
     });
     setViewerCount(result.viewerCount);
-    let events = result.chatMessages;
-    if (result.viewerRequest) {
-      const { entry } = director.viewerRequest(result.viewerRequest, nowMs);
-      setTranscript((prev) => [...prev, entry]);
-      if (entry.tipCents !== undefined) {
-        events = [
-          ...events,
-          room.tipMessage(entry.handle ?? "viewer", entry.tipCents, nowMs),
-        ];
-      }
-      pipeline.onRequestEnqueued();
-      refreshQueueStrip();
-    }
+    const events = result.chatMessages;
     if (events.length > 0) {
       setRoomEvents((prev) => [...prev, ...events].slice(-120));
     }
-  }, [isSystemIdle, refreshQueueStrip]);
+    // Viewers only compliment; she thanks them in chat now and then. Only the fan changes her state.
+    const compliment = events.find(
+      (event) => event.kind === "chatter" && event.handle,
+    );
+    if (
+      compliment?.handle &&
+      nowMs - lastThanksAtMsRef.current > THANKS_EVERY_MS &&
+      isSystemIdle()
+    ) {
+      lastThanksAtMsRef.current = nowMs;
+      const line = THANKS_LINES[thanksIndexRef.current % THANKS_LINES.length];
+      thanksIndexRef.current += 1;
+      setTranscript((prev) => [
+        ...prev,
+        {
+          id: `thanks-${nowMs}`,
+          role: "creator",
+          channel: "chat",
+          text: `${line} @${compliment.handle}`,
+          atSec: Math.max(
+            0,
+            Math.floor((nowMs - director.getState().startedAt) / 1000),
+          ),
+        },
+      ]);
+    }
+  }, [isSystemIdle]);
 
   // Live once the first clip is on screen; the pipeline count reads zero once the player preloads.
   const maybeGoLive = useCallback(() => {

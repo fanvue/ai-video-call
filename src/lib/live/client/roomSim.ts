@@ -109,6 +109,8 @@ export type RoomSimOptions = {
   rosterDriftIntervalMsRange?: [number, number];
   // How often (ms) an eligible viewer request may fire. Spec: roughly 60-120s, tunable for tests.
   viewerRequestIntervalMsRange?: [number, number];
+  // Off by default: viewers only compliment, and only the fan on this device can change her state.
+  allowViewerRequests?: boolean;
 };
 
 const pick = <T>(rng: RandomSource, items: readonly T[]): T => {
@@ -171,6 +173,7 @@ export class RoomSim {
   private readonly burstWindowMs: number;
   private readonly rosterDriftIntervalMsRange: [number, number];
   private readonly viewerRequestIntervalMsRange: [number, number];
+  private readonly allowViewerRequests: boolean;
 
   private viewers: string[] = [];
   private pool: string[];
@@ -195,6 +198,7 @@ export class RoomSim {
     ];
     this.viewerRequestIntervalMsRange =
       options.viewerRequestIntervalMsRange ?? [60_000, 120_000];
+    this.allowViewerRequests = options.allowViewerRequests ?? false;
     this.pool = [...HANDLE_POOL];
     const initial = Math.max(
       MIN_ROSTER,
@@ -370,6 +374,9 @@ export class RoomSim {
   }
 
   private tickViewerRequest(ctx: RoomSimTickContext): ViewerRequest | null {
+    if (!this.allowViewerRequests) {
+      return null;
+    }
     if (!ctx.systemIdle) {
       // Not eligible; push the window forward so a long busy stretch doesn't fire immediately
       // the instant the system frees up.

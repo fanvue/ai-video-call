@@ -83,6 +83,7 @@ describe("RoomSim viewer requests", () => {
     const sim = new RoomSim({
       rng: createSeededRandom(1),
       viewerRequestIntervalMsRange: [5_000, 5_000],
+      allowViewerRequests: true,
     });
     let firstRequestAtMs: number | null = null;
     for (let t = 0; t <= 6_000; t += 1000) {
@@ -99,6 +100,7 @@ describe("RoomSim viewer requests", () => {
     const sim = new RoomSim({
       rng: createSeededRandom(2),
       viewerRequestIntervalMsRange: [1_000, 1_000],
+      allowViewerRequests: true,
     });
     for (let t = 0; t <= 20_000; t += 1000) {
       const result = sim.tick(ctx({ nowMs: t, systemIdle: false }));
@@ -110,6 +112,7 @@ describe("RoomSim viewer requests", () => {
     const sim = new RoomSim({
       rng: createSeededRandom(3),
       viewerRequestIntervalMsRange: [1_000, 1_000],
+      allowViewerRequests: true,
     });
     const seen = { tipped: false, untipped: false };
     for (let t = 0; t <= 40_000; t += 1000) {
