@@ -87,6 +87,7 @@ describe("LiveDirector", () => {
       requestId: entry.id,
       text: "hey",
       channel: "chat",
+      from: "fan",
     });
     expect(director.getState().jobQueue[0]).toEqual(job);
   });

@@ -116,6 +116,7 @@ export class LiveDirector {
       requestId: entry.id,
       text: payload.text,
       channel: payload.channel,
+      from: "fan",
       ...(payload.paid !== undefined ? { paid: payload.paid } : {}),
     };
     const queue = [...this.state.jobQueue];

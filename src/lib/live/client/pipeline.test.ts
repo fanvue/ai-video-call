@@ -129,6 +129,7 @@ const REPLY_JOB: ClipJob = {
   requestId: "r1",
   text: "hi",
   channel: "chat",
+  from: "fan",
 };
 
 describe("ClipPipeline", () => {
