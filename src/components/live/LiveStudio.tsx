@@ -112,13 +112,13 @@ export const LiveStudio = () => {
           ref={bindVideoA}
           playsInline
           disablePictureInPicture
-          className="absolute inset-0 h-full w-full object-cover"
+          className="absolute inset-0 h-full w-full object-cover transition-opacity duration-150"
         />
         <video
           ref={bindVideoB}
           playsInline
           disablePictureInPicture
-          className="absolute inset-0 h-full w-full object-cover opacity-0"
+          className="absolute inset-0 h-full w-full object-cover transition-opacity duration-150"
         />
 
         <div className="absolute inset-x-0 top-0 flex items-start justify-between gap-2 p-3">

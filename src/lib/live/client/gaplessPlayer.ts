@@ -87,6 +87,7 @@ export class GaplessPlayer {
   attach(a: HTMLVideoElement, b: HTMLVideoElement): void {
     this.a = a;
     this.b = b;
+    this.showSlot(this.activeSlot);
     a.addEventListener("timeupdate", this.onTimeUpdate);
     b.addEventListener("timeupdate", this.onTimeUpdate);
     this.startRafLoop();
@@ -105,6 +106,16 @@ export class GaplessPlayer {
 
   private getInactive(): HTMLVideoElement | null {
     return this.activeSlot === "a" ? this.b : this.a;
+  }
+
+  // The player owns slot visibility: React never re-renders on a swap, so it is done on the DOM.
+  private showSlot(slot: "a" | "b"): void {
+    if (this.a) {
+      this.a.style.opacity = slot === "a" ? "1" : "0";
+    }
+    if (this.b) {
+      this.b.style.opacity = slot === "b" ? "1" : "0";
+    }
   }
 
   private setStatus(status: PlayerStatus): void {
@@ -187,6 +198,7 @@ export class GaplessPlayer {
     this.currentDurationSec = clip.durationSec;
     this.currentTimeSec = 0;
     this.applyAudioPolicy(el, clip);
+    this.showSlot(this.activeSlot);
     try {
       await el.play();
       this.setStatus("playing");
@@ -264,6 +276,7 @@ export class GaplessPlayer {
     this.applyAudioPolicy(incoming, clip);
     void incoming.play().catch(() => this.setStatus("needsTap"));
     this.activeSlot = this.activeSlot === "a" ? "b" : "a";
+    this.showSlot(this.activeSlot);
     this.preloadedSlot = null;
     this.preloadedClip = null;
     this.setStatus("playing");
@@ -364,6 +377,7 @@ export class GaplessPlayer {
     this.currentDurationSec = 0;
     this.currentTimeSec = 0;
     this.activeSlot = "a";
+    this.showSlot("a");
     this.userMuted = false;
   }
 

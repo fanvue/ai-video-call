@@ -9,6 +9,7 @@ type Listener = (event: { currentTarget: FakeVideo }) => void;
 // Minimal stand-in for HTMLVideoElement: enough surface for the player's load/play/swap path.
 class FakeVideo {
   src = "";
+  style: { opacity: string } = { opacity: "" };
   muted = false;
   volume = 1;
   readyState = 2;
@@ -101,12 +102,17 @@ describe("GaplessPlayer", () => {
     player.start();
     await flush();
     expect(a.src).toBe(clip("c1").videoUrl);
+    expect(a.style.opacity).toBe("1");
+    expect(b.style.opacity).toBe("0");
     expect(b.src).toBe(clip("c2").videoUrl);
 
     // c1 reaches its swap point: c2 starts in b, c3 is preloaded into a.
     a.fireTimeUpdate(9.95);
     await flush();
     expect(b.paused).toBe(false);
+    // The swapped-in slot must become the visible one or the viewer sees black.
+    expect(b.style.opacity).toBe("1");
+    expect(a.style.opacity).toBe("0");
     expect(a.src).toBe(clip("c3").videoUrl);
 
     // The deferred outgoing-slot cleanup must not clobber that preload.
