@@ -424,19 +424,11 @@ export class ClipPipeline {
     this.fillIdleStockpile();
   }
 
-  // Reference backend's "idle" clip actually moves the scene; treat it as a one-off chain hop.
+  // Reference backend can't anchor-loop idle, so its "idle" render drifts the frame/state. Filler
+  // must never progress the scene, so drop it rather than promoting it to a chain hop.
   private handleNonLoopingIdleResult(result: ClipResult): void {
     this.referenceMode = true;
-    this.anchor = { frameUrl: result.seedFrameUrl, state: result.state };
-    this.chainedReady.push(result);
-    this.onEvent({ type: "clipReady", result, lane: "chained" });
-    this.onEvent({
-      type: "anchorChanged",
-      frameUrl: result.seedFrameUrl,
-      state: result.state,
-      atMs: this.now(),
-    });
-    this.announceIfRecovered();
+    this.onEvent({ type: "clipDiscarded", result, costUsd: result.costUsd });
     this.fillIdleStockpile();
   }
 }

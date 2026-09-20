@@ -391,7 +391,9 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       // The director owns job sequencing (followUps, settle); it must update before the pipeline
       // is polled again, and pollChain() below runs synchronously after this returns.
       director.clipCompleted(result, Date.now());
-      applyLiveState(result.state);
+      // Read back from the director rather than result.state: idle/filler clips don't commit
+      // their state there, and the UI must not show canon it never actually accepted either.
+      applyLiveState(director.getState().liveState);
       if (result.reply) {
         pendingRevealRef.current = {
           clipId: result.clipId,

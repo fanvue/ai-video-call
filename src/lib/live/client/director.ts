@@ -172,6 +172,12 @@ export class LiveDirector {
   }
 
   clipCompleted(result: ClipResult, now: number): void {
+    // Idle/filler clips only cover a visual gap; they must never become canon, or clothing and
+    // pose drift every time a filler renders instead of only on real interactive turns.
+    if (result.jobKind === "idle") {
+      return;
+    }
+
     let transcript = this.state.transcript;
     if (result.reply) {
       transcript = [
