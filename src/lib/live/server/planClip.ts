@@ -213,6 +213,9 @@ const GARMENT_PATTERN: Record<GarmentId, RegExp> = {
   panties: /\b(panties|thong|underwear|knickers)\b/i,
 };
 
+// A dress or one-piece is captured as the top garment; "dressed"/"dress up" are redress verbs, not this.
+const RE_ONE_PIECE =
+  /\b(dress|one[- ]piece|romper|jumpsuit|lingerie|outfit)\b/i;
 const RE_OFF_VERB = /\b(off|remove|take off|slide off|pull down|down|strip)\b/i;
 const RE_DRESS =
   /\b(put (your |the )?(top|shirt|bra|bottoms?|panties|clothes) (back )?on|get dressed|cover (yourself )?up|dress (yourself )?up?)\b/i;
@@ -368,7 +371,9 @@ const stripGarmentBeats = (
   body: Body,
 ): Beat[] | null => {
   if (!RE_OFF_VERB.test(text)) return null;
-  const target = GARMENT_ORDER.find((id) => GARMENT_PATTERN[id].test(text));
+  const target =
+    GARMENT_ORDER.find((id) => GARMENT_PATTERN[id].test(text)) ??
+    (RE_ONE_PIECE.test(text) ? "top" : undefined);
   if (!target) return null;
   if (!isOn(wardrobe, target)) {
     return [
@@ -654,10 +659,7 @@ const planGreeting = (
   };
 };
 
-const planIdle = (
-  session: LiveSessionSnapshot,
-  speechMode: SpeechMode,
-): ClipPlan => {
+const planIdle = (session: LiveSessionSnapshot): ClipPlan => {
   const { state, creator } = session;
   // Idle never advances an act, even mid-act: a self-touch pauses; a held prop stays put.
   const nextBody: Body =
@@ -686,7 +688,7 @@ const planIdle = (
   const expectedState: LiveState = { ...state, body: nextBody };
   const prompt = buildPrompt({
     state,
-    speechMode,
+    speechMode: "text", // no dialogue in this job; native speech would invent mouthing
     creator,
     action,
     nextWardrobe: state.wardrobe,
@@ -814,7 +816,6 @@ const planReply = (
 const planBeat = (
   session: LiveSessionSnapshot,
   job: Extract<ClipJob, { kind: "beat" }>,
-  speechMode: SpeechMode,
 ): ClipPlan => {
   const { state, creator } = session;
   const nextWardrobe = job.beat.nextState.wardrobe;
@@ -826,7 +827,7 @@ const planBeat = (
   };
   const prompt = buildPrompt({
     state,
-    speechMode,
+    speechMode: "text", // no dialogue in this job; native speech would invent mouthing
     creator,
     action: job.beat.physical,
     nextWardrobe,
@@ -843,10 +844,7 @@ const planBeat = (
   };
 };
 
-const planSettle = (
-  session: LiveSessionSnapshot,
-  speechMode: SpeechMode,
-): ClipPlan => {
+const planSettle = (session: LiveSessionSnapshot): ClipPlan => {
   const { state, creator } = session;
   const nextBody = { ...state.baselineBody };
   const bigDelta = state.body.pose === "lying" || nextBody.pose === "lying";
@@ -858,7 +856,7 @@ const planSettle = (
   const expectedState: LiveState = { ...state, body: nextBody };
   const prompt = buildPrompt({
     state,
-    speechMode,
+    speechMode: "text", // no dialogue in this job; native speech would invent mouthing
     creator,
     action,
     nextWardrobe: state.wardrobe,
@@ -878,7 +876,6 @@ const planSettle = (
 const planRedress = (
   session: LiveSessionSnapshot,
   job: Extract<ClipJob, { kind: "redress" }>,
-  speechMode: SpeechMode,
 ): ClipPlan => {
   const { state, creator } = session;
   const desc = describeGarment(state.wardrobe, job.garment);
@@ -889,7 +886,7 @@ const planRedress = (
   const expectedState: LiveState = { ...state, wardrobe: nextWardrobe };
   const prompt = buildPrompt({
     state,
-    speechMode,
+    speechMode: "text", // no dialogue in this job; native speech would invent mouthing
     creator,
     action,
     nextWardrobe,
@@ -922,16 +919,16 @@ export const planClip = ({
     case "greeting":
       return planGreeting(session, speechMode);
     case "idle":
-      return planIdle(session, speechMode);
+      return planIdle(session);
     case "checkIn":
       return planCheckIn(session, job, speechMode);
     case "reply":
       return planReply(session, job, speechMode);
     case "beat":
-      return planBeat(session, job, speechMode);
+      return planBeat(session, job);
     case "settle":
-      return planSettle(session, speechMode);
+      return planSettle(session);
     case "redress":
-      return planRedress(session, job, speechMode);
+      return planRedress(session, job);
   }
 };

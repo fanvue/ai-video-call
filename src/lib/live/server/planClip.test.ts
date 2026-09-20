@@ -165,6 +165,31 @@ describe("planClip: reply intent catalog", () => {
     expect(plan.expectedState.wardrobe.panties.on).toBe(true);
   });
 
+  it("treats a dress as the top garment so 'take off your dress' undresses her", () => {
+    const s = session({
+      state: state({
+        wardrobe: wardrobe({
+          top: { on: true, description: "red slip dress" },
+        }),
+      }),
+    });
+    const plan = reply(s, "take off your dress");
+    expect(plan.expectedState.wardrobe.top.on).toBe(false);
+    expect(plan.prompt).toContain("red slip dress");
+  });
+
+  it("never asks for native speech on jobs that carry no dialogue", () => {
+    const s = session();
+    for (const job of [
+      { kind: "idle" as const },
+      { kind: "settle" as const },
+      { kind: "redress" as const, garment: "top" as const },
+    ]) {
+      const plan = planClip({ session: s, job, speechMode: "native" });
+      expect(plan.prompt).toContain("she does not speak");
+    }
+  });
+
   it("asking to remove an already-off garment is a no-op", () => {
     const s = session({
       state: state({
