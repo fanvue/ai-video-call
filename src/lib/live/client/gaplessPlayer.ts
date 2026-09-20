@@ -1,5 +1,4 @@
-// Two-<video> gapless controller. Swaps on `timeupdate` near the end of the clip (not `ended`)
-// so the decode/network gap for the next clip is hidden behind the still-playing tail.
+// Two-<video> gapless controller: pulls the next clip from the pipeline via getNextClip.
 import type { SpeechMode } from "@/lib/live/contract";
 
 const SWAP_LEAD_SEC = 0.12;
@@ -24,40 +23,46 @@ export type GaplessPlayerOptions = {
 
 const noopProgress = (): void => {};
 const noopClipStarted = (): void => {};
+const noopGetNextClip = (): null => null;
 
-const waitForLoadedData = (el: HTMLVideoElement): Promise<void> =>
+// timeupdate fires only ~4Hz, which alone leaves a visible gap before the swap point.
+const waitForPlayable = (el: HTMLVideoElement): Promise<void> =>
   new Promise((resolve) => {
     if (el.readyState >= 2) {
       resolve();
       return;
     }
     const timer = setTimeout(resolve, 8000);
-    el.addEventListener(
-      "loadeddata",
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
+    const done = () => {
+      clearTimeout(timer);
+      el.removeEventListener("loadeddata", done);
+      el.removeEventListener("canplaythrough", done);
+      resolve();
+    };
+    el.addEventListener("loadeddata", done, { once: true });
+    el.addEventListener("canplaythrough", done, { once: true });
   });
 
 export class GaplessPlayer {
   private a: HTMLVideoElement | null = null;
   private b: HTMLVideoElement | null = null;
   private activeSlot: "a" | "b" = "a";
-  private pending: ClipToPlay | null = null;
+  private preloadedClip: ClipToPlay | null = null;
   private preloadedSlot: "a" | "b" | null = null;
   private status: PlayerStatus = "empty";
   private disposed = false;
   private currentClipId: string | null = null;
+  private currentDurationSec = 0;
+  private currentTimeSec = 0;
   private userMuted = false;
   private speechMode: SpeechMode = "text";
+  private rafId: number | null = null;
   // Assigned post-render via setters (never passed as constructor closures) so a ref-reading
   // callback is never invoked as part of building this instance during render.
   private onProgress: (currentTimeSec: number, clipId: string) => void =
     noopProgress;
   private onClipStarted: (clipId: string) => void = noopClipStarted;
+  private getNextClip: () => ClipToPlay | null = noopGetNextClip;
 
   constructor(private readonly options: GaplessPlayerOptions) {}
 
@@ -75,15 +80,21 @@ export class GaplessPlayer {
     this.onClipStarted = handler;
   }
 
+  setNextClipHandler(handler: () => ClipToPlay | null): void {
+    this.getNextClip = handler;
+  }
+
   attach(a: HTMLVideoElement, b: HTMLVideoElement): void {
     this.a = a;
     this.b = b;
     a.addEventListener("timeupdate", this.onTimeUpdate);
     b.addEventListener("timeupdate", this.onTimeUpdate);
+    this.startRafLoop();
   }
 
   dispose(): void {
     this.disposed = true;
+    this.stopRafLoop();
     this.a?.removeEventListener("timeupdate", this.onTimeUpdate);
     this.b?.removeEventListener("timeupdate", this.onTimeUpdate);
   }
@@ -104,13 +115,38 @@ export class GaplessPlayer {
     this.options.onStatusChange(status);
   }
 
-  // Called whenever the pipeline hands over a fresh clip. If nothing is playing yet, it starts
-  // immediately; otherwise it preloads onto the inactive element and waits for the swap point.
-  enqueue(clip: ClipToPlay): void {
-    this.pending = clip;
-    const active = this.getActive();
-    if (!active || active.paused || active.ended || this.status === "empty") {
-      void this.playNow(clip);
+  // Begins playback once attached; call checkForClip() to retry if nothing was ready yet.
+  start(): void {
+    if (this.status !== "empty") {
+      return;
+    }
+    const clip = this.getNextClip();
+    if (!clip) {
+      return;
+    }
+    void this.playNow(clip);
+  }
+
+  // Nudge from the pipeline that a new clip may be available: fill a hold, or the initial slot.
+  checkForClip(): void {
+    if (this.disposed) {
+      return;
+    }
+    if (this.status === "empty") {
+      this.start();
+      return;
+    }
+    if (!this.preloadedClip) {
+      this.preloadNextIfNeeded();
+    }
+  }
+
+  private preloadNextIfNeeded(): void {
+    if (this.disposed || this.preloadedClip) {
+      return;
+    }
+    const clip = this.getNextClip();
+    if (!clip) {
       return;
     }
     void this.preload(clip);
@@ -122,11 +158,12 @@ export class GaplessPlayer {
       return;
     }
     const targetSlot = this.activeSlot === "a" ? "b" : "a";
+    this.preloadedClip = clip;
     inactive.src = clip.videoUrl;
     inactive.muted = true;
     inactive.load();
-    await waitForLoadedData(inactive);
-    if (this.disposed || this.pending !== clip) {
+    await waitForPlayable(inactive);
+    if (this.disposed || this.preloadedClip !== clip) {
       return;
     }
     this.preloadedSlot = targetSlot;
@@ -142,17 +179,19 @@ export class GaplessPlayer {
     }
     el.src = clip.videoUrl;
     el.load();
-    await waitForLoadedData(el);
+    await waitForPlayable(el);
     if (this.disposed) {
       return;
     }
     this.currentClipId = clip.id;
+    this.currentDurationSec = clip.durationSec;
+    this.currentTimeSec = 0;
     this.applyAudioPolicy(el, clip);
     try {
       await el.play();
       this.setStatus("playing");
       this.onClipStarted(clip.id);
-      this.pending = null;
+      this.preloadNextIfNeeded();
     } catch {
       this.setStatus("needsTap");
     }
@@ -169,6 +208,7 @@ export class GaplessPlayer {
     void el.play().then(() => {
       this.setStatus("playing");
       this.onClipStarted(clipId);
+      this.preloadNextIfNeeded();
     });
   }
 
@@ -219,47 +259,99 @@ export class GaplessPlayer {
       return;
     }
     this.currentClipId = clip.id;
+    this.currentDurationSec = clip.durationSec;
+    this.currentTimeSec = 0;
     this.applyAudioPolicy(incoming, clip);
     void incoming.play().catch(() => this.setStatus("needsTap"));
     this.activeSlot = this.activeSlot === "a" ? "b" : "a";
     this.preloadedSlot = null;
-    this.pending = null;
+    this.preloadedClip = null;
     this.setStatus("playing");
     this.onClipStarted(clip.id);
+    this.preloadNextIfNeeded();
     window.setTimeout(() => {
       outgoing?.pause();
+      outgoing?.removeAttribute("src");
+      outgoing?.load();
     }, CROSSFADE_MS);
   }
 
-  private readonly onTimeUpdate = (event: Event): void => {
-    const el = event.currentTarget as HTMLVideoElement;
+  private checkSwapBoundary(el: HTMLVideoElement): void {
     if (el !== this.getActive() || !el.duration || Number.isNaN(el.duration)) {
       return;
     }
+    this.currentDurationSec = el.duration;
+    this.currentTimeSec = el.currentTime;
     this.onProgress(el.currentTime, this.currentClipId ?? "");
     const nearEnd = el.currentTime >= el.duration - SWAP_LEAD_SEC;
     if (!nearEnd) {
       return;
     }
-    if (this.pending && this.preloadedSlot) {
-      this.performSwap(this.pending);
+    if (this.preloadedClip && this.preloadedSlot) {
+      this.performSwap(this.preloadedClip);
+      return;
+    }
+    // Nothing preloaded yet: give it one last chance in case a clip landed since we last checked.
+    const clip = this.getNextClip();
+    if (clip) {
+      void this.preload(clip);
       return;
     }
     if (this.status !== "holding") {
       el.pause();
       this.setStatus("holding");
     }
+  }
+
+  private readonly onTimeUpdate = (event: Event): void => {
+    this.checkSwapBoundary(event.currentTarget as HTMLVideoElement);
   };
+
+  // rAF runs well ahead of the ~4Hz timeupdate tick, catching the swap point sooner.
+  private startRafLoop(): void {
+    if (this.rafId !== null) {
+      return;
+    }
+    const step = () => {
+      if (this.disposed) {
+        return;
+      }
+      const active = this.getActive();
+      if (active && this.status === "playing") {
+        this.checkSwapBoundary(active);
+      }
+      this.rafId = requestAnimationFrame(step);
+    };
+    this.rafId = requestAnimationFrame(step);
+  }
+
+  private stopRafLoop(): void {
+    if (this.rafId !== null) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = null;
+    }
+  }
+
+  // Sum of what's already buffered: the current clip's remaining time plus a preloaded one.
+  getBufferedSec(): number {
+    const remaining = Math.max(
+      0,
+      this.currentDurationSec - this.currentTimeSec,
+    );
+    return remaining + (this.preloadedClip?.durationSec ?? 0);
+  }
 
   // Reused across sessions in the same component instance: clears playback state without
   // touching the DOM elements or listeners attach() already wired up.
   reset(): void {
     this.a?.pause();
     this.b?.pause();
-    this.pending = null;
+    this.preloadedClip = null;
     this.preloadedSlot = null;
     this.status = "empty";
     this.currentClipId = null;
+    this.currentDurationSec = 0;
+    this.currentTimeSec = 0;
     this.activeSlot = "a";
     this.userMuted = false;
   }

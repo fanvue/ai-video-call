@@ -56,6 +56,7 @@ const clipResult = (overrides: Partial<ClipResult>): ClipResult => ({
   videoUrl: "https://example.com/clip.mp4",
   durationSec: 10,
   seedFrameUrl: "https://example.com/frame.jpg",
+  loops: true,
   state: dressedState,
   reply: null,
   followUps: [],
