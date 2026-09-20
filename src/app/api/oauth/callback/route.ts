@@ -52,7 +52,7 @@ export async function GET(request: Request) {
     });
 
     return NextResponse.redirect(new URL(`${env.BASE_URL}/call`, request.url));
-  } catch (e) {
+  } catch {
     return NextResponse.redirect(
       new URL(
         `${env.BASE_URL}/?error=oauth_token_exchange_failed`,
@@ -108,7 +108,7 @@ export async function POST(request: Request) {
       expiresAt: Date.now() + token.expires_in * 1000,
     });
     return NextResponse.redirect(new URL(`${env.BASE_URL}/call`, request.url));
-  } catch (e) {
+  } catch {
     return NextResponse.redirect(
       new URL(
         `${env.BASE_URL}/?error=oauth_token_exchange_failed`,
