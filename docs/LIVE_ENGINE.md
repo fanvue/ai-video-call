@@ -46,27 +46,44 @@ The server is stateless: the client sends the full `LiveSessionSnapshot` with ev
 receives the next state back. This runs on Vercel serverless without shared memory. Moving
 state to a session store (Redis) later only changes the transport, not the engine.
 
-## Clip chain invariants
+## Clip chain: anchors and loops
 
-- Exactly one job is in flight at a time. At most one rendered clip waits in the ready buffer.
-- The seed frame for job N+1 is the (guarded, repaired) last frame of clip N, always. Never
-  seed from an older frame. This is what keeps position continuous.
-- The client submits N+1 the moment N's `ClipResult` arrives, not when N starts playing.
-- Every clip commits its `seedFrameUrl` and `state`. There is no "filler that does not commit".
+Generation is slower than playback (render ~10s, frame extract ~3s, guard ~2s, repair or
+identity correction ~10s when they fire), so a strict one-in-flight chain cannot hold a buffer.
+The chain therefore has two modes:
+
+- **Anchored idle.** An idle clip is rendered with `image_url` = `end_image_url` = the current
+  anchor frame, so it starts and ends on the same frame (`ClipResult.loops = true`,
+  `seedFrameUrl` = the anchor). Idle clips are interchangeable: the client keeps
+  `IDLE_BUFFER_TARGET` ready and up to `IDLE_MAX_INFLIGHT` rendering in parallel, all from one
+  anchor. Guard and identity correction run on the anchor off the critical path; a repaired
+  anchor replaces the old one and the stockpile is rebuilt from it.
+- **Chained action.** `greeting`, `reply`, `beat`, `settle`, `redress` and `checkIn` are
+  seeded from the frame currently on the anchor and chain frame to frame. Their last frame
+  (guarded, repaired) becomes the new anchor. When the anchor changes, buffered idle loops from
+  the old anchor are discarded and new ones are rendered from the new anchor immediately.
+
+Invariants:
+
+- A request's first clip is submitted the moment the request arrives, seeded from the current
+  anchor; it does not wait for in-flight idles. It plays at the first clip boundary after it is
+  ready. Idle loops fill the boundaries before that.
+- A chained clip's seed is always the previous chained clip's `seedFrameUrl`.
+- Every clip commits `state`. Idle loops commit the unchanged state.
 - Minimum clip duration is 10s; maximum 15s (fal limit). Idle = 10s.
+- The stream is shown as live once `PRIME_CLIPS` clips are ready after the greeting.
+- The reference backend has no end-frame parameter, so idle loops are not available on it; it
+  falls back to a strict one-in-flight chain and is marked experimental in the UI.
 
 ## Request latency policy
 
-When a fan request arrives:
-
-1. Immediately: `reply.text` is produced by the text LLM and shown in chat as "typing…" then
-   delivered when the typing beat would finish (`typingLeadSec`). Video catches up.
-2. If an idle job is in flight and started less than `ABANDON_INFLIGHT_MS` (3000) ago, abandon
-   it (result discarded, cost still logged) and submit the reply job from the same seed.
-3. Otherwise the reply job is queued to run right after the in-flight job, seeded from its
-   frame. Worst case the fan waits: remaining current clip + one idle clip.
-4. Follow-up beats returned by the reply are queued in order, then a `settle` job returns her to
-   the baseline pose (not baseline wardrobe).
+1. Immediately: the reply job is submitted from the current anchor, and the fan sees
+   "typing…" in chat. The reply text lands at `typingLeadSec` into the reply clip.
+2. Idle loops already buffered keep playing until the reply clip is ready; then it plays at the
+   next boundary. Idle renders in flight for the old anchor are left to finish and discarded
+   (cost logged) once the anchor changes.
+3. Follow-up beats chain after the reply, then `settle` returns her to the baseline pose. The
+   settle clip's last frame is the new anchor.
 
 ## Wardrobe and props
 

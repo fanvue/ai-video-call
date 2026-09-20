@@ -196,6 +196,9 @@ export const clipResultSchema = z.object({
   durationSec: z.number().int().min(10).max(15),
   // Guarded, repaired last frame. The client MUST use this as the next seed.
   seedFrameUrl: z.url(),
+  // True when the clip starts and ends on the request's seed frame (idle loops). Such clips are
+  // interchangeable: any number may be rendered in parallel from one anchor and played in any order.
+  loops: z.boolean(),
   // State after this clip. The client MUST replace its state with this.
   state: liveStateSchema,
   reply: z
@@ -226,6 +229,13 @@ export const LIVE_TUNABLES = {
   MIN_CLIP_SEC: 10,
   MAX_CLIP_SEC: 15,
   IDLE_CLIP_SEC: 10,
+  // Idle loops to keep rendered ahead, and how many idle renders may run at once.
+  IDLE_BUFFER_TARGET: 2,
+  IDLE_MAX_INFLIGHT: 2,
+  // Clips to have ready before the stream is shown as live.
+  PRIME_CLIPS: 1,
+  // Swap to the next clip this far before the current one ends, to hide the decode gap.
+  SWAP_LEAD_SEC: 0.12,
   ABANDON_INFLIGHT_MS: 3_000,
   REDRESS_AFTER_IDLE_MS: 120_000,
   CHECK_IN_AFTER_IDLE_MS: 90_000,
