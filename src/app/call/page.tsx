@@ -210,10 +210,14 @@ export default function AiVideoCallPage() {
   useReferenceModelRef.current = useReferenceModel;
 
   const generateClip = useCallback(
-    async (body: Record<string, unknown>): Promise<GenerateClipResponse> => {
-      const endpoint = useReferenceModelRef.current
-        ? "/api/ai-video/generate-clip-reference"
-        : "/api/ai-video/generate-clip";
+    async (
+      body: Record<string, unknown>,
+      forceTurbo = false,
+    ): Promise<GenerateClipResponse> => {
+      const endpoint =
+        useReferenceModelRef.current && !forceTurbo
+          ? "/api/ai-video/generate-clip-reference"
+          : "/api/ai-video/generate-clip";
       return postJson<GenerateClipResponse>(endpoint, body);
     },
     [],
@@ -551,26 +555,29 @@ export default function AiVideoCallPage() {
       }
 
       try {
-        const result = await generateClip({
-          promptText,
-          sceneContext: sceneContextRef.current || null,
-          surroundings: surroundingsRef.current || null,
-          liveState: liveStateRef.current || null,
-          worldState: worldStateRef.current || null,
-          callElapsedSec: callStartedAtRef.current
-            ? Math.max(
-                0,
-                Math.floor((Date.now() - callStartedAtRef.current) / 1000),
-              )
-            : 0,
-          referenceImageUrl: imageUrl,
-          originalReferenceImageUrl: referenceImageUrlRef.current ?? imageUrl,
-          clipKind,
-          inputChannel,
-          scriptedPhysical: options?.scriptedPhysical ?? null,
-          scriptedDuration: options?.scriptedDuration ?? null,
-          scriptedLiveState: options?.scriptedLiveState ?? null,
-        });
+        const result = await generateClip(
+          {
+            promptText,
+            sceneContext: sceneContextRef.current || null,
+            surroundings: surroundingsRef.current || null,
+            liveState: liveStateRef.current || null,
+            worldState: worldStateRef.current || null,
+            callElapsedSec: callStartedAtRef.current
+              ? Math.max(
+                  0,
+                  Math.floor((Date.now() - callStartedAtRef.current) / 1000),
+                )
+              : 0,
+            referenceImageUrl: imageUrl,
+            originalReferenceImageUrl: referenceImageUrlRef.current ?? imageUrl,
+            clipKind,
+            inputChannel,
+            scriptedPhysical: options?.scriptedPhysical ?? null,
+            scriptedDuration: options?.scriptedDuration ?? null,
+            scriptedLiveState: options?.scriptedLiveState ?? null,
+          },
+          isFillerSip,
+        );
 
         if (
           generationId !== generationIdRef.current ||

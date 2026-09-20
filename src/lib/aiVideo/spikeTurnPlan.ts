@@ -1060,7 +1060,7 @@ export const idleDirection = (body: BodyState, callElapsedSec = 0) => {
   return (
     `WAITING, between requests — whatever she was just asked to do is already finished. ` +
     `Continue the exact place and clothes in the first frame. ${wardrobeLine(body)} ${pause}` +
-    `Do not introduce any new object. Do not add or remove clothing. Do not start, continue, or finish any sexual act. ` +
+    `Do not introduce any new object. Do not add or remove any clothing, not even briefly — no lifting, no slipping off, no wardrobe malfunction. Do not start, continue, or finish any sexual act. ` +
     `${beat} Tiny idle motion only, eyes on the lens or the chat. This is a pause to chat and tease, not to perform. ` +
     `Silent. Mouth closed the entire clip. No speech, no lip movement, no talking.`
   );
