@@ -142,7 +142,11 @@ const endStateLine = (wardrobe: Wardrobe, body: Body): string => {
   );
   return (
     `END STATE for this clip: ${parts.join(", ")}; pose ${body.pose}, ` +
-    `facing ${body.facing}, hands ${body.hands}, prop ${body.prop}.`
+    `facing ${body.facing}, hands ${body.hands}, prop ${body.prop}. ` +
+    // The clip runs longer than a one-off action takes; a short action followed by unfilled time is
+    // exactly when the model fills the rest by repeating, reversing, or inventing a new action.
+    "Reach this end state well before the clip ends, then hold completely still there for the " +
+    "remainder — do not repeat the action, reverse it, or start anything new."
   );
 };
 
