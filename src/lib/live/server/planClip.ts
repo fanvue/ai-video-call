@@ -57,6 +57,11 @@ const PHYSICS_LOCK =
 
 const NO_OVERLAY_LOCK = "No text overlays, no watermark, no subtitles, no UI.";
 
+// Reply/beat/settle/redress clips chain: their last frame becomes the next clip's anchor, so it
+// must land clean rather than mid-motion.
+const END_STILL_LOCK =
+  "Final second: settle to a still, stable end pose (no mid-motion blur) so the next clip can continue cleanly.";
+
 const SPEECH_RULES_NATIVE =
   "She speaks clear everyday English, lip-synced word for word to what she says.";
 
@@ -682,6 +687,9 @@ const planIdle = (session: LiveSessionSnapshot): ClipPlan => {
     "FORBIDDEN this clip: no clothing change, no new prop, no sexual act starting or continuing, " +
       "no standing up, no leaving frame.",
     pauseLine,
+    "LOOP: the clip must END in exactly the starting pose, framing, expression baseline, and hand " +
+      "position it started in, so it can loop seamlessly. Treat the motion as a small excursion and " +
+      "return — a breath, a glance to the chat, a small weight shift — always back to the exact start.",
   ]
     .filter(Boolean)
     .join(" ");
@@ -790,7 +798,7 @@ const planReply = (
     state,
     speechMode,
     creator,
-    action: primaryPhysical,
+    action: `${primaryPhysical} ${END_STILL_LOCK}`,
     nextWardrobe: primaryNextWardrobe,
     nextBody: primaryNextBody,
   });
@@ -829,7 +837,7 @@ const planBeat = (
     state,
     speechMode: "text", // no dialogue in this job; native speech would invent mouthing
     creator,
-    action: job.beat.physical,
+    action: `${job.beat.physical} ${END_STILL_LOCK}`,
     nextWardrobe,
     nextBody,
   });
@@ -858,7 +866,7 @@ const planSettle = (session: LiveSessionSnapshot): ClipPlan => {
     state,
     speechMode: "text", // no dialogue in this job; native speech would invent mouthing
     creator,
-    action,
+    action: `${action} ${END_STILL_LOCK}`,
     nextWardrobe: state.wardrobe,
     nextBody,
   });
@@ -888,7 +896,7 @@ const planRedress = (
     state,
     speechMode: "text", // no dialogue in this job; native speech would invent mouthing
     creator,
-    action,
+    action: `${action} ${END_STILL_LOCK}`,
     nextWardrobe,
     nextBody: state.body,
   });

@@ -106,6 +106,17 @@ describe("planClip: idle", () => {
     expect(plan.expectedState.body.hands).toBe("holdingProp");
     expect(plan.prompt).toMatch(/stays held still/i);
   });
+
+  it("instructs the clip to end back in its starting pose so it can loop", () => {
+    const s = session();
+    const plan = planClip({
+      session: s,
+      job: { kind: "idle" },
+      speechMode: "text",
+    });
+    expect(plan.prompt).toMatch(/end in exactly the starting pose/i);
+    expect(plan.prompt).toMatch(/loop seamlessly/i);
+  });
 });
 
 describe("planClip: settle", () => {
@@ -120,6 +131,16 @@ describe("planClip: settle", () => {
     });
     expect(plan.expectedState.body).toEqual(s.state.baselineBody);
     expect(plan.expectedState.wardrobe).toEqual(s.state.wardrobe);
+  });
+
+  it("ends on a still, stable pose so the next clip can anchor on it", () => {
+    const s = session();
+    const plan = planClip({
+      session: s,
+      job: { kind: "settle" },
+      speechMode: "text",
+    });
+    expect(plan.prompt).toMatch(/settle to a still, stable end pose/i);
   });
 });
 
@@ -141,6 +162,7 @@ describe("planClip: redress", () => {
     expect(plan.expectedState.wardrobe.top.on).toBe(true);
     expect(plan.expectedState.wardrobe.removedOrder).not.toContain("top");
     expect(plan.expectedState.wardrobe.bottom).toEqual(s.state.wardrobe.bottom);
+    expect(plan.prompt).toMatch(/settle to a still, stable end pose/i);
   });
 });
 
@@ -316,5 +338,31 @@ describe("planClip: reply intent catalog", () => {
     expect(plan.prompt).toMatch(/FIXED WEBCAM/);
     expect(plan.prompt).toMatch(/ANATOMY LOCK/);
     expect(plan.prompt).toMatch(/LOOK LOCK/);
+  });
+
+  it("ends the reply's own prompt on a still, stable pose since its last frame becomes the next anchor", () => {
+    const s = session();
+    const plan = reply(s, "wave at me");
+    expect(plan.prompt).toMatch(/settle to a still, stable end pose/i);
+  });
+});
+
+describe("planClip: beat", () => {
+  it("ends on a still, stable pose since its last frame becomes the next anchor", () => {
+    const s = session();
+    const plan = planClip({
+      session: s,
+      job: {
+        kind: "beat",
+        beat: {
+          id: "b1",
+          physical: "she leans in and smiles",
+          durationSec: 10,
+          nextState: { wardrobe: s.state.wardrobe, body: s.state.body },
+        },
+      },
+      speechMode: "text",
+    });
+    expect(plan.prompt).toMatch(/settle to a still, stable end pose/i);
   });
 });
