@@ -270,9 +270,17 @@ export class GaplessPlayer {
     this.onClipStarted(clip.id);
     this.preloadNextIfNeeded();
     window.setTimeout(() => {
-      outgoing?.pause();
-      outgoing?.removeAttribute("src");
-      outgoing?.load();
+      if (!outgoing) {
+        return;
+      }
+      // preloadNextIfNeeded above usually re-targets this element with the next clip's src;
+      // clearing it here would wipe that preload and leave the following swap with nothing.
+      if (this.preloadedClip && this.getInactive() === outgoing) {
+        return;
+      }
+      outgoing.pause();
+      outgoing.removeAttribute("src");
+      outgoing.load();
     }, CROSSFADE_MS);
   }
 
@@ -291,11 +299,14 @@ export class GaplessPlayer {
       this.performSwap(this.preloadedClip);
       return;
     }
-    // Nothing preloaded yet: give it one last chance in case a clip landed since we last checked.
-    const clip = this.getNextClip();
-    if (clip) {
-      void this.preload(clip);
-      return;
+    // A clip is still loading: hold for it rather than pulling (and losing) another from the buffer.
+    if (!this.preloadedClip) {
+      // Nothing preloaded yet: give it one last chance in case a clip landed since we last checked.
+      const clip = this.getNextClip();
+      if (clip) {
+        void this.preload(clip);
+        return;
+      }
     }
     if (this.status !== "holding") {
       el.pause();
