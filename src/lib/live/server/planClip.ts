@@ -1600,7 +1600,11 @@ const planReply = (
     requestId: job.requestId,
   }));
 
-  const typingLeadSec = job.channel === "chat" ? typingLeadSecFor(job.text) : 0;
+  // Matches the physical lead-in gate above: no idle stretch, no typing beat anywhere in the reply.
+  const typingLeadSec =
+    job.channel === "chat" && job.precededByIdle
+      ? typingLeadSecFor(job.text)
+      : 0;
 
   const wardrobeIntent: ClipPlan["wardrobeIntent"] =
     first.type === "removeGarment"

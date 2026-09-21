@@ -827,4 +827,11 @@ describe("planClip: typing lead-in only after a genuine idle stretch", () => {
     const plan = replyWithIdleFlag(true, "voice");
     expect(plan.prompt).not.toMatch(/types a quick reply/i);
   });
+
+  it("reports a nonzero typingLeadSec only when the reply follows a genuine idle stretch", () => {
+    const idle = replyWithIdleFlag(true);
+    const fast = replyWithIdleFlag(false);
+    expect(idle.replyDraft?.typingLeadSec).toBeGreaterThan(0);
+    expect(fast.replyDraft?.typingLeadSec).toBe(0);
+  });
 });

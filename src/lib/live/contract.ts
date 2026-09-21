@@ -323,6 +323,8 @@ export const LIVE_TUNABLES = {
   TYPING_LEAD_AFTER_IDLE_MS: 8_000,
   // How often to run an identity-correction pass, wall-clock, regardless of activity — piggybacked onto whichever chain job is next (see needsIdentityRefresh), never its own clip.
   REFERENCE_REFRESH_INTERVAL_MS: 30_000,
+  // How often the seed a chain job leaves behind gets upscaled in the background (see upscaleChainTailInBackground). Per-clip was too frequent: it competed with actual render calls for fal capacity and slowed clip turnaround.
+  UPSCALE_INTERVAL_MS: 60_000,
   TRANSCRIPT_WINDOW: 40,
   // Spend cap: every session auto-ends here regardless of activity.
   MAX_SESSION_MS: 180_000,

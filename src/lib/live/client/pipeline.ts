@@ -96,6 +96,7 @@ export class ClipPipeline {
   // Cumulative render spend, tallied from every clipReady/clipDiscarded result's own costUsd.
   private totalCostUsd = 0;
   private costCapReached = false;
+  private lastUpscaleAtMs = -Infinity;
 
   constructor(options: ClipPipelineOptions) {
     this.render = options.render;
@@ -399,7 +400,13 @@ export class ClipPipeline {
     this.addCost(result.costUsd);
     this.announceIfRecovered();
     this.tryAdvanceChain();
-    this.upscaleChainTailInBackground(result.seedFrameUrl);
+    if (
+      this.now() - this.lastUpscaleAtMs >=
+      LIVE_TUNABLES.UPSCALE_INTERVAL_MS
+    ) {
+      this.lastUpscaleAtMs = this.now();
+      this.upscaleChainTailInBackground(result.seedFrameUrl);
+    }
   }
 
   // Patches whichever of chainTail/anchor still holds the raw frame; tryAdvanceChain may have

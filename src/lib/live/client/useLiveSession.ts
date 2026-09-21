@@ -527,8 +527,11 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
             .transcript.find((entry) => entry.id === job.requestId);
           pendingTipCentsRef.current = requestEntry?.tipCents;
         }
-        // She notices the message and starts typing ~3s later, not instantly and not ~20-30s later once the clip lands.
-        if (job.kind === "reply" || job.kind === "checkIn") {
+        // She notices the message and starts typing ~3s later; gated the same as planReply's own typing lead-in, no bubble for a rapid back-and-forth.
+        if (
+          job.kind === "checkIn" ||
+          (job.kind === "reply" && job.precededByIdle)
+        ) {
           if (typingDelayRef.current) {
             clearTimeout(typingDelayRef.current);
           }

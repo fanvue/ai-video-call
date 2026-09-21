@@ -1126,6 +1126,7 @@ describe("ClipPipeline", () => {
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting settles; clipReady already fired
     expect(pipeline.nextClip()).not.toBeNull(); // clipReady wasn't blocked on the pending upscale
 
+    now += LIVE_TUNABLES.UPSCALE_INTERVAL_MS; // past the cadence gate, so this settle's upscale fires too
     queue.push(REPLY_JOB);
     pipeline.onRequestEnqueued();
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // reply settles onto a fresh frame
@@ -1149,6 +1150,38 @@ describe("ClipPipeline", () => {
       (r) => r.job.kind === "reply" && r.job.requestId === "r2",
     );
     expect(secondReplyRequest?.session.seedFrameUrl).toBe(upscaled);
+  });
+
+  it("does not upscale again within UPSCALE_INTERVAL_MS of the last upscale", async () => {
+    const upscaleSeed = vi.fn(
+      async (): Promise<{ url: string | null; costUsd: number }> => ({
+        url: "https://example.com/upscaled.jpg",
+        costUsd: 0.03,
+      }),
+    );
+    const queue = makeJobQueue();
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => delayed(() => chainAdvancingResult(req)),
+      upscaleSeed,
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    expect(upscaleSeed).toHaveBeenCalledTimes(1);
+
+    now += LIVE_TUNABLES.UPSCALE_INTERVAL_MS - 1; // just short of the cadence
+    queue.push(REPLY_JOB);
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    expect(upscaleSeed).toHaveBeenCalledTimes(1);
+
+    now += 1; // now at the cadence
+    queue.push({ ...REPLY_JOB, requestId: "r2" });
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    expect(upscaleSeed).toHaveBeenCalledTimes(2);
   });
 
   it("a stale upscale result never clobbers a chainTail that already moved past it", async () => {
