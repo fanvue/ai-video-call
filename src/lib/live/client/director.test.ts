@@ -478,6 +478,74 @@ describe("LiveDirector", () => {
     ]);
   });
 
+  it("registers a fan request as queued and marks it done once its own clip completes with no follow-ups", () => {
+    const director = makeDirector();
+    director.nextJob(); // consume greeting
+    const { entry, job } = director.fanRequest(
+      { text: "hi", channel: "chat" },
+      1000,
+    );
+    expect(director.getState().requestStatuses[entry.id]).toBe("queued");
+    expect(director.nextJob()).toEqual(job); // dispatch the reply; lastDispatchedJob = job
+    director.clipCompleted(
+      clipResult({ jobKind: "reply", followUps: [], state: dressedState }),
+      2000,
+    );
+    expect(director.getState().requestStatuses[entry.id]).toBe("done");
+  });
+
+  it("does not mark a request done while its own follow-up beat is still queued", () => {
+    const director = makeDirector();
+    director.nextJob(); // consume greeting
+    const { entry } = director.fanRequest(
+      { text: "strip", channel: "chat" },
+      1000,
+    );
+    director.nextJob(); // dispatch the reply
+    const beat: PlannedBeat = {
+      id: "b1",
+      intent: { type: "act", act: "gesture" },
+      attempt: 0,
+      requestId: entry.id,
+    };
+    director.clipCompleted(
+      clipResult({ jobKind: "reply", followUps: [beat], state: dressedState }),
+      2000,
+    );
+    expect(director.getState().requestStatuses[entry.id]).toBe("queued");
+
+    director.nextJob(); // dispatch the follow-up beat
+    director.clipCompleted(
+      clipResult({ jobKind: "beat", followUps: [], state: dressedState }),
+      3000,
+    );
+    expect(director.getState().requestStatuses[entry.id]).toBe("done");
+  });
+
+  it("marks an abandoned request's status failed", () => {
+    const director = makeDirector();
+    director.nextJob();
+    const { entry } = director.fanRequest(
+      { text: "hi", channel: "chat" },
+      1000,
+    );
+    director.abandonRequest(entry.id);
+    expect(director.getState().requestStatuses[entry.id]).toBe("failed");
+  });
+
+  it("lets the caller drive generating/playing transitions via setRequestStatus", () => {
+    const director = makeDirector();
+    director.nextJob();
+    const { entry } = director.fanRequest(
+      { text: "hi", channel: "chat" },
+      1000,
+    );
+    director.setRequestStatus(entry.id, "generating");
+    expect(director.getState().requestStatuses[entry.id]).toBe("generating");
+    director.setRequestStatus(entry.id, "playing");
+    expect(director.getState().requestStatuses[entry.id]).toBe("playing");
+  });
+
   it("ignores a duplicate clipCompleted for a clip it already committed", () => {
     const director = makeDirector();
     director.nextJob(); // consume greeting

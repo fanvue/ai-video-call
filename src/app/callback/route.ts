@@ -21,12 +21,17 @@ export async function GET(request: Request) {
   if (providerError) {
     const search = new URLSearchParams();
     search.set("error", providerError);
-    if (providerErrorDescription) search.set("error_description", providerErrorDescription);
-    return NextResponse.redirect(new URL(`${env.BASE_URL}/?${search.toString()}`, request.url));
+    if (providerErrorDescription)
+      search.set("error_description", providerErrorDescription);
+    return NextResponse.redirect(
+      new URL(`${env.BASE_URL}/?${search.toString()}`, request.url),
+    );
   }
 
   if (!code || !state || !storedState || !verifier || state !== storedState) {
-    return NextResponse.redirect(new URL(`${env.BASE_URL}/?error=oauth_state_mismatch`, request.url));
+    return NextResponse.redirect(
+      new URL(`${env.BASE_URL}/?error=oauth_state_mismatch`, request.url),
+    );
   }
 
   const redirectUri = env.OAUTH_REDIRECT_URI;
@@ -48,7 +53,12 @@ export async function GET(request: Request) {
 
     return NextResponse.redirect(new URL(`${env.BASE_URL}/`, request.url));
   } catch {
-    return NextResponse.redirect(new URL(`${env.BASE_URL}/?error=oauth_token_exchange_failed`, request.url));
+    return NextResponse.redirect(
+      new URL(
+        `${env.BASE_URL}/?error=oauth_token_exchange_failed`,
+        request.url,
+      ),
+    );
   }
 }
 
@@ -71,14 +81,19 @@ export async function POST(request: Request) {
     const search = new URLSearchParams();
     search.set("error", error);
     if (errorDescription) search.set("error_description", errorDescription);
-    return NextResponse.redirect(new URL(`${env.BASE_URL}/?${search.toString()}`, request.url));
+    return NextResponse.redirect(
+      new URL(`${env.BASE_URL}/?${search.toString()}`, request.url),
+    );
   }
 
   if (!code || !state || !storedState || !verifier || state !== storedState) {
-    return NextResponse.redirect(new URL(`${env.BASE_URL}/?error=oauth_state_mismatch`, request.url));
+    return NextResponse.redirect(
+      new URL(`${env.BASE_URL}/?error=oauth_state_mismatch`, request.url),
+    );
   }
 
-  const redirectUri = env.OAUTH_REDIRECT_URI ?? `${url.origin}/api/oauth/callback`;
+  const redirectUri =
+    env.OAUTH_REDIRECT_URI ?? `${url.origin}/api/oauth/callback`;
   try {
     const token = await exchangeCodeForToken({
       code,
@@ -94,6 +109,11 @@ export async function POST(request: Request) {
     });
     return NextResponse.redirect(new URL(`${env.BASE_URL}/`, request.url));
   } catch {
-    return NextResponse.redirect(new URL(`${env.BASE_URL}/?error=oauth_token_exchange_failed`, request.url));
+    return NextResponse.redirect(
+      new URL(
+        `${env.BASE_URL}/?error=oauth_token_exchange_failed`,
+        request.url,
+      ),
+    );
   }
 }

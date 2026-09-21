@@ -1000,6 +1000,76 @@ describe("ClipPipeline", () => {
     expect(pipeline.getBufferStats().idleReady).toBe(0);
   });
 
+  it("stops dispatching new render jobs once cumulative cost reaches SESSION_COST_CAP_USD", async () => {
+    const events: PipelineEvent[] = [];
+    const renderCalls: ClipRequest[] = [];
+    const queue = makeJobQueue();
+    // Each clip costs enough that the greeting alone (plus its initial idle stockpile) crosses
+    // the cap, so no further job should ever be dispatched after that first batch settles.
+    const bigCost = LIVE_TUNABLES.SESSION_COST_CAP_USD;
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: (e) => events.push(e),
+      render: async (req) => {
+        renderCalls.push(req);
+        return delayed(() =>
+          makeResult(
+            req.job.kind === "idle" ? "idle" : "greeting",
+            req.job.kind === "idle" ? req.session.seedFrameUrl : freshFrame(),
+            { costUsd: bigCost },
+          ),
+        );
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting settles, cap reached on its cost alone
+
+    expect(events.some((e) => e.type === "costCapReached")).toBe(true);
+    const callsAtCap = renderCalls.length;
+
+    // A new fan request must be refused, not queued for later render.
+    queue.push(REPLY_JOB);
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+
+    expect(renderCalls.length).toBe(callsAtCap);
+    expect(renderCalls.some((r) => r.job.kind === "reply")).toBe(false);
+    expect(events.filter((e) => e.type === "costCapReached")).toHaveLength(1);
+  });
+
+  it("dispatches a bridge idle for the chain tail the instant the chain clip settles approved, before any pickNext/nextClip call", async () => {
+    const idleRequests: ClipRequest[] = [];
+    const queue = makeJobQueue();
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        if (req.job.kind === "idle") {
+          idleRequests.push(req);
+        }
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting settles -> A1
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // initial idles against A1 settle too
+
+    queue.push(REPLY_JOB);
+    pipeline.onRequestEnqueued();
+    const idleRequestsBeforeSettle = idleRequests.length;
+
+    // Advance only far enough for the reply's render to settle; no nextClip()/pickNext() call has
+    // happened for this reply at all, so any idle for its tail can only have come from settle time.
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+
+    const bridgeRequests = idleRequests.slice(idleRequestsBeforeSettle);
+    expect(bridgeRequests.length).toBeGreaterThan(0);
+    expect(bridgeRequests[0]?.session.seedFrameUrl).not.toBe(ANCHOR_0);
+  });
+
   it("chains the next pull from the last handed-out clip, not the displayed frame (no scene jump on preload)", async () => {
     const queue = makeJobQueue();
     const pipeline = trackedPipeline({

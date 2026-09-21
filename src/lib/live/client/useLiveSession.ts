@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { defaultCreatorProfile } from "@/lib/live/client/defaultCreatorProfile";
 import { defaultLiveState } from "@/lib/live/client/defaultLiveState";
-import { LiveDirector } from "@/lib/live/client/director";
+import { LiveDirector, type RequestStatus } from "@/lib/live/client/director";
 import { ClipPipeline, type PipelineEvent } from "@/lib/live/client/pipeline";
 import {
   GaplessPlayer,
@@ -19,6 +19,7 @@ import {
 } from "@/lib/live/client/roomSim";
 import {
   LIVE_TUNABLES,
+  type ClipJob,
   type ClipJobKind,
   type ClipRequest,
   type ClipResult,
@@ -43,11 +44,7 @@ export type ReferenceUploadResult = {
 };
 
 export type LiveSessionStatus =
-  | "connecting"
-  | "live"
-  | "holding"
-  | "ended"
-  | "error";
+  "connecting" | "live" | "holding" | "ended" | "error";
 
 export type BufferDepth = {
   idleReady: number;
@@ -82,19 +79,22 @@ export type StudioTimings = {
 
 // Real join-flow progress, driven by actual pipeline milestones (see useLiveSession.start).
 export type ConnectStage =
-  | "uploading"
-  | "capturingLook"
-  | "renderingFirstClip"
-  | "primingBuffer";
+  "uploading" | "capturingLook" | "renderingFirstClip" | "primingBuffer";
 
 export type QueueOwner =
-  | { type: "fan" }
-  | { type: "viewer"; handle: string }
-  | { type: "studio" };
+  { type: "fan" } | { type: "viewer"; handle: string } | { type: "studio" };
 
-export type QueueStripEntry = { kind: ClipJobKind; owner: QueueOwner };
+// `requestId` is only set for a reply/beat job (a request-owned act); it's what the failed-chip
+// timeout and the "playing" transition key off.
+export type QueueStripEntry = {
+  kind: ClipJobKind;
+  owner: QueueOwner;
+  requestId?: string;
+};
 
 export type TypingDevice = "laptop" | "phone" | null;
+
+export type SessionEndReason = "maxDuration" | "costCap" | null;
 
 const EMPTY_QUEUE_STRIP: {
   current: QueueStripEntry | null;
@@ -108,6 +108,28 @@ const ownerForReplyJob = (job: {
   job.from === "viewer"
     ? { type: "viewer", handle: job.handle ?? "viewer" }
     : { type: "fan" };
+
+// A chain job's own request id, if it has one (director-originated beats like `rest` don't).
+const requestIdForJob = (job: ClipJob): string | null => {
+  if (job.kind === "reply") {
+    return job.requestId;
+  }
+  if (job.kind === "beat") {
+    return job.beat.requestId ?? null;
+  }
+  return null;
+};
+
+// Fixed in-character lines for a request that failed all its render attempts; client-side only,
+// rotated by failure count so the same line doesn't repeat back to back.
+const FAILURE_LINES = [
+  "ugh, that one glitched on me, ask me again?",
+  "hmm, my camera's acting up, say that again?",
+  "oops, lost that one, mind trying again?",
+];
+
+// How long the queue strip keeps showing a failed request's chip before clearing it.
+const FAILED_CHIP_VISIBLE_MS = 6_000;
 
 export function useLiveSession(deps: UseLiveSessionDeps) {
   const [status, setStatus] = useState<LiveSessionStatus>("connecting");
@@ -130,6 +152,11 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   const [viewerCount, setViewerCount] = useState(0);
   const [typingDevice, setTypingDevice] = useState<TypingDevice>(null);
   const [queueStrip, setQueueStrip] = useState(EMPTY_QUEUE_STRIP);
+  // Per-request lifecycle (queued/generating/playing/done/failed), mirrored from the director.
+  const [requestStatuses, setRequestStatusesState] = useState<
+    Record<string, RequestStatus>
+  >({});
+  const [endReason, setEndReason] = useState<SessionEndReason>(null);
   // The director's own clock; transcript.atSec is relative to this, set once the director exists.
   const [sessionStartedAtMs, setSessionStartedAtMs] = useState<number | null>(
     null,
@@ -156,6 +183,15 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   const pendingTipCentsRef = useRef<number | undefined>(undefined);
   const errorTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const typingDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The request id owned by the chain job currently rendering (or last dispatched), if any.
+  const currentRequestIdRef = useRef<string | null>(null);
+  // Maps a delivered clip's id back to the request it belongs to, for the "playing" transition.
+  const requestIdByClipIdRef = useRef<Map<string, string>>(new Map());
+  // Rotates through FAILURE_LINES without repeating the same one twice in a row.
+  const failureCountRef = useRef(0);
+  const failedChipTimeoutsRef = useRef<Set<ReturnType<typeof setTimeout>>>(
+    new Set(),
+  );
   // Indirection so the tick interval (created in `start`) always calls the current `end`, defined later.
   const endRef = useRef<() => void>(() => {});
   // Maps a rendered clip's id to what it was, so the player's onClipStarted (id only) can look
@@ -277,16 +313,21 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     if (!director) {
       return;
     }
-    const queued = director.getState().jobQueue.map(
-      (job): QueueStripEntry => ({
-        kind: job.kind,
-        owner:
-          job.kind === "reply"
-            ? ownerForReplyJob(job)
-            : currentOwnerRef.current,
-      }),
-    );
+    const queued = director.getState().jobQueue.map((job): QueueStripEntry => ({
+      kind: job.kind,
+      owner:
+        job.kind === "reply" ? ownerForReplyJob(job) : currentOwnerRef.current,
+    }));
     setQueueStrip({ current: currentActRef.current, queued });
+  }, []);
+
+  // Mirrors the director's per-request status map onto session state for the UI to read.
+  const refreshRequestStatuses = useCallback(() => {
+    const director = directorRef.current;
+    if (!director) {
+      return;
+    }
+    setRequestStatusesState(director.getState().requestStatuses);
   }, []);
 
   const isSystemIdle = useCallback((): boolean => {
@@ -351,11 +392,17 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       ) {
         applyLiveState(result.state);
       }
+      // The request's clip is now actually on screen, not just rendered.
+      const requestId = requestIdByClipIdRef.current.get(clipId);
+      if (requestId) {
+        directorRef.current?.setRequestStatus(requestId, "playing");
+        refreshRequestStatuses();
+      }
       refreshBufferDepth();
       greetingPlayedRef.current = true;
       maybeGoLive();
     },
-    [applyLiveState, maybeGoLive, refreshBufferDepth],
+    [applyLiveState, maybeGoLive, refreshBufferDepth, refreshRequestStatuses],
   );
 
   useEffect(() => {
@@ -412,6 +459,45 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
           clearTimeout(errorTimeoutRef.current);
         }
         errorTimeoutRef.current = setTimeout(() => setError(null), 6000);
+        // A request-owned job failing past retry must be visible, not silently swallowed: the
+        // chip stays (marked failed) for a beat, and she acknowledges it in chat.
+        const requestId = requestIdForJob(event.job);
+        if (requestId) {
+          director.setRequestStatus(requestId, "failed");
+          refreshRequestStatuses();
+          const line =
+            FAILURE_LINES[failureCountRef.current % FAILURE_LINES.length];
+          failureCountRef.current += 1;
+          const channel: InputChannel =
+            event.job.kind === "reply" ? event.job.channel : "chat";
+          const now = Date.now();
+          setTranscript((prev) => [
+            ...prev,
+            {
+              id: `failure-${requestId}-${now}`,
+              role: "creator",
+              channel,
+              text: line,
+              atSec: Math.max(
+                0,
+                Math.floor((now - director.getState().startedAt) / 1000),
+              ),
+            },
+          ]);
+          const timeoutId = setTimeout(() => {
+            failedChipTimeoutsRef.current.delete(timeoutId);
+            if (currentActRef.current?.requestId === requestId) {
+              currentActRef.current = null;
+              refreshQueueStrip();
+            }
+          }, FAILED_CHIP_VISIBLE_MS);
+          failedChipTimeoutsRef.current.add(timeoutId);
+        }
+        return;
+      }
+      if (event.type === "costCapReached") {
+        setEndReason("costCap");
+        endRef.current();
         return;
       }
       if (event.type === "chainJobStarted") {
@@ -421,7 +507,17 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
             ? ownerForReplyJob(job)
             : currentOwnerRef.current;
         currentOwnerRef.current = owner;
-        currentActRef.current = { kind: job.kind, owner };
+        const requestId = requestIdForJob(job);
+        currentRequestIdRef.current = requestId;
+        currentActRef.current = {
+          kind: job.kind,
+          owner,
+          ...(requestId ? { requestId } : {}),
+        };
+        if (requestId) {
+          director.setRequestStatus(requestId, "generating");
+          refreshRequestStatuses();
+        }
         if (job.kind === "reply") {
           const requestEntry = director
             .getState()
@@ -455,9 +551,17 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       }
       if (event.lane === "chained") {
         pendingTipCentsRef.current = undefined;
+        // Remembered so handleClipStarted can mark this request "playing" once it's on screen.
+        if (currentRequestIdRef.current) {
+          requestIdByClipIdRef.current.set(
+            result.clipId,
+            currentRequestIdRef.current,
+          );
+        }
       }
       // Canon advances here (for planning); the UI's displayed state follows via handleClipStarted.
       director.clipCompleted(result, Date.now());
+      refreshRequestStatuses();
       if (result.reply) {
         pendingRevealRef.current = {
           clipId: result.clipId,
@@ -480,7 +584,13 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       refreshQueueStrip();
       maybeGoLive();
     },
-    [player, refreshBufferDepth, refreshQueueStrip, maybeGoLive],
+    [
+      player,
+      refreshBufferDepth,
+      refreshQueueStrip,
+      refreshRequestStatuses,
+      maybeGoLive,
+    ],
   );
 
   const attachVideoElements = useCallback(() => {
@@ -537,6 +647,15 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       currentPlayingClipIdRef.current = null;
       currentOwnerRef.current = { type: "studio" };
       currentActRef.current = null;
+      currentRequestIdRef.current = null;
+      requestIdByClipIdRef.current = new Map();
+      failureCountRef.current = 0;
+      for (const timeoutId of failedChipTimeoutsRef.current) {
+        clearTimeout(timeoutId);
+      }
+      failedChipTimeoutsRef.current = new Set();
+      setRequestStatusesState({});
+      setEndReason(null);
       pendingTipCentsRef.current = undefined;
       privateModeRef.current = false;
       setPrivateModeState(false);
@@ -585,13 +704,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         backend: options.backend ?? "turbo",
         speechMode: options.speechMode ?? "text",
         abandonDependents: (job) => {
-          const requestId =
-            job.kind === "reply"
-              ? job.requestId
-              : job.kind === "beat"
-                ? (job.beat.requestId ?? null)
-                : null;
-          directorRef.current?.abandonRequest(requestId);
+          directorRef.current?.abandonRequest(requestIdForJob(job));
         },
       });
       pipelineRef.current = pipeline;
@@ -611,6 +724,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
           Date.now() - currentDirector.getState().startedAt >=
             LIVE_TUNABLES.MAX_SESSION_MS
         ) {
+          setEndReason("maxDuration");
           endRef.current();
           return;
         }
@@ -646,8 +760,9 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       pipeline.onRequestEnqueued();
       refreshBufferDepth();
       refreshQueueStrip();
+      refreshRequestStatuses();
     },
-    [refreshBufferDepth, refreshQueueStrip],
+    [refreshBufferDepth, refreshQueueStrip, refreshRequestStatuses],
   );
 
   const clearError = useCallback(() => {
@@ -667,6 +782,10 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       clearTimeout(errorTimeoutRef.current);
       errorTimeoutRef.current = null;
     }
+    for (const timeoutId of failedChipTimeoutsRef.current) {
+      clearTimeout(timeoutId);
+    }
+    failedChipTimeoutsRef.current = new Set();
     clearPendingReveal();
     player.reset();
     pipelineRef.current?.dispose();
@@ -741,6 +860,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       roomEvents,
       viewerCount,
       queueStrip,
+      requestStatuses,
+      endReason,
       offline,
       sessionStartedAtMs,
       privateMode,
@@ -772,6 +893,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       roomEvents,
       viewerCount,
       queueStrip,
+      requestStatuses,
+      endReason,
       offline,
       sessionStartedAtMs,
       privateMode,

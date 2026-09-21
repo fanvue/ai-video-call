@@ -1,4 +1,5 @@
 import type { ClipJobKind } from "@/lib/live/contract";
+import type { RequestStatus } from "@/lib/live/client/director";
 import type {
   QueueOwner,
   QueueStripEntry,
@@ -22,16 +23,19 @@ const ownerLabel = (owner: QueueOwner): string | null => {
   return null;
 };
 
-// Reference UI shows one compact "Now: <act> for @handle" line under the top bar rather than a
-// chip strip; this formats it (queued entries are still available on the session for a badge count).
+// One compact "Now: <act> for @handle" line; a failed request stays here (not cleared) for ~6s.
 export const formatQueueLabel = (
   current: QueueStripEntry | null,
   queuedCount: number,
+  status?: RequestStatus,
 ): string | null => {
   if (!current) {
     return null;
   }
   const owner = ownerLabel(current.owner);
+  if (status === "failed") {
+    return `Couldn't finish that one${owner ? ` for ${owner}` : ""} — retry?`;
+  }
   const base = `Now: ${ACT_LABEL[current.kind]}${owner ? ` for ${owner}` : ""}`;
   return queuedCount > 0 ? `${base} · ${queuedCount} queued` : base;
 };

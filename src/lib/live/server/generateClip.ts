@@ -19,6 +19,8 @@ import { renderBackendFor } from "./renderClip";
 import { writeCheckIn, writeReply } from "./writeReply";
 
 const ANATOMY_ISSUE_RE = /extra person|extra or malformed limbs/;
+const IDENTITY_ISSUE_RE = /identity drift/;
+const COLOR_ISSUE_RE = /^(top|bottom|bra|panties) color drifted/;
 
 const FRAME_BUDGET_MS = 15_000;
 const GUARD_BUDGET_MS = 8_000;
@@ -59,6 +61,7 @@ const checkFrame = async (
   videoUrl: string,
   position: "middle" | "last",
   expected: LiveState,
+  anchorFrameUrl: string,
 ): Promise<FrameCheck> => {
   let frameUrl: string;
   try {
@@ -88,7 +91,7 @@ const checkFrame = async (
   };
   try {
     guardOutcome = await withTimeout(
-      guardFrame({ frameUrl, expected }),
+      guardFrame({ frameUrl, expected, anchorFrameUrl }),
       GUARD_BUDGET_MS,
       "guardFrame",
     );
@@ -155,6 +158,19 @@ const garmentMismatchIn = (
 const anatomyIssueIn = (check: FrameCheck): string | null =>
   check.issues.find((issue) => ANATOMY_ISSUE_RE.test(issue)) ?? null;
 
+const identityIssueIn = (check: FrameCheck): string | null =>
+  check.issues.find((issue) => IDENTITY_ISSUE_RE.test(issue)) ?? null;
+
+// Same target-garment exemption as garmentMismatchIn above.
+const colorIssueIn = (
+  check: FrameCheck,
+  targetGarment: GarmentId | undefined,
+): string | null =>
+  check.issues.find((issue) => {
+    const match = issue.match(COLOR_ISSUE_RE);
+    return match !== null && match[1] !== targetGarment;
+  }) ?? null;
+
 type FrameVerdict = {
   verdict: "approved" | "rejected";
   rejectReason: string | null;
@@ -194,6 +210,23 @@ const evaluateFrameChecks = ({
       return {
         verdict: "rejected",
         rejectReason: `${label} frame: ${mismatch.garment} should be ${mismatch.expectedState} but shows ${mismatch.observedState}`,
+        observedPose: undefined,
+      };
+    }
+    // A colour mismatch on a present garment rejects exactly like a presence mismatch.
+    const colorIssue = colorIssueIn(check, targetGarment);
+    if (colorIssue) {
+      return {
+        verdict: "rejected",
+        rejectReason: `${label} frame: ${colorIssue}`,
+        observedPose: undefined,
+      };
+    }
+    const identityIssue = identityIssueIn(check);
+    if (identityIssue) {
+      return {
+        verdict: "rejected",
+        rejectReason: `${label} frame: ${identityIssue}`,
         observedPose: undefined,
       };
     }
@@ -290,6 +323,7 @@ export const generateClip = async (
       rendered.videoUrl,
       "middle",
       plan.expectedState,
+      session.anchorFrameUrl,
     );
     verifyMs = Date.now() - verifyStarted;
     seedFrameUrl = session.seedFrameUrl;
@@ -316,8 +350,18 @@ export const generateClip = async (
     // back by the end; the last frame doubles as this clip's next seed.
     const verifyStarted = Date.now();
     const [midCheck, lastCheck] = await Promise.all([
-      checkFrame(rendered.videoUrl, "middle", plan.expectedState),
-      checkFrame(rendered.videoUrl, "last", plan.expectedState),
+      checkFrame(
+        rendered.videoUrl,
+        "middle",
+        plan.expectedState,
+        session.anchorFrameUrl,
+      ),
+      checkFrame(
+        rendered.videoUrl,
+        "last",
+        plan.expectedState,
+        session.anchorFrameUrl,
+      ),
     ]);
     verifyMs = Date.now() - verifyStarted;
     const result = evaluateFrameChecks({
@@ -346,8 +390,18 @@ export const generateClip = async (
     // Same two-frame shape as a hold clip, but fails open on an unchecked frame — a persistent vision refusal must not permanently block a legitimately requested explicit clip.
     const verifyStarted = Date.now();
     const [midCheck, lastCheck] = await Promise.all([
-      checkFrame(rendered.videoUrl, "middle", plan.expectedState),
-      checkFrame(rendered.videoUrl, "last", plan.expectedState),
+      checkFrame(
+        rendered.videoUrl,
+        "middle",
+        plan.expectedState,
+        session.anchorFrameUrl,
+      ),
+      checkFrame(
+        rendered.videoUrl,
+        "last",
+        plan.expectedState,
+        session.anchorFrameUrl,
+      ),
     ]);
     verifyMs = Date.now() - verifyStarted;
     const result = evaluateFrameChecks({
@@ -373,22 +427,44 @@ export const generateClip = async (
       };
     }
   } else {
-    // Wardrobe clip (removeGarment/addGarment): last frame only, the midpoint is mid-removal and ambiguous. The target garment is exempt from rejection and reconciled from observation instead, so director.ts's bounded retry can re-attempt an unmet removal/add.
+    // Wardrobe clip (removeGarment/addGarment): both frames checked, fail closed; the target garment is exempt from mismatch rejection and reconciled from observation instead (director.ts's bounded retry).
     const verifyStarted = Date.now();
-    const lastCheck = await checkFrame(
-      rendered.videoUrl,
-      "last",
-      plan.expectedState,
-    );
+    const [midCheck, lastCheck] = await Promise.all([
+      checkFrame(
+        rendered.videoUrl,
+        "middle",
+        plan.expectedState,
+        session.anchorFrameUrl,
+      ),
+      checkFrame(
+        rendered.videoUrl,
+        "last",
+        plan.expectedState,
+        session.anchorFrameUrl,
+      ),
+    ]);
     verifyMs = Date.now() - verifyStarted;
     const result = evaluateFrameChecks({
-      checks: [{ label: "last", check: lastCheck }],
+      checks: [
+        { label: "midpoint", check: midCheck },
+        { label: "last", check: lastCheck },
+      ],
       expected: plan.expectedState,
       targetGarment: plan.targetGarment,
-      failClosed: false,
+      failClosed: true,
     });
     verdict = result.verdict;
     rejectReason = result.rejectReason;
+    // An "unknown" reading on the target garment can't confirm the change it was checking for.
+    if (
+      verdict === "approved" &&
+      plan.targetGarment &&
+      lastCheck.checked &&
+      typeof lastCheck.observed?.wardrobe[plan.targetGarment] !== "boolean"
+    ) {
+      verdict = "rejected";
+      rejectReason = `last frame: target garment ${plan.targetGarment} unknown`;
+    }
     seedFrameUrl = lastCheck.frameUrl ?? session.seedFrameUrl;
     guardOutcome = {
       checked: lastCheck.checked,

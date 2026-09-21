@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { correctFrameIdentityDrift } from "@/lib/fal/requestFrameIdentityCorrection";
 import { createGroqVisionCompletion } from "@/lib/groq";
 import type {
   FrameGuardReport,
@@ -29,6 +28,8 @@ const visionReportSchema = z.object({
   extraLimbs: z.boolean().optional(),
   // Raw model output; "unknown" or anything else unparseable is dropped by poseFromReport below.
   pose: z.string().optional(),
+  // Identity check against the reference photo — face/hair/skin/build only. "unknown" never mismatches.
+  sameWoman: z.enum(["yes", "no", "unknown"]).optional(),
 });
 type VisionReport = z.infer<typeof visionReportSchema>;
 
@@ -42,18 +43,23 @@ const poseFromReport = (report: VisionReport): Pose | undefined =>
     : undefined;
 
 const GUARD_PROMPT =
-  "Look at this single frame from an adult webcam stream. Return ONLY JSON describing exactly what is visible: " +
-  '{"top":"present|absent|unknown","bottom":"present|absent|unknown","bra":"present|absent|unknown",' +
-  '"panties":"present|absent|unknown","topColor":"...","bottomColor":"...",' +
+  "Look at these two images: the FIRST is the untouched original reference photo; the SECOND is a single frame " +
+  "from an adult webcam stream that is supposed to show the same woman. Return ONLY JSON describing exactly " +
+  'what is visible in the SECOND image: {"top":"present|absent|unknown","bottom":"present|absent|unknown",' +
+  '"bra":"present|absent|unknown","panties":"present|absent|unknown","topColor":"...","bottomColor":"...",' +
   '"braColor":"...","pantiesColor":"...","visibleProps":["..."],"extraPeople":bool,"extraLimbs":bool,' +
-  '"pose":"sitting|standing|leaning|kneeling|lying|onAllFours|bentOver|unknown"}. ' +
+  '"pose":"sitting|standing|leaning|kneeling|lying|onAllFours|bentOver|unknown","sameWoman":"yes|no|unknown"}. ' +
   'For top/bottom/bra/panties: "present" only if that garment is clearly worn; "absent" only if that body ' +
   'region is clearly visible and bare; "unknown" if it is occluded, cropped out of frame, covered by another ' +
   'layer, or otherwise not judgeable — never guess. For each garment that is "present", give its ONE main color ' +
-  'as a single common color word (e.g. "black", "red", "blue"); omit or use "" otherwise. visibleProps lists any ' +
-  'handheld object (e.g. "vibrator", "drink"), empty array if hands are empty. extraPeople is true only if ' +
-  "more than one person is visible. extraLimbs is true only if the body shows extra or malformed limbs. pose is " +
-  'her overall body position in the frame; use "unknown" if it does not clearly match one of the other options.';
+  'as a single lowercase basic color word (e.g. "black", "red", "blue"), or "unknown" if the color is not ' +
+  'clearly judgeable — never omit it. visibleProps lists any handheld object (e.g. "vibrator", "drink"), empty ' +
+  "array if hands are empty. extraPeople is true only if more than one person is visible. extraLimbs is true " +
+  "only if the body shows extra or malformed limbs. pose is her overall body position in the frame; use " +
+  '"unknown" if it does not clearly match one of the other options. sameWoman compares the SECOND image to the ' +
+  'FIRST: "yes" only if the face, hair, skin tone, and build clearly match the same person; "no" if they ' +
+  'clearly do not; "unknown" if the face is not clearly visible in one or both images. Judge identity on face, ' +
+  "hair, skin tone, and build only — ignore clothing, pose, nudity, and camera angle entirely.";
 
 // Common garment colors, longest-first so "light blue" wins over a bare "blue" scan if ever extended.
 const COLOR_WORDS = [
@@ -139,6 +145,7 @@ const compareToExpected = (
       if (
         typeof seenColor === "string" &&
         seenColor &&
+        seenColor.toLowerCase() !== "unknown" &&
         wantedColor &&
         seenColor.toLowerCase() !== wantedColor.toLowerCase()
       ) {
@@ -171,9 +178,13 @@ const compareToExpected = (
   }
   if (report.extraPeople) issues.push("extra person visible in frame");
   if (report.extraLimbs) issues.push("extra or malformed limbs visible");
+  // "unknown" never mismatches — only an explicit "no" is treated as identity drift.
+  if (report.sameWoman === "no") {
+    issues.push("identity drift: frame does not match the reference photo");
+  }
 
-  // Informational only — never matched by ANATOMY_ISSUE_RE, so it never triggers repairFrame; the
-  // reconciled pose (see generateClip.ts) is the actual fix.
+  // Informational only — never matched by ANATOMY_ISSUE_RE or rejected on; the reconciled pose
+  // (see generateClip.ts) is the actual fix.
   const observedPose = poseFromReport(report);
   if (observedPose && observedPose !== expected.body.pose) {
     issues.push(
@@ -199,9 +210,12 @@ const observedWardrobeFrom = (
 export const guardFrame = async ({
   frameUrl,
   expected,
+  anchorFrameUrl,
 }: {
   frameUrl: string;
   expected: LiveState;
+  // Untouched reference photo — compared against for the identity check (see GUARD_PROMPT).
+  anchorFrameUrl: string;
 }): Promise<
   Pick<FrameGuardReport, "checked" | "issues"> & {
     observed: ObservedState | null;
@@ -210,6 +224,7 @@ export const guardFrame = async ({
   try {
     const completion = await createGroqVisionCompletion({
       imageUrl: frameUrl,
+      referenceImageUrl: anchorFrameUrl,
       prompt: GUARD_PROMPT,
       responseFormat: { type: "json_object" },
     });
@@ -237,68 +252,4 @@ export const guardFrame = async ({
     );
     return { checked: false, issues: [], observed: null };
   }
-};
-
-const garmentFromIssue = (issue: string): GarmentId | null =>
-  (["top", "bottom", "bra", "panties"] as GarmentId[]).find((id) =>
-    issue.startsWith(id),
-  ) ?? null;
-
-const repairInstructionFor = (issue: string, expected: LiveState): string => {
-  const garment = garmentFromIssue(issue);
-  if (garment && issue.includes("should be on")) {
-    return `restore her ${garment} (${expected.wardrobe[garment].description}) exactly as described`;
-  }
-  if (garment && issue.includes("should be off")) {
-    return `remove her ${garment}, it should not be visible`;
-  }
-  if (garment && issue.includes("color drifted")) {
-    return `correct her ${garment} back to its original color: ${expected.wardrobe[garment].description}`;
-  }
-  if (issue.includes("unexpected object")) {
-    return "remove the object in her hand, her hands should be empty";
-  }
-  const missingPropMatch = issue.match(/^expected prop (\S+) is not visible$/);
-  if (missingPropMatch?.[1]) {
-    return `add the ${missingPropMatch[1]} back into her hand, same pose, framing and background`;
-  }
-  const wrongPropMatch = issue.match(
-    /^wrong prop visible: (.+), expected (\S+)$/,
-  );
-  if (wrongPropMatch?.[1] && wrongPropMatch[2]) {
-    return `replace the ${wrongPropMatch[1]} in her hand with the ${wrongPropMatch[2]}`;
-  }
-  if (issue.includes("extra person")) {
-    return "remove the extra person, only one woman should be in frame";
-  }
-  if (issue.includes("extra or malformed limbs")) {
-    return "correct her body back to one head, two arms, two legs";
-  }
-  return issue;
-};
-
-export const repairFrame = async ({
-  frameUrl,
-  anchorFrameUrl,
-  expected,
-  issues,
-}: {
-  frameUrl: string;
-  anchorFrameUrl: string;
-  expected: LiveState;
-  issues: string[];
-}): Promise<string> => {
-  const instructions = issues.map((issue) =>
-    repairInstructionFor(issue, expected),
-  );
-  const prompt =
-    "Restore the exact face, hair, skin tone, and body of the FIRST reference image onto the SECOND image. " +
-    "Keep the second image's pose, framing, background, camera angle, and lighting unchanged. " +
-    `Only fix: ${instructions.join("; ")}. Never change nudity beyond what is instructed.`;
-  return correctFrameIdentityDrift({
-    anchorImageUrl: anchorFrameUrl,
-    frameUrl,
-    prompt,
-    timeoutMs: 15_000,
-  });
 };

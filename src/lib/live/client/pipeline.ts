@@ -20,7 +20,9 @@ export type PipelineEvent =
   | { type: "anchorChanged"; frameUrl: string; state: LiveState; atMs: number }
   | { type: "error"; job: ClipJob; message: string }
   // Fires once a chain job leaves the queue and starts rendering (surfaces "she's getting to @handle's request").
-  | { type: "chainJobStarted"; job: ClipJob };
+  | { type: "chainJobStarted"; job: ClipJob }
+  // Fires once when cumulative spend reaches SESSION_COST_CAP_USD; no further jobs are dispatched.
+  | { type: "costCapReached"; totalCostUsd: number };
 
 export type ClipPipelineOptions = {
   render: (req: ClipRequest) => Promise<ClipResult>;
@@ -81,6 +83,10 @@ export class ClipPipeline {
   // Blocks idle from jumping ahead of the still-in-flight greeting, which shares its initial anchor.
   private firstChainClipPlayed = false;
 
+  // Cumulative render spend, tallied from every clipReady/clipDiscarded result's own costUsd.
+  private totalCostUsd = 0;
+  private costCapReached = false;
+
   constructor(options: ClipPipelineOptions) {
     this.render = options.render;
     this.now = options.now;
@@ -110,6 +116,19 @@ export class ClipPipeline {
     };
   }
 
+  // Tallies a clip's cost (approved or discarded, both already carry costUsd) and emits
+  // costCapReached exactly once when the cumulative total reaches the cap.
+  private addCost(costUsd: number): void {
+    this.totalCostUsd += costUsd;
+    if (
+      !this.costCapReached &&
+      this.totalCostUsd >= LIVE_TUNABLES.SESSION_COST_CAP_USD
+    ) {
+      this.costCapReached = true;
+      this.onEvent({ type: "costCapReached", totalCostUsd: this.totalCostUsd });
+    }
+  }
+
   getReadyDurationsSec(): number {
     return [...this.idleReady, ...this.chainedReady].reduce(
       (sum, clip) => sum + clip.durationSec,
@@ -131,7 +150,10 @@ export class ClipPipeline {
     this.playoutCursorFrameUrl = snapshot.seedFrameUrl;
     this.submitChainJob(initialJob, 0);
     // Idle fillers render alongside the greeting on either backend, so one is ready the moment it ends.
-    while (this.idleInflightCount < LIVE_TUNABLES.IDLE_MAX_INFLIGHT) {
+    while (
+      this.idleInflightCount < LIVE_TUNABLES.IDLE_MAX_INFLIGHT &&
+      !this.costCapReached
+    ) {
       this.submitIdleJob(this.anchor, 0);
     }
   }
@@ -251,7 +273,7 @@ export class ClipPipeline {
   }
 
   private tryAdvanceChain(): void {
-    if (this.disposed || this.chainInflight) {
+    if (this.disposed || this.chainInflight || this.costCapReached) {
       return;
     }
     const getNextJob = this.getNextJob;
@@ -284,7 +306,7 @@ export class ClipPipeline {
   }
 
   private submitChainJob(job: ClipJob, attempt: number): void {
-    if (this.disposed) {
+    if (this.disposed || this.costCapReached) {
       return;
     }
     const snapshot = this.getSnapshot;
@@ -329,6 +351,7 @@ export class ClipPipeline {
     const rejected = result !== null && result.verdict === "rejected";
     if (rejected) {
       this.onEvent({ type: "clipDiscarded", result, costUsd: result.costUsd });
+      this.addCost(result.costUsd);
     }
     if (error || !result || rejected) {
       if (attempt < LIVE_TUNABLES.CHAIN_MAX_ATTEMPTS - 1) {
@@ -356,6 +379,7 @@ export class ClipPipeline {
     // Bridge idles from the new tail can start rendering right away, alongside the next beat.
     this.fillIdleStockpile();
     this.onEvent({ type: "clipReady", result, lane: "chained" });
+    this.addCost(result.costUsd);
     this.announceIfRecovered();
     this.tryAdvanceChain();
   }
@@ -378,7 +402,7 @@ export class ClipPipeline {
 
   // Runs even while the chain lane is busy: idle filler is what covers a chain render's latency.
   private fillIdleStockpile(): void {
-    if (this.disposed) {
+    if (this.disposed || this.costCapReached) {
       return;
     }
     const snapshot = this.getSnapshot;
@@ -396,7 +420,7 @@ export class ClipPipeline {
 
   private submitIdleJob(anchorAtSubmit: AnchorPoint, attempt: number): void {
     const snapshot = this.getSnapshot;
-    if (!snapshot || this.disposed) {
+    if (!snapshot || this.disposed || this.costCapReached) {
       return;
     }
     const request: ClipRequest = {
@@ -432,6 +456,7 @@ export class ClipPipeline {
     const rejected = result !== null && result.verdict === "rejected";
     if (rejected) {
       this.onEvent({ type: "clipDiscarded", result, costUsd: result.costUsd });
+      this.addCost(result.costUsd);
     }
     if (error || !result || rejected) {
       if (attempt < 1) {
@@ -460,6 +485,7 @@ export class ClipPipeline {
         result,
         costUsd: result.costUsd,
       });
+      this.addCost(result.costUsd);
       this.fillIdleStockpile();
       return;
     }
@@ -469,6 +495,7 @@ export class ClipPipeline {
     this.idleAnchorByClipId.set(result.clipId, anchorAtSubmit.frameUrl);
     this.idleReady.push(result);
     this.onEvent({ type: "clipReady", result, lane: "idle" });
+    this.addCost(result.costUsd);
     this.announceIfRecovered();
     this.fillIdleStockpile();
   }

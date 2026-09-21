@@ -82,6 +82,15 @@ describe("isRefusal / isTooSimilarToPrior", () => {
     expect(isRefusal("i won't lie, that's hot")).toBe(false);
   });
 
+  it("flags a refusal lead with no disallowed-action verb, which used to leak", () => {
+    expect(isRefusal("i'm not able to continue with that")).toBe(true);
+    expect(isRefusal("i'm not comfortable doing this")).toBe(true);
+    expect(isRefusal("i don't feel comfortable going further")).toBe(true);
+    expect(isRefusal("i can't continue with that one babe")).toBe(true);
+    expect(isRefusal("i can't wait to show you")).toBe(false);
+    expect(isRefusal("i won't keep you waiting")).toBe(false);
+  });
+
   it("flags a line too similar to a prior one", () => {
     expect(
       isTooSimilarToPrior("hey there watch this now baby", [

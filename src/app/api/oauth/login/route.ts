@@ -18,8 +18,20 @@ export async function GET(request: Request) {
 
   const cookieStore = await cookies();
   const secure = url.protocol === "https:";
-  cookieStore.set("oauth_state", state, { httpOnly: true, path: "/", sameSite: "lax", secure, maxAge: 600 });
-  cookieStore.set("oauth_verifier", verifier, { httpOnly: true, path: "/", sameSite: "lax", secure, maxAge: 600 });
+  cookieStore.set("oauth_state", state, {
+    httpOnly: true,
+    path: "/",
+    sameSite: "lax",
+    secure,
+    maxAge: 600,
+  });
+  cookieStore.set("oauth_verifier", verifier, {
+    httpOnly: true,
+    path: "/",
+    sameSite: "lax",
+    secure,
+    maxAge: 600,
+  });
 
   const res = NextResponse.redirect(authUrl);
   res.headers.set("Content-Security-Policy", "frame-ancestors 'self'");

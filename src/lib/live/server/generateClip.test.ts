@@ -21,17 +21,9 @@ vi.mock("@/lib/fal/extractLastFrame", () => ({
   extractMidFrameUrl: (...args: unknown[]) => extractMidFrameUrl(...args),
 }));
 
-const correctFrameIdentityDrift = vi.fn();
-vi.mock("@/lib/fal/requestFrameIdentityCorrection", () => ({
-  correctFrameIdentityDrift: (...args: unknown[]) =>
-    correctFrameIdentityDrift(...args),
-}));
-
 const guardFrame = vi.fn();
-const repairFrame = vi.fn();
 vi.mock("./frameGuard", () => ({
   guardFrame: (...args: unknown[]) => guardFrame(...args),
-  repairFrame: (...args: unknown[]) => repairFrame(...args),
 }));
 
 const writeReply = vi.fn();
@@ -116,9 +108,7 @@ beforeEach(() => {
   renderBackendFor.mockReset();
   extractLastFrameUrl.mockReset();
   extractMidFrameUrl.mockReset();
-  correctFrameIdentityDrift.mockReset();
   guardFrame.mockReset();
-  repairFrame.mockReset();
   writeReply.mockReset();
   writeCheckIn.mockReset();
 
@@ -152,8 +142,6 @@ describe("generateClip: idle", () => {
     expect(extractMidFrameUrl).toHaveBeenCalledTimes(1);
     expect(extractLastFrameUrl).not.toHaveBeenCalled();
     expect(guardFrame).toHaveBeenCalledTimes(1);
-    expect(repairFrame).not.toHaveBeenCalled();
-    expect(correctFrameIdentityDrift).not.toHaveBeenCalled();
     expect(result.loops).toBe(true);
     expect(result.seedFrameUrl).toBe(req.session.seedFrameUrl);
     expect(result.verdict).toBe("approved");
@@ -242,7 +230,6 @@ describe("generateClip: hold clips other than idle", () => {
     expect(guardFrame).toHaveBeenCalledTimes(2);
     expect(result.loops).toBe(false);
     expect(result.verdict).toBe("rejected");
-    expect(repairFrame).not.toHaveBeenCalled();
   });
 
   it("greeting approves and uses the last frame as its next seed when both checks pass clean", async () => {
@@ -303,7 +290,6 @@ describe("generateClip: hold clips other than idle", () => {
 
     expect(extractMidFrameUrl).toHaveBeenCalled();
     expect(extractLastFrameUrl).toHaveBeenCalled();
-    expect(repairFrame).not.toHaveBeenCalled();
     expect(result.verdict).toBe("rejected");
   });
 
@@ -337,7 +323,6 @@ describe("generateClip: hold clips other than idle", () => {
     const result = await generateClip(req);
 
     expect(guardFrame).toHaveBeenCalled();
-    expect(correctFrameIdentityDrift).not.toHaveBeenCalled();
     expect(result.verdict).toBe("rejected");
     expect(result.rejectReason).toMatch(/guardFrame/);
     expect(result.seedFrameUrl).toBe(LAST_URL);
@@ -563,15 +548,125 @@ describe("generateClip: wardrobe clips (removeGarment/addGarment)", () => {
 
     expect(result.verdict).toBe("rejected");
     expect(result.rejectReason).toBe(
-      "last frame: panties should be on but shows absent",
+      "midpoint frame: panties should be on but shows absent",
     );
+  });
+
+  it("checks both midpoint and last frames, failing closed on an unchecked frame", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    guardFrame.mockResolvedValue({
+      checked: false,
+      issues: [],
+      observed: null,
+    });
+    const req = clipRequest({
+      job: {
+        kind: "beat",
+        beat: {
+          id: "b1",
+          intent: { type: "removeGarment", garment: "bra" },
+          attempt: 0,
+        },
+      },
+    });
+
+    const result = await generateClip(req);
+
+    expect(extractMidFrameUrl).toHaveBeenCalled();
+    expect(extractLastFrameUrl).toHaveBeenCalled();
+    expect(result.verdict).toBe("rejected");
+    expect(result.rejectReason).toMatch(/guardFrame failed on the/);
+  });
+
+  it("rejects when the target garment reads unknown on the last frame", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    guardFrame.mockResolvedValue({
+      checked: true,
+      issues: [],
+      observed: { wardrobe: {} },
+    });
+    const req = clipRequest({
+      job: {
+        kind: "beat",
+        beat: {
+          id: "b1",
+          intent: { type: "removeGarment", garment: "bra" },
+          attempt: 0,
+        },
+      },
+    });
+
+    const result = await generateClip(req);
+
+    expect(result.verdict).toBe("rejected");
+    expect(result.rejectReason).toBe("last frame: target garment bra unknown");
+  });
+
+  it("rejects a non-target garment color drift, exempting the target garment's own color", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    guardFrame.mockImplementation(
+      guardByFrame({
+        [MID_URL]: {
+          issues: ["panties color drifted: expected black, showing red"],
+          observed: { wardrobe: { bra: false } },
+        },
+        [LAST_URL]: {
+          issues: ["panties color drifted: expected black, showing red"],
+          observed: { wardrobe: { bra: false } },
+        },
+      }),
+    );
+    const req = clipRequest({
+      job: {
+        kind: "beat",
+        beat: {
+          id: "b1",
+          intent: { type: "removeGarment", garment: "bra" },
+          attempt: 0,
+        },
+      },
+    });
+
+    const result = await generateClip(req);
+
+    expect(result.verdict).toBe("rejected");
+    expect(result.rejectReason).toMatch(/panties color drifted/);
+  });
+
+  it("rejects on identity drift reported on either checked frame", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    guardFrame.mockResolvedValue({
+      checked: true,
+      issues: ["identity drift: frame does not match the reference photo"],
+      observed: { wardrobe: { bra: false } },
+    });
+    const req = clipRequest({
+      job: {
+        kind: "beat",
+        beat: {
+          id: "b1",
+          intent: { type: "removeGarment", garment: "bra" },
+          attempt: 0,
+        },
+      },
+    });
+
+    const result = await generateClip(req);
+
+    expect(result.verdict).toBe("rejected");
+    expect(result.rejectReason).toMatch(/identity drift/);
   });
 });
 
 describe("generateClip: non-hold clips (requested wardrobe change or explicit act)", () => {
-  it("a reply job extracts only the last frame and guards it, and does not loop", async () => {
+  it("a reply job that changes wardrobe guards both frames and does not loop", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
     writeReply.mockResolvedValue({ text: "mmm okay", nextWorld: "w" });
+    guardFrame.mockResolvedValue({
+      checked: true,
+      issues: [],
+      observed: { wardrobe: { top: false } },
+    });
     const req = clipRequest({
       job: {
         kind: "reply",
@@ -584,14 +679,12 @@ describe("generateClip: non-hold clips (requested wardrobe change or explicit ac
 
     const result = await generateClip(req);
 
-    expect(extractMidFrameUrl).not.toHaveBeenCalled();
+    expect(extractMidFrameUrl).toHaveBeenCalled();
     expect(extractLastFrameUrl).toHaveBeenCalledWith(
       "https://example.com/out.mp4",
       expect.any(Number),
     );
-    expect(guardFrame).toHaveBeenCalledTimes(1);
-    expect(repairFrame).not.toHaveBeenCalled();
-    expect(correctFrameIdentityDrift).not.toHaveBeenCalled();
+    expect(guardFrame).toHaveBeenCalledTimes(2);
     expect(result.loops).toBe(false);
     expect(result.verdict).toBe("approved");
   });
@@ -616,13 +709,12 @@ describe("generateClip: non-hold clips (requested wardrobe change or explicit ac
 
     const result = await generateClip(req);
 
-    expect(repairFrame).not.toHaveBeenCalled();
     expect(result.observed).toEqual({ wardrobe: { bra: true } });
     expect(result.state.wardrobe.bra.on).toBe(true);
     expect(result.verdict).toBe("approved");
   });
 
-  it("a removeGarment beat whose vision call fails is still approved — never rejected by wardrobe observation, and the missing check fails open here (asymmetric with hold clips)", async () => {
+  it("a removeGarment beat whose vision call fails is rejected — a wardrobe clip fails closed on an unchecked frame", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
     // Default guardFrame mock resolves checked:false, simulating a refused/failed vision call.
     const req = clipRequest({
@@ -638,12 +730,17 @@ describe("generateClip: non-hold clips (requested wardrobe change or explicit ac
 
     const result = await generateClip(req);
 
-    expect(result.verdict).toBe("approved");
-    expect(result.rejectReason).toBeNull();
+    expect(result.verdict).toBe("rejected");
+    expect(result.rejectReason).toMatch(/guardFrame failed on the/);
   });
 
   it("a removeGarment beat whose last-frame extraction fails is rejected: no frame means no coherent next seed", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    guardFrame.mockResolvedValue({
+      checked: true,
+      issues: [],
+      observed: { wardrobe: {} },
+    });
     extractLastFrameUrl.mockRejectedValueOnce(new Error("timed out"));
     const req = clipRequest({
       job: {
@@ -701,7 +798,6 @@ describe("generateClip: non-hold clips (requested wardrobe change or explicit ac
     const result = await generateClip(req);
 
     expect(guardFrame).toHaveBeenCalled();
-    expect(correctFrameIdentityDrift).not.toHaveBeenCalled();
     expect(result.seedFrameUrl).toBe(LAST_URL);
   });
 });
@@ -710,9 +806,9 @@ describe("generateClip: world state (item 3)", () => {
   it("adopts nextWorld from the reply only when the clip is approved", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
     guardFrame.mockResolvedValue({
-      checked: false,
+      checked: true,
       issues: [],
-      observed: null,
+      observed: { wardrobe: { top: false } },
     });
     writeReply.mockResolvedValue({
       text: "mmm okay",

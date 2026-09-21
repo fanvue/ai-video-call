@@ -33,8 +33,8 @@ Client (browser)                                  Server (Next route handlers, s
 │ LiveDirector (pure reducer)  │  POST /api/live  │ planClip(state, job) -> ClipPlan      │
 │  - LiveState                 │  /clip           │ renderClip(plan, seed) -> video       │
 │  - job queue                 │ ───────────────► │ extractLastFrame                      │
-│  - redress / settle timers   │                  │ guardFrame(frame, expected) -> issues │
-│ ClipPipeline (1-ahead chain) │ ◄─────────────── │ repairFrame(frame, expected, anchor)  │
+│  - redress / settle timers   │                  │ extractMidFrameUrl / extractLastFrame │
+│ ClipPipeline (1-ahead chain) │ ◄─────────────── │ guardFrame(frame, expected, anchor)   │
 │  - inflight job              │  ClipResult      │ writeReply (text LLM)                  │
 │  - ready buffer              │                  └──────────────────────────────────────┘
 │ GaplessPlayer (2 <video>)    │
@@ -48,20 +48,20 @@ state to a session store (Redis) later only changes the transport, not the engin
 
 ## Clip chain: anchors and loops
 
-Generation is slower than playback (render ~10s, frame extract ~3s, guard ~2s, repair or
-identity correction ~10s when they fire), so a strict one-in-flight chain cannot hold a buffer.
-The chain therefore has two modes:
+Generation is slower than playback (render ~10s, frame extract ~3s, guard ~2s), so a strict
+one-in-flight chain cannot hold a buffer. The chain therefore has two modes:
 
 - **Anchored idle.** An idle clip is rendered with `image_url` = `end_image_url` = the current
   anchor frame, so it starts and ends on the same frame (`ClipResult.loops = true`,
   `seedFrameUrl` = the anchor). Idle clips are interchangeable: the client keeps
   `IDLE_BUFFER_TARGET` ready and up to `IDLE_MAX_INFLIGHT` rendering in parallel, all from one
-  anchor. Guard and identity correction run on the anchor off the critical path; a repaired
-  anchor replaces the old one and the stockpile is rebuilt from it.
+  anchor. A rejected anchor frame is never adopted; the anchor only ever advances from an
+  approved clip.
 - **Chained action.** `greeting`, `reply`, `beat` and `checkIn` are
   seeded from the frame currently on the anchor and chain frame to frame. Their last frame
-  (guarded, repaired) becomes the new anchor. When the anchor changes, buffered idle loops from
-  the old anchor are discarded and new ones are rendered from the new anchor immediately.
+  (guarded against both canon and the identity anchor) becomes the new anchor. When the anchor
+  changes, buffered idle loops from the old anchor are discarded and new ones are rendered from
+  the new anchor immediately.
 - **Bridge idles.** While a multi-beat chain is running, the idle lane targets the chain tail
   instead of the (stale) anchor, so an idle rendered from that tail is already playable the
   moment its chained clip is displayed, instead of holding a still frame for the next beat's
@@ -99,6 +99,11 @@ Invariants:
 - `Wardrobe` is a per-garment record (`top`, `bottom`, `bra`, `panties`, each `on | off`, plus a
   description string captured at greeting from the reference photo). Strip and redress move one
   garment at a time. The prompt names the exact garment as described.
+- Canon: she always starts a session in a white bra and white panties, fixed regardless of what
+  the capture prompt returns for the reference photo (`src/app/api/live/reference/route.ts`
+  hardcodes `DEFAULT_WARDROBE`'s bra/panties colour; capture only ever reads lookLock/surroundings/
+  framing). The video prompt's wardrobe line always names the colour, and the wardrobe-lock line on
+  a non-wardrobe clip states the worn bra/panties stay white and unchanged.
 - Nothing is ever put back on automatically; only a fan request (or a garment correction) adds a
   garment.
 - Removal/dress clips run the full `MAX_CLIP_SEC` (15s), staged as mechanically explicit,
@@ -115,39 +120,50 @@ Invariants:
 
 ## Frame guard
 
-`guardFrame(frame, expectedState)` uses a vision model returning `{ top, bottom, bra, panties,
-visibleProps[], pose, extraPeople, extraLimbs }`, each garment `"present" | "absent" | "unknown"`
-(never guessed) and validated with a zod schema — an unparseable or schema-invalid response comes
-back `checked: false`, never adopted.
+`guardFrame({ frameUrl, expected, anchorFrameUrl })` sends the vision model two images — the
+session's untouched `anchorFrameUrl` first, the frame under check second — with a prompt asking for
+`{ top, bottom, bra, panties, visibleProps[], pose, extraPeople, extraLimbs, sameWoman }`, validated
+with a zod schema; an unparseable or schema-invalid response comes back `checked: false`, never
+adopted. Each garment reports presence as `"present" | "absent" | "unknown"` (never guessed) plus a
+`color` that is either a lowercase basic colour word or `"unknown"` (also never omitted). `sameWoman`
+is `"yes" | "no" | "unknown"`, judged on face/hair/skin/build only — clothing, pose, nudity and
+camera angle are explicitly excluded from that judgement.
 
 Every `ClipResult` carries a `verdict: "approved" | "rejected"` and `rejectReason`. Canon is truth
 for the seed frame: any checked frame showing a garment that disagrees with canon in **either**
 direction — worn-but-should-be-off, or off-but-should-be-on — rejects the clip, not just the
-worn-but-should-be-off case. The one exception is a wardrobe clip's own target garment, which is
-exempt from rejection and instead adopted from observation both ways (`reconcileState.ts`), so
-`director.ts`'s bounded retry can re-attempt an unmet removal/add. Observed `"unknown"` never
-counts as a mismatch. `evaluateFrameChecks` in `generateClip.ts` is the single place this rule
-lives, for all four clip kinds:
+worn-but-should-be-off case, and so does a colour mismatch on any present garment. The one
+exception is a wardrobe clip's own target garment, which is exempt from both presence and colour
+rejection and instead adopted from observation both ways (`reconcileState.ts`), so `director.ts`'s
+bounded retry can re-attempt an unmet removal/add. Observed `"unknown"` (presence or colour) never
+counts as a mismatch. `sameWoman === "no"` rejects with "identity drift" in every path, including
+the fail-open one — identity is never allowed to fail open. `evaluateFrameChecks` in
+`generateClip.ts` is the single place the presence/colour/identity rules live, for all four clip
+kinds:
 
-| Clip kind                                                     | Frames checked  | Unchecked frame                  | Checked-frame rejection                                                      |
-| ------------------------------------------------------------- | --------------- | -------------------------------- | ---------------------------------------------------------------------------- |
-| Idle                                                          | midpoint only   | rejects (fail closed)            | any garment mismatch, extraPeople/extraLimbs                                 |
-| Hold (`wardrobeIntent === null && !explicit`)                 | midpoint + last | rejects (fail closed)            | any garment mismatch, extraPeople/extraLimbs                                 |
-| Explicit non-wardrobe (`wardrobeIntent === null && explicit`) | midpoint + last | skips with a warning (fail open) | any garment mismatch, extraPeople/extraLimbs on a checked frame              |
-| Wardrobe (`wardrobeIntent` `"remove"`\|`"add"`)               | last only       | skips with a warning (fail open) | any NON-target garment mismatch, extraPeople/extraLimbs on the checked frame |
+| Clip kind                                                     | Frames checked  | Unchecked frame                  | Checked-frame rejection                                                                                                                           |
+| ------------------------------------------------------------- | --------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Idle                                                          | midpoint only   | rejects (fail closed)            | garment/colour mismatch, identity drift, extraPeople/extraLimbs                                                                                   |
+| Hold (`wardrobeIntent === null && !explicit`)                 | midpoint + last | rejects (fail closed)            | garment/colour mismatch, identity drift, extraPeople/extraLimbs                                                                                   |
+| Explicit non-wardrobe (`wardrobeIntent === null && explicit`) | midpoint + last | skips with a warning (fail open) | garment/colour mismatch, identity drift, extraPeople/extraLimbs on a checked frame                                                                |
+| Wardrobe (`wardrobeIntent` `"remove"`\|`"add"`)               | midpoint + last | rejects (fail closed)            | any NON-target garment/colour mismatch, identity drift, extraPeople/extraLimbs; target garment reading `"unknown"` on the last frame also rejects |
 
-The fail-open paths exist so a persistent vision refusal can't permanently block a legitimately
-requested clip. An approved clip reconciles pose unconditionally; wardrobe is only ever reconciled
-for a wardrobe clip's own target garment (never for a hold or explicit non-wardrobe clip, since
-there canon already matches or the clip was rejected). A rejected clip adopts nothing — its state
-stays `plan.expectedState` untouched. `buildPrompt` also adds a short "clothing stays exactly as
-described" line to any clip whose action doesn't already carry an equivalent lock and whose planned
-wardrobe doesn't change, as a second line of defense against the model changing wardrobe when it
-wasn't asked to.
+The one remaining fail-open path (explicit non-wardrobe) exists so a persistent vision refusal
+can't permanently block a legitimately requested clip; wardrobe clips no longer fail open, since an
+unchecked garment swap is the case most worth blocking on. An approved clip reconciles pose
+unconditionally; wardrobe is only ever reconciled for a wardrobe clip's own target garment (never
+for a hold or explicit non-wardrobe clip, since there canon already matches or the clip was
+rejected). A rejected clip adopts nothing — its state stays `plan.expectedState` untouched.
+`buildPrompt` also adds a short "clothing stays exactly as described" line (naming the worn
+bra/panties as staying white) to any clip whose action doesn't already carry an equivalent lock and
+whose planned wardrobe doesn't change, as a second line of defense against the model changing
+wardrobe when it wasn't asked to.
 
-Frame repair (`repairFrame`) was retired with this pass; a failing clip is rejected and retried as
-a whole clip instead of pixel-patched. Identity re-anchoring against the original upload continues
-to run on the existing 45s cadence.
+Frame repair (`repairFrame`, `src/lib/fal/requestFrameIdentityCorrection.ts`) was deleted with this
+pass, along with periodic blind identity correction; a failing or identity-drifted clip is rejected
+and retried as a whole clip instead of pixel-patched, with identity instead verified per checked
+frame against `anchorFrameUrl` as described above. The reference photo itself is never fed into
+video generation (`renderClip.ts`) — only into the vision guard's identity comparison.
 
 ## Job ordering, busy gate and abandonment
 
@@ -219,6 +235,10 @@ payment stack behind human approval.
   only when both halves independently match an act) and each clause is negation-checked before
   being resolved, so "take your top off then shake your ass" chains two beats and "don't take
   your top off" locks against undressing instead of matching the strip verb.
+- A `reply`/`beat` prompt leads with the requested action and a one-line "only this action, no
+  turning, no walking off, no clothing change unless it's the wardrobe beat" constraint, ahead of
+  the camera/anatomy/look locks (`buildPrompt`'s `leadWithAction`); greeting/idle/checkIn keep the
+  locks-first order since they aren't a fan-requested action.
 - **One clip per request, always.** A fan request performs entirely in the clip it's given, from
   whatever state she's currently in — there is no separate transition/precondition clip.
   `planBeatIntent` instead prepends a short in-clip lead-in sentence (setting a held prop down,
@@ -233,9 +253,8 @@ payment stack behind human approval.
   a chat reply never costs two clips just to fit the typing lead in front of the act. The clip
   stays typing-only (the beat becomes a follow-up instead) only when the first beat holds the pose
   with nothing to fold in (small talk) or is a fetch, since fetch-then-use must stay two clips.
-- `correctFrameIdentityDrift` (in `src/lib/fal/requestFrameIdentityCorrection.ts`) takes a
-  `prompt` override; `frameGuard.repairFrame` still exists as its caller but is no longer invoked
-  by `generateClip` (a drifted clip is rejected and re-rendered, not pixel-patched).
+- `requestFrameIdentityCorrection.ts` and `frameGuard.repairFrame` are deleted; a drifted or
+  otherwise failing frame is rejected and the whole clip re-rendered, not pixel-patched.
 - Timing rule: `reply`, `beat`, `checkIn`, and `greeting` clips run `ACTION_CLIP_SEC` (11s — must
   stay above `IDLE_CLIP_SEC`'s 10s, both already at the fal floor, since `planReply` tells a
   hold-only beat from a real one by comparing the two); only `idle` stays at `IDLE_CLIP_SEC`. Every

@@ -13,6 +13,11 @@ import {
   type TranscriptEntry,
 } from "@/lib/live/contract";
 
+// Per-request lifecycle the UI can render (queue strip chip, transcript failure line). Driven by
+// pipeline events; see useLiveSession's handlePipelineEvent for the generating/playing transitions.
+export type RequestStatus =
+  "queued" | "generating" | "playing" | "done" | "failed";
+
 export type DirectorState = {
   creator: CreatorProfile;
   liveState: LiveState;
@@ -21,6 +26,9 @@ export type DirectorState = {
   startedAt: number;
   transcript: TranscriptEntry[];
   jobQueue: ClipJob[];
+  // Keyed by fan/viewer request (transcript entry) id. Never cleared, so a late UI read still
+  // finds the terminal status; the hook is responsible for how long a "failed" chip stays visible.
+  requestStatuses: Record<string, RequestStatus>;
   // Last time genuine (non-idle) activity happened: a fan/viewer request arriving, or a non-idle
   // clip completing. Idle-threshold ticks (rest / checkIn) measure from this, not wall-clock alone.
   lastActivityAt: number;
@@ -71,6 +79,7 @@ export class LiveDirector {
       startedAt: init.now,
       transcript: [],
       jobQueue: [{ kind: "greeting" }],
+      requestStatuses: {},
       lastActivityAt: init.now,
       lastChannel: "chat",
       checkedInSinceLastRequest: false,
@@ -118,6 +127,7 @@ export class LiveDirector {
       ...this.state,
       transcript: [...this.state.transcript, entry],
       jobQueue: queue,
+      requestStatuses: { ...this.state.requestStatuses, [entry.id]: "queued" },
       lastActivityAt: now,
       lastChannel: payload.channel,
       checkedInSinceLastRequest: false,
@@ -157,11 +167,21 @@ export class LiveDirector {
       ...this.state,
       transcript: [...this.state.transcript, entry],
       jobQueue: queue,
+      requestStatuses: { ...this.state.requestStatuses, [entry.id]: "queued" },
       lastActivityAt: now,
       checkedInSinceLastRequest: false,
       restScheduledSinceLastRequest: false,
     };
     return { entry, job };
+  }
+
+  // UI-driven transition (job dispatched -> "generating", clip on screen -> "playing", a failed
+  // clip -> "failed"); "queued" and "done" are set internally. No-op for an unknown requestId.
+  setRequestStatus(requestId: string, status: RequestStatus): void {
+    this.state = {
+      ...this.state,
+      requestStatuses: { ...this.state.requestStatuses, [requestId]: status },
+    };
   }
 
   clipCompleted(result: ClipResult, now: number): void {
@@ -221,12 +241,32 @@ export class LiveDirector {
       queue = [{ kind: "beat", beat: retryBeat }, ...queue];
     }
 
+    // A request is "done" once its last clip finishes and nothing of its own remains queued
+    // (a reply's own follow-ups, or a beat's own retry, both already folded into `queue` above).
+    const requestId =
+      dispatchedJob?.kind === "reply"
+        ? dispatchedJob.requestId
+        : dispatchedJob?.kind === "beat"
+          ? (dispatchedJob.beat.requestId ?? null)
+          : null;
+    let requestStatuses = this.state.requestStatuses;
+    if (
+      requestId &&
+      !queue.some(
+        (job) =>
+          job.kind === "beat" && (job.beat.requestId ?? null) === requestId,
+      )
+    ) {
+      requestStatuses = { ...requestStatuses, [requestId]: "done" };
+    }
+
     this.state = {
       ...this.state,
       liveState: result.state,
       seedFrameUrl: result.seedFrameUrl,
       transcript,
       jobQueue: queue,
+      requestStatuses,
     };
   }
 
@@ -238,7 +278,13 @@ export class LiveDirector {
       }
       return (job.beat.requestId ?? null) !== requestId;
     });
-    this.state = { ...this.state, jobQueue };
+    const requestStatuses = requestId
+      ? {
+          ...this.state.requestStatuses,
+          [requestId]: "failed" as RequestStatus,
+        }
+      : this.state.requestStatuses;
+    this.state = { ...this.state, jobQueue, requestStatuses };
   }
 
   // `activity.busy` covers work the queue can't see: a job already dispatched and rendering, or

@@ -195,6 +195,27 @@ export const LiveStudio = () => {
     return () => window.clearInterval(id);
   }, [phase, startedAtMs]);
 
+  const handleAutoEnd = useCallback(() => {
+    voice.stop();
+    stopPrivateMeter();
+    setPhase("setup");
+    setStartedAtMs(null);
+    if (session.endReason === "costCap") {
+      setStartError("Session ended: spending cap reached ($8.00).");
+    } else if (session.endReason === "maxDuration") {
+      setStartError("Session ended: max session length reached.");
+    }
+  }, [voice, stopPrivateMeter, session.endReason]);
+
+  // Syncs local UI to a session that ended itself (spend cap, max duration), not derived state.
+  useEffect(() => {
+    if (session.status !== "ended" || phase !== "live") {
+      return;
+    }
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    handleAutoEnd();
+  }, [session.status, phase, handleAutoEnd]);
+
   const handlePickTipMenuItem = useCallback(
     (item: TipMenuAction) => {
       setTipMenuOpen(false);
@@ -234,6 +255,9 @@ export const LiveStudio = () => {
   const nowPlayingLabel = formatQueueLabel(
     session.queueStrip.current,
     session.queueStrip.queued.length,
+    session.queueStrip.current?.requestId
+      ? session.requestStatuses[session.queueStrip.current.requestId]
+      : undefined,
   );
 
   const includedActions = useMemo(

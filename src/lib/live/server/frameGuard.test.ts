@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { vi } from "vitest";
 import type { LiveState } from "../contract";
-import { guardFrame, repairFrame } from "./frameGuard";
+import { guardFrame } from "./frameGuard";
 
 const createGroqVisionCompletion = vi.fn();
 vi.mock("@/lib/groq", () => ({
@@ -9,15 +9,12 @@ vi.mock("@/lib/groq", () => ({
   createGroqVisionCompletion: (...args: unknown[]) =>
     createGroqVisionCompletion(...args),
 }));
-const correctFrameIdentityDrift = vi.fn();
-vi.mock("@/lib/fal/requestFrameIdentityCorrection", () => ({
-  correctFrameIdentityDrift: (...args: unknown[]) =>
-    correctFrameIdentityDrift(...args),
-}));
 
 const completionWith = (content: string) => ({
   choices: [{ message: { content } }],
 });
+
+const ANCHOR_URL = "https://x/anchor.jpg";
 
 const expected: LiveState = {
   wardrobe: {
@@ -60,13 +57,12 @@ const fullReport = (overrides: Record<string, unknown> = {}) => ({
   visibleProps: [],
   extraPeople: false,
   extraLimbs: false,
+  sameWoman: "yes",
   ...overrides,
 });
 
 beforeEach(() => {
   createGroqVisionCompletion.mockReset();
-  correctFrameIdentityDrift.mockReset();
-  correctFrameIdentityDrift.mockResolvedValue("https://x/repaired.jpg");
 });
 
 describe("guardFrame", () => {
@@ -77,12 +73,30 @@ describe("guardFrame", () => {
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
       expected,
+      anchorFrameUrl: ANCHOR_URL,
     });
     expect(result.checked).toBe(true);
     expect(result.issues).toEqual([]);
     expect(result.observed).toEqual({
       wardrobe: { top: true, bottom: true, bra: true, panties: true },
     });
+  });
+
+  it("sends the anchor frame as a reference image ahead of the checked frame", async () => {
+    createGroqVisionCompletion.mockResolvedValue(
+      completionWith(JSON.stringify(fullReport())),
+    );
+    await guardFrame({
+      frameUrl: "https://x/frame.jpg",
+      expected,
+      anchorFrameUrl: ANCHOR_URL,
+    });
+    expect(createGroqVisionCompletion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        imageUrl: "https://x/frame.jpg",
+        referenceImageUrl: ANCHOR_URL,
+      }),
+    );
   });
 
   it("returns observed wardrobe booleans even when they disagree with expected", async () => {
@@ -92,6 +106,7 @@ describe("guardFrame", () => {
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
       expected,
+      anchorFrameUrl: ANCHOR_URL,
     });
     expect(result.observed?.wardrobe.top).toBe(false);
   });
@@ -103,6 +118,7 @@ describe("guardFrame", () => {
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
       expected,
+      anchorFrameUrl: ANCHOR_URL,
     });
     expect(result.issues.some((issue) => issue.includes("bra"))).toBe(false);
     expect(result.observed?.wardrobe.bra).toBeUndefined();
@@ -113,6 +129,7 @@ describe("guardFrame", () => {
     const failed = await guardFrame({
       frameUrl: "https://x/frame.jpg",
       expected,
+      anchorFrameUrl: ANCHOR_URL,
     });
     expect(failed.observed).toBeNull();
   });
@@ -124,6 +141,7 @@ describe("guardFrame", () => {
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
       expected,
+      anchorFrameUrl: ANCHOR_URL,
     });
     expect(result.issues.some((issue) => issue.includes("top"))).toBe(true);
   });
@@ -135,6 +153,7 @@ describe("guardFrame", () => {
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
       expected,
+      anchorFrameUrl: ANCHOR_URL,
     });
     expect(result.issues.some((issue) => issue.includes("phone"))).toBe(true);
   });
@@ -148,6 +167,7 @@ describe("guardFrame", () => {
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
       expected,
+      anchorFrameUrl: ANCHOR_URL,
     });
     expect(result.issues.some((i) => i.includes("extra person"))).toBe(true);
     expect(
@@ -155,11 +175,12 @@ describe("guardFrame", () => {
     ).toBe(true);
   });
 
-  it("returns unchecked rather than repairing blind when the vision call fails", async () => {
+  it("returns unchecked rather than guessing when the vision call fails", async () => {
     createGroqVisionCompletion.mockRejectedValue(new Error("refused"));
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
       expected,
+      anchorFrameUrl: ANCHOR_URL,
     });
     expect(result.checked).toBe(false);
     expect(result.issues).toEqual([]);
@@ -172,6 +193,7 @@ describe("guardFrame", () => {
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
       expected,
+      anchorFrameUrl: ANCHOR_URL,
     });
     expect(result.checked).toBe(false);
   });
@@ -183,6 +205,7 @@ describe("guardFrame", () => {
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
       expected,
+      anchorFrameUrl: ANCHOR_URL,
     });
     expect(result.checked).toBe(false);
     expect(result.observed).toBeNull();
@@ -195,6 +218,7 @@ describe("guardFrame", () => {
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
       expected,
+      anchorFrameUrl: ANCHOR_URL,
     });
     expect(result.checked).toBe(false);
   });
@@ -206,6 +230,7 @@ describe("guardFrame", () => {
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
       expected: expectedWithProp("vibrator"),
+      anchorFrameUrl: ANCHOR_URL,
     });
     expect(
       result.issues.some(
@@ -224,6 +249,7 @@ describe("guardFrame", () => {
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
       expected,
+      anchorFrameUrl: ANCHOR_URL,
     });
     expect(
       result.issues.some(
@@ -242,8 +268,21 @@ describe("guardFrame", () => {
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
       expected,
+      anchorFrameUrl: ANCHOR_URL,
     });
     expect(result.issues).toEqual([]);
+  });
+
+  it('does not flag color drift when the observed color is "unknown"', async () => {
+    createGroqVisionCompletion.mockResolvedValue(
+      completionWith(JSON.stringify(fullReport({ topColor: "unknown" }))),
+    );
+    const result = await guardFrame({
+      frameUrl: "https://x/frame.jpg",
+      expected,
+      anchorFrameUrl: ANCHOR_URL,
+    });
+    expect(result.issues.some((issue) => issue.includes("color"))).toBe(false);
   });
 
   it("parses a valid pose into observed.pose", async () => {
@@ -253,6 +292,7 @@ describe("guardFrame", () => {
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
       expected,
+      anchorFrameUrl: ANCHOR_URL,
     });
     expect(result.observed?.pose).toBe("standing");
   });
@@ -264,17 +304,19 @@ describe("guardFrame", () => {
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
       expected,
+      anchorFrameUrl: ANCHOR_URL,
     });
     expect(result.observed?.pose).toBeUndefined();
   });
 
-  it("flags pose drift as informational only, never triggering repair", async () => {
+  it("flags pose drift as informational only", async () => {
     createGroqVisionCompletion.mockResolvedValue(
       completionWith(JSON.stringify(fullReport({ pose: "standing" }))),
     );
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
       expected,
+      anchorFrameUrl: ANCHOR_URL,
     });
     expect(result.issues.some((issue) => issue.includes("pose drifted"))).toBe(
       true,
@@ -293,54 +335,50 @@ describe("guardFrame", () => {
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
       expected: expectedWithProp("vibrator"),
+      anchorFrameUrl: ANCHOR_URL,
     });
     expect(result.issues).toEqual([]);
   });
-});
 
-describe("repairFrame instructions", () => {
-  it("asks to add the missing prop back into her hand", async () => {
-    await repairFrame({
-      frameUrl: "https://x/frame.jpg",
-      anchorFrameUrl: "https://x/anchor.jpg",
-      expected: expectedWithProp("vibrator"),
-      issues: ["expected prop vibrator is not visible"],
-    });
-    const call = correctFrameIdentityDrift.mock.calls[0]?.[0] as {
-      prompt: string;
-    };
-    expect(call.prompt).toMatch(
-      /add the vibrator back into her hand, same pose, framing and background/i,
+  it("flags identity drift when sameWoman is no", async () => {
+    createGroqVisionCompletion.mockResolvedValue(
+      completionWith(JSON.stringify(fullReport({ sameWoman: "no" }))),
     );
-  });
-
-  it("asks to replace the wrong prop with the expected one", async () => {
-    await repairFrame({
+    const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
-      anchorFrameUrl: "https://x/anchor.jpg",
-      expected: expectedWithProp("vibrator"),
-      issues: ["wrong prop visible: drink, expected vibrator"],
-    });
-    const call = correctFrameIdentityDrift.mock.calls[0]?.[0] as {
-      prompt: string;
-    };
-    expect(call.prompt).toMatch(
-      /replace the drink in her hand with the vibrator/i,
-    );
-  });
-
-  it("asks to correct a garment's color back to its described color", async () => {
-    await repairFrame({
-      frameUrl: "https://x/frame.jpg",
-      anchorFrameUrl: "https://x/anchor.jpg",
       expected,
-      issues: ["top color drifted: expected black, showing red"],
+      anchorFrameUrl: ANCHOR_URL,
     });
-    const call = correctFrameIdentityDrift.mock.calls[0]?.[0] as {
-      prompt: string;
-    };
-    expect(call.prompt).toMatch(
-      /correct her top back to its original color: black tank top/i,
+    expect(
+      result.issues.some((issue) => issue.includes("identity drift")),
+    ).toBe(true);
+  });
+
+  it("does not flag identity drift when sameWoman is unknown", async () => {
+    createGroqVisionCompletion.mockResolvedValue(
+      completionWith(JSON.stringify(fullReport({ sameWoman: "unknown" }))),
+    );
+    const result = await guardFrame({
+      frameUrl: "https://x/frame.jpg",
+      expected,
+      anchorFrameUrl: ANCHOR_URL,
+    });
+    expect(result.issues.some((issue) => issue.includes("identity"))).toBe(
+      false,
+    );
+  });
+
+  it("does not flag identity drift when sameWoman is yes", async () => {
+    createGroqVisionCompletion.mockResolvedValue(
+      completionWith(JSON.stringify(fullReport({ sameWoman: "yes" }))),
+    );
+    const result = await guardFrame({
+      frameUrl: "https://x/frame.jpg",
+      expected,
+      anchorFrameUrl: ANCHOR_URL,
+    });
+    expect(result.issues.some((issue) => issue.includes("identity"))).toBe(
+      false,
     );
   });
 });

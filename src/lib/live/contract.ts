@@ -207,9 +207,9 @@ export type SpeechMode = z.infer<typeof speechModeSchema>;
 export const liveSessionSnapshotSchema = z.object({
   creator: creatorProfileSchema,
   state: liveStateSchema,
-  // Last frame of the previous clip (guarded and repaired). The reference photo for greeting.
+  // Last frame of the previous clip (guarded). The reference photo for greeting.
   seedFrameUrl: z.url(),
-  // Untouched upload. Identity anchor for drift correction and repair.
+  // Untouched upload. Identity anchor the guard compares every checked frame against.
   anchorFrameUrl: z.url(),
   elapsedSec: z
     .number()
@@ -255,7 +255,7 @@ export const clipResultSchema = z.object({
   jobKind: z.enum(["greeting", "idle", "checkIn", "reply", "beat"]),
   videoUrl: z.url(),
   durationSec: z.number().int().min(10).max(15),
-  // Guarded, repaired last frame. The client MUST use this as the next seed.
+  // Guarded last frame. The client MUST use this as the next seed.
   seedFrameUrl: z.url(),
   // True when the clip starts and ends on the request's seed frame (idle loops). Such clips are
   // interchangeable: any number may be rendered in parallel from one anchor and played in any order.
@@ -315,4 +315,6 @@ export const LIVE_TUNABLES = {
   TRANSCRIPT_WINDOW: 40,
   // Spend cap: every session auto-ends here regardless of activity.
   MAX_SESSION_MS: 180_000,
+  // Cumulative render spend cap: the pipeline stops dispatching new jobs once reached.
+  SESSION_COST_CAP_USD: 8,
 } as const;

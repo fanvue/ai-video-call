@@ -58,16 +58,27 @@ const isModelNotFound = (error: unknown): boolean =>
 export const createGroqVisionCompletion = async ({
   model,
   imageUrl,
+  referenceImageUrl,
   prompt,
   responseFormat,
 }: {
   model?: string;
   imageUrl: string;
+  // Optional second image sent BEFORE `imageUrl` (e.g. an identity reference photo to compare against).
+  referenceImageUrl?: string;
   prompt: string;
   responseFormat?: { type: "json_object" };
 }) => {
   const content: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [
     { type: "text", text: prompt },
+    ...(referenceImageUrl
+      ? [
+          {
+            type: "image_url" as const,
+            image_url: { url: referenceImageUrl },
+          },
+        ]
+      : []),
     { type: "image_url", image_url: { url: imageUrl } },
   ];
   const candidates = model

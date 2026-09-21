@@ -9,15 +9,21 @@ import {
 
 const MAX_WORLD_LEN = 420;
 
-// Anchored on the AI-refusal pattern (verb + disallowed action) so lines like "i cannot believe
-// you said that" or "i won't lie" pass through instead of being mistaken for a refusal.
-export const isRefusal = (line: string): boolean =>
-  /\b(i can(not|'t)|i won'?t|i'm not able to|i am not able to|i'm unable to)\s+(help|assist|do that|comply|generate|create|provide|engage)\b/i.test(
-    line,
-  ) ||
-  /\bas an ai\b/i.test(line) ||
-  /\bagainst (my|the) (guidelines|policy)\b/i.test(line) ||
-  /\bnot comfortable (with|doing) th(is|at)\b/i.test(line);
+// "i'm not able to" / "i'm unable to" / "not comfortable" openers are refusals whatever follows; "i can't" / "i won't" are common flirt idioms ("i can't wait", "i won't lie") so they still need a refusal verb.
+const REFUSAL_LEAD_RE =
+  /\b(i'm not able to|i am not able to|i'm unable to|i am unable to|i'm not comfortable|i am not comfortable|i don'?t feel comfortable)\b/i;
+const REFUSAL_VERB_RE =
+  /\b(i can(?:not|'t)|i won'?t)\s+(help|assist|do (that|this)|comply|generate|create|provide|engage|continue|go (there|further|any further)|participate)\b/i;
+
+export const isRefusal = (line: string): boolean => {
+  return (
+    REFUSAL_LEAD_RE.test(line) ||
+    REFUSAL_VERB_RE.test(line) ||
+    /\bas an ai\b/i.test(line) ||
+    /\bagainst (my|the) (guidelines|policy)\b/i.test(line) ||
+    /\bnot comfortable (with|doing) th(is|at)\b/i.test(line)
+  );
+};
 
 const normalize = (text: string): string =>
   text

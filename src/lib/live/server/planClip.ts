@@ -193,8 +193,21 @@ const wardrobeUnchanged = (a: Wardrobe, b: Wardrobe): boolean =>
 const HAS_WARDROBE_LOCK_RE =
   /no clothing change|nothing (comes off|new appears)|stays exactly on her body|no garment is added, removed/i;
 
-const WARDROBE_LOCK_LINE =
-  "Her clothing stays exactly as described; nothing is put on or taken off.";
+// Positive-only, like describeState: only names bra/panties as staying white when they're actually worn.
+const wardrobeLockLine = (wardrobe: Wardrobe): string => {
+  const wornColored = (["bra", "panties"] as const).filter(
+    (id) => wardrobe[id].on,
+  );
+  const colorClause =
+    wornColored.length > 0
+      ? ` — her ${wornColored.map((id) => GARMENT_LABEL[id]).join(" and ")} stay white`
+      : "";
+  return `Her clothing stays exactly as described${colorClause}; nothing is put on or taken off.`;
+};
+
+// Requested-clip only: names this the one and only action, ahead of every lock, since a video model weights earlier tokens more heavily.
+const ONLY_ACTION_LINE =
+  "She performs only this one action for the entire clip — no turning away, no walking off, no clothing change beyond what is described here.";
 
 const buildPrompt = (params: {
   state: LiveState;
@@ -205,26 +218,31 @@ const buildPrompt = (params: {
   nextBody: Body;
   explicit: boolean;
   durationSec: number;
+  // True for a fan/viewer-requested clip (reply/beat): leads with the action instead of the universal locks.
+  leadWithAction?: boolean;
 }): string => {
   const needsWardrobeLock =
     wardrobeUnchanged(params.state.wardrobe, params.nextWardrobe) &&
     !HAS_WARDROBE_LOCK_RE.test(params.action);
-  return [
+  const setupLines = [
     CAMERA_LOCK,
     ANATOMY_LOCK,
     lookLockLine(params.creator.lookLock),
     `ROOM: ${params.state.surroundings}`,
     `NOW: she is ${describeState(params.state.wardrobe, params.state.body)}`,
-    params.action,
-    needsWardrobeLock ? WARDROBE_LOCK_LINE : null,
+  ];
+  const closingLines = [
+    needsWardrobeLock ? wardrobeLockLine(params.nextWardrobe) : null,
     `By ${params.durationSec}s she is ${describeState(params.nextWardrobe, params.nextBody)}, still, eyes on the lens. The clip ends there.`,
     PHYSICS_LOCK,
     NO_OVERLAY_LOCK,
     params.explicit ? CONTENT_LOCK_PERMISSIVE : CONTENT_LOCK_HOLD,
     speechLockLine(params.speechMode),
-  ]
-    .filter((line): line is string => line !== null)
-    .join(" ");
+  ];
+  const lines = params.leadWithAction
+    ? [params.action, ONLY_ACTION_LINE, ...setupLines, ...closingLines]
+    : [...setupLines, params.action, ...closingLines];
+  return lines.filter((line): line is string => line !== null).join(" ");
 };
 
 // --- Choreography library (planBeatIntent) ----------------------------------
@@ -1511,6 +1529,7 @@ const planReply = (
     nextBody: beatPlan.nextBody,
     explicit: beatPlan.explicit,
     durationSec,
+    leadWithAction: true,
   });
 
   let cappedFollowUps = restIntents;
@@ -1576,6 +1595,7 @@ const planBeat = (
     nextBody: beatPlan.nextBody,
     explicit: beatPlan.explicit,
     durationSec,
+    leadWithAction: true,
   });
   const followUps: PlannedBeat[] = [];
   const beatIntent = job.beat.intent;

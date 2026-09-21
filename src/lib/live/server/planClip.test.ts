@@ -165,7 +165,7 @@ describe("planClip: prompt shape", () => {
     const plan = replyPlan("touch yourself");
     expect(plan.wardrobeIntent).toBeNull();
     expect(plan.prompt).toMatch(
-      /Her clothing stays exactly as described; nothing is put on or taken off\./,
+      /Her clothing stays exactly as described .* nothing is put on or taken off\./,
     );
   });
 
@@ -173,7 +173,7 @@ describe("planClip: prompt shape", () => {
     const plan = replyPlan("wave hello");
     expect(plan.prompt).toMatch(/No clothing changes, nothing new appears\./);
     expect(plan.prompt).not.toMatch(
-      /Her clothing stays exactly as described; nothing is put on or taken off\./,
+      /Her clothing stays exactly as described .* nothing is put on or taken off\./,
     );
   });
 
@@ -181,8 +181,64 @@ describe("planClip: prompt shape", () => {
     const plan = replyPlan("take off your top");
     expect(plan.wardrobeIntent).toBe("remove");
     expect(plan.prompt).not.toMatch(
-      /Her clothing stays exactly as described; nothing is put on or taken off\./,
+      /Her clothing stays exactly as described .* nothing is put on or taken off\./,
     );
+  });
+
+  it("names bra/panties white in the wardrobe-lock line only when they are actually worn", () => {
+    const plan = replyPlan("touch yourself");
+    expect(plan.prompt).toMatch(/her bra and panties stay white/);
+  });
+
+  it("never mentions bra/panties color in the wardrobe-lock line when they're already off", () => {
+    const s = session({
+      state: state({
+        wardrobe: wardrobe({
+          bra: { on: false, description: "black lace bra" },
+          panties: { on: false, description: "black lace panties" },
+          removedOrder: ["bra", "panties"],
+        }),
+      }),
+    });
+    const plan = replyPlan("wave hello", s);
+    expect(plan.prompt).not.toMatch(/bra/i);
+    expect(plan.prompt).not.toMatch(/panties/i);
+  });
+
+  it("leads a requested reply clip's prompt with the action, before the camera/anatomy locks", () => {
+    const plan = replyPlan("touch yourself");
+    const actionIndex = plan.prompt.indexOf("0-2s:");
+    const cameraIndex = plan.prompt.indexOf("FIXED WEBCAM");
+    expect(actionIndex).toBeGreaterThanOrEqual(0);
+    expect(cameraIndex).toBeGreaterThan(actionIndex);
+    expect(plan.prompt).toMatch(
+      /performs only this one action for the entire clip/,
+    );
+  });
+
+  it("leads a beat clip's prompt with the action too", () => {
+    const plan = planClip({
+      session: session(),
+      job: {
+        kind: "beat",
+        beat: { id: "b1", intent: { type: "touch" }, attempt: 0 },
+      },
+      speechMode: "text",
+    });
+    const actionIndex = plan.prompt.indexOf("0-2s:");
+    const cameraIndex = plan.prompt.indexOf("FIXED WEBCAM");
+    expect(actionIndex).toBeGreaterThanOrEqual(0);
+    expect(cameraIndex).toBeGreaterThan(actionIndex);
+  });
+
+  it("does not lead the idle/greeting/checkIn prompt with the action (only requested clips do)", () => {
+    const plan = planClip({
+      session: session(),
+      job: { kind: "checkIn", channel: "chat" },
+      speechMode: "text",
+    });
+    const cameraIndex = plan.prompt.indexOf("FIXED WEBCAM");
+    expect(cameraIndex).toBe(0);
   });
 });
 
