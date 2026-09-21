@@ -49,6 +49,18 @@ const BRIDGE_IDLES = true;
 
 type AnchorPoint = { frameUrl: string; state: LiveState };
 
+// Which trusted seed a settled state may re-seed from: same garments, prop, pose and framing.
+const lookKey = (state: LiveState): string =>
+  [
+    state.wardrobe.top.on,
+    state.wardrobe.bottom.on,
+    state.wardrobe.bra.on,
+    state.wardrobe.panties.on,
+    state.body.prop,
+    state.body.pose,
+    state.body.framing,
+  ].join("|");
+
 export type BufferStats = {
   idleReady: number;
   idleInflight: number;
@@ -87,6 +99,10 @@ export class ClipPipeline {
   // Seed for the next chain job once the current one resolves; null = chain caught up with anchor.
   private chainTail: AnchorPoint | null = null;
   private chainedReady: ClipResult[] = [];
+  // First settled frame per look (the upload for the initial one); a finished plan re-seeds from it, so generated descendants never stack deeper than one plan.
+  private trustedSeedByLook = new Map<string, string>();
+  // Drifted tail frame -> the trusted frame it was re-seeded to; idles rendered from the trusted frame must stay playable after the tail's own clip.
+  private seedAlias = new Map<string, string>();
 
   private bufferIsEmpty = false;
   // Blocks idle from jumping ahead of the still-in-flight greeting, which shares its initial anchor.
@@ -158,6 +174,7 @@ export class ClipPipeline {
     this.getNextJob = getNextJob;
     const snapshot = getSnapshot();
     this.anchor = { frameUrl: snapshot.seedFrameUrl, state: snapshot.state };
+    this.trustedSeedByLook.set(lookKey(snapshot.state), snapshot.seedFrameUrl);
     this.displayAnchorFrameUrl = snapshot.seedFrameUrl;
     this.playoutCursorFrameUrl = snapshot.seedFrameUrl;
     this.submitChainJob(initialJob, 0);
@@ -211,6 +228,10 @@ export class ClipPipeline {
     return clip;
   }
 
+  private sameSeed(a: string, b: string): boolean {
+    return (this.seedAlias.get(a) ?? a) === (this.seedAlias.get(b) ?? b);
+  }
+
   private pickNext(): ClipResult | null {
     const chained = this.chainedReady[0];
     if (chained) {
@@ -224,10 +245,20 @@ export class ClipPipeline {
       return null;
     }
     // Idles loop back to their anchor, so handing one out leaves the cursor where it was.
-    const idleIndex = this.idleReady.findIndex(
+    // An idle rendered from the exact cursor frame is seamless; one from its trusted alias is a small cut, so it is the fallback.
+    const exactIndex = this.idleReady.findIndex(
       (clip) =>
         this.idleAnchorByClipId.get(clip.clipId) === this.playoutCursorFrameUrl,
     );
+    const idleIndex =
+      exactIndex !== -1
+        ? exactIndex
+        : this.idleReady.findIndex((clip) =>
+            this.sameSeed(
+              this.idleAnchorByClipId.get(clip.clipId) ?? "",
+              this.playoutCursorFrameUrl,
+            ),
+          );
     if (idleIndex !== -1) {
       const [clip] = this.idleReady.splice(idleIndex, 1);
       this.fillIdleStockpile();
@@ -240,10 +271,11 @@ export class ClipPipeline {
     return (
       this.chainedReady.length > 0 ||
       (this.firstChainClipPlayed &&
-        this.idleReady.some(
-          (clip) =>
-            this.idleAnchorByClipId.get(clip.clipId) ===
+        this.idleReady.some((clip) =>
+          this.sameSeed(
+            this.idleAnchorByClipId.get(clip.clipId) ?? "",
             this.playoutCursorFrameUrl,
+          ),
         ))
     );
   }
@@ -305,8 +337,17 @@ export class ClipPipeline {
     if (!this.chainTail) {
       return;
     }
-    const newAnchor = this.chainTail;
+    const tail = this.chainTail;
     this.chainTail = null;
+    const key = lookKey(tail.state);
+    const trusted = this.trustedSeedByLook.get(key);
+    let newAnchor = tail;
+    if (!trusted) {
+      this.trustedSeedByLook.set(key, tail.frameUrl);
+    } else if (trusted !== tail.frameUrl) {
+      this.seedAlias.set(tail.frameUrl, trusted);
+      newAnchor = { ...tail, frameUrl: trusted };
+    }
     this.anchor = newAnchor;
     this.onEvent({
       type: "anchorChanged",
@@ -420,6 +461,11 @@ export class ClipPipeline {
           this.chainTail = { ...this.chainTail, frameUrl: url };
         } else if (this.anchor.frameUrl === rawFrameUrl) {
           this.anchor = { ...this.anchor, frameUrl: url };
+          this.seedAlias.set(rawFrameUrl, url);
+          const key = lookKey(this.anchor.state);
+          if (this.trustedSeedByLook.get(key) === rawFrameUrl) {
+            this.trustedSeedByLook.set(key, url);
+          }
         }
       })
       .catch(() => {});
@@ -436,8 +482,11 @@ export class ClipPipeline {
   // playable until consumed (an old-anchor idle) or promoted (a bridge idle once its tail lands).
   private idleLaneTargetReadyCount(): number {
     const target = this.idleLaneTarget();
-    return this.idleReady.filter(
-      (clip) => this.idleAnchorByClipId.get(clip.clipId) === target.frameUrl,
+    return this.idleReady.filter((clip) =>
+      this.sameSeed(
+        this.idleAnchorByClipId.get(clip.clipId) ?? "",
+        target.frameUrl,
+      ),
     ).length;
   }
 
@@ -518,7 +567,7 @@ export class ClipPipeline {
     }
 
     const stillCurrent =
-      anchorAtSubmit.frameUrl === this.anchor.frameUrl ||
+      this.sameSeed(anchorAtSubmit.frameUrl, this.anchor.frameUrl) ||
       anchorAtSubmit.frameUrl === this.chainTail?.frameUrl;
     if (!stillCurrent) {
       // Neither the anchor nor a bridge idle's chain tail matches anymore; log the cost and drop it.

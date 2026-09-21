@@ -32,6 +32,17 @@ const liveState: LiveState = {
   surroundings: "s",
 };
 
+// A different look (top off), so a reply that lands here moves the anchor instead of re-seeding
+// from the trusted frame of the starting look.
+const strippedState: LiveState = {
+  ...liveState,
+  wardrobe: {
+    ...liveState.wardrobe,
+    top: { on: false, description: "top" },
+    removedOrder: ["top"],
+  },
+};
+
 const ANCHOR_0 = "https://example.com/anchor-0.jpg";
 
 const snapshot: LiveSessionSnapshot = {
@@ -87,6 +98,15 @@ const chainAdvancingResult = (req: ClipRequest): ClipResult =>
   req.job.kind === "idle" || req.job.kind === "greeting"
     ? makeResult(req.job.kind, req.session.seedFrameUrl)
     : makeResult(req.job.kind, freshFrame());
+
+// Same, but a chain step also strips the top: the settled look no longer has a trusted frame,
+// so its end frame becomes the new anchor.
+const lookChangingResult = (req: ClipRequest): ClipResult =>
+  req.job.kind === "idle" || req.job.kind === "greeting"
+    ? makeResult(req.job.kind, req.session.seedFrameUrl, {
+        state: req.session.state,
+      })
+    : makeResult(req.job.kind, freshFrame(), { state: strippedState });
 
 type Deferred<T> = {
   promise: Promise<T>;
@@ -456,7 +476,7 @@ describe("ClipPipeline", () => {
             return idleDeferred.promise;
           }
         }
-        return delayed(() => chainAdvancingResult(req));
+        return delayed(() => lookChangingResult(req));
       },
     });
 
@@ -465,7 +485,7 @@ describe("ClipPipeline", () => {
 
     queue.push(REPLY_JOB);
     pipeline.onRequestEnqueued();
-    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // reply resolves -> anchor A2
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // reply resolves onto a new look -> anchor A2
 
     idleDeferred.resolve(makeResult("idle", idleRequestSeed)); // stale: seeded from old anchor A1
     await vi.advanceTimersByTimeAsync(0);
@@ -1174,7 +1194,7 @@ describe("ClipPipeline", () => {
       onEvent: () => {},
       render: async (req) => {
         requests.push(req);
-        return delayed(() => chainAdvancingResult(req));
+        return delayed(() => lookChangingResult(req));
       },
       upscaleSeed: async (frameUrl) => {
         const d = defer<{ url: string | null; costUsd: number }>();
@@ -1316,7 +1336,7 @@ describe("ClipPipeline", () => {
       onEvent: () => {},
       render: async (req) => {
         requests.push(req);
-        return delayed(() => chainAdvancingResult(req));
+        return delayed(() => lookChangingResult(req));
       },
       upscaleSeed: async (frameUrl) => {
         const d = defer<{ url: string | null; costUsd: number }>();
@@ -1352,5 +1372,119 @@ describe("ClipPipeline", () => {
       (r) => r.job.kind === "reply" && r.job.requestId === "r2",
     );
     expect(secondReplyRequest?.session.seedFrameUrl).toBe(replySeed);
+  });
+
+  it("re-seeds from the trusted frame when a plan ends on a look that already has one, instead of chaining off the drifted tail", async () => {
+    const requests: ClipRequest[] = [];
+    const events: PipelineEvent[] = [];
+    const queue = makeJobQueue();
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: (e) => events.push(e),
+      render: async (req) => {
+        requests.push(req);
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    pipeline.nextClip();
+
+    queue.push({ ...REPLY_JOB, requestId: "r1" });
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // reply ends on a fresh frame, same look
+    const reply = pipeline.nextClip();
+    expect(reply?.seedFrameUrl).not.toBe(ANCHOR_0);
+
+    const promotions = events.filter((e) => e.type === "anchorChanged");
+    expect(promotions.at(-1)?.frameUrl).toBe(ANCHOR_0);
+
+    queue.push({ ...REPLY_JOB, requestId: "r2" });
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    const secondReplyRequest = requests.find(
+      (r) => r.job.kind === "reply" && r.job.requestId === "r2",
+    );
+    expect(secondReplyRequest?.session.seedFrameUrl).toBe(ANCHOR_0);
+  });
+
+  it("keeps trusted-frame idles playable after the drifted reply clip, and prefers a tail-seeded bridge idle when one exists", async () => {
+    const queue = makeJobQueue();
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => delayed(() => chainAdvancingResult(req)),
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    const greeting = pipeline.nextClip();
+    pipeline.onClipStarted(greeting!.seedFrameUrl);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // ANCHOR_0 idles stocked
+
+    queue.push(REPLY_JOB);
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // reply settles; bridge idles from its tail submitted
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // bridge idles ready
+
+    const reply = pipeline.nextClip();
+    expect(reply?.jobKind).toBe("reply");
+    pipeline.onClipStarted(reply!.seedFrameUrl);
+
+    const bridge = pipeline.nextClip();
+    expect(bridge?.jobKind).toBe("idle");
+    expect(bridge?.seedFrameUrl).toBe(reply?.seedFrameUrl);
+
+    // Drain every idle: the ANCHOR_0 stock must be reachable behind the drifted tail, never stranded.
+    const seeds = new Set<string>();
+    for (let clip = pipeline.nextClip(); clip; clip = pipeline.nextClip()) {
+      expect(clip.jobKind).toBe("idle");
+      seeds.add(clip.seedFrameUrl);
+    }
+    expect(seeds.has(ANCHOR_0)).toBe(true);
+  });
+
+  it("registers the first settled frame of a new look as its trusted seed and re-seeds from it on the next visit", async () => {
+    const requests: ClipRequest[] = [];
+    const queue = makeJobQueue();
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        requests.push(req);
+        return delayed(() => lookChangingResult(req));
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    pipeline.nextClip();
+
+    queue.push({ ...REPLY_JOB, requestId: "r1" });
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // first stripped frame S1 becomes the anchor
+    const firstStripped = pipeline.nextClip()!.seedFrameUrl;
+
+    queue.push({ ...REPLY_JOB, requestId: "r2" });
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // seeds from S1, ends on S2 (same stripped look)
+    const secondStripped = pipeline.nextClip()!.seedFrameUrl;
+    expect(secondStripped).not.toBe(firstStripped);
+
+    queue.push({ ...REPLY_JOB, requestId: "r3" });
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    const seedsByRequest = Object.fromEntries(
+      requests
+        .filter((r) => r.job.kind === "reply")
+        .map((r) => [
+          r.job.kind === "reply" ? r.job.requestId : "",
+          r.session.seedFrameUrl,
+        ]),
+    );
+    expect(seedsByRequest.r1).toBe(ANCHOR_0);
+    expect(seedsByRequest.r2).toBe(firstStripped);
+    expect(seedsByRequest.r3).toBe(firstStripped);
   });
 });
