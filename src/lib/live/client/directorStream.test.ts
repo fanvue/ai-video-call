@@ -70,7 +70,6 @@ const makeDeps = (
       return handle;
     };
   const deps: DirectorSessionDeps = {
-    fetchToken: vi.fn().mockResolvedValue("test-token"),
     openRealtime: vi.fn(openRealtime),
     now: vi.fn(() => 0),
     composePrompt: vi.fn().mockResolvedValue({

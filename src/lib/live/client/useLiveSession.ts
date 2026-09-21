@@ -783,8 +783,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         setConnectStage("renderingFirstClip");
 
         const directorSession = new DirectorSession({
-          fetchToken: deps.fetchDirectorToken,
-          openRealtime: (token) => openRealtimeWithFal(token),
+          openRealtime: () => openRealtimeWithFal(),
           now: () => Date.now(),
           composePrompt: deps.composeDirectorPrompt,
           onTranscriptEntry: (entry) =>

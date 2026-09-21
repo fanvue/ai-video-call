@@ -137,16 +137,12 @@ export type OpenRealtime = (
   options: OpenRealtimeOptions,
 ) => DirectorRealtimeHandle;
 
-export const openRealtimeWithFal = (token: string): OpenRealtime => {
+// wma.fal.run takes neither the SDK's `Key <temporary jwt>` ("unsupported auth scheme") nor `Bearer` with a rest.fal.ai token ("unable to decode issuer"), only the real key; so signalling goes through our auth-gated proxy, which adds it server-side.
+export const FAL_PROXY_PATH = "/api/fal/proxy";
+
+export const openRealtimeWithFal = (): OpenRealtime => {
   return (options) => {
-    fal.config({
-      // wma.fal.run 401s "unsupported auth scheme" on the SDK's hardcoded `Key <jwt>`; temporary tokens must go as `Bearer`, which only requestMiddleware can set.
-      credentials: undefined,
-      requestMiddleware: async (request) => ({
-        ...request,
-        headers: { ...request.headers, Authorization: `Bearer ${token}` },
-      }),
-    });
+    fal.config({ credentials: undefined, proxyUrl: FAL_PROXY_PATH });
     const session = fal.realtime.open(wma(DIRECTOR_ENDPOINT_ID), {
       receive: options.receive,
       onMedia: options.onMedia,
@@ -173,8 +169,7 @@ export type DirectorEndReason =
   "maxDuration" | "streamExhausted" | "error" | "stopped";
 
 export type DirectorSessionDeps = {
-  fetchToken: () => Promise<string>;
-  openRealtime: (token: string) => OpenRealtime;
+  openRealtime: () => OpenRealtime;
   now: () => number;
   composePrompt: (input: {
     creator: CreatorProfile;
@@ -389,8 +384,7 @@ export class DirectorSession {
     this.speechMode = input.speechMode;
     this.startedAtMs = input.startedAtMs;
 
-    const token = await this.deps.fetchToken();
-    const openRealtime = this.deps.openRealtime(token);
+    const openRealtime = this.deps.openRealtime();
 
     await new Promise<void>((resolve, reject) => {
       let settled = false;
