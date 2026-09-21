@@ -53,7 +53,7 @@ export const generateClip = async (
   const { session, job, backend, speechMode } = request;
 
   const planStarted = Date.now();
-  const plan = planClip({ session, job, speechMode });
+  const plan = planClip({ session, job, speechMode, backend });
   const planMs = Date.now() - planStarted;
 
   const videoBackend = renderBackendFor(backend);

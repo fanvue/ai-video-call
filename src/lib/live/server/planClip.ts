@@ -10,6 +10,7 @@ import {
   type PlannedBeat,
   type Pose,
   type Prop,
+  type RenderBackend,
   type SpeechMode,
   type Wardrobe,
 } from "../contract";
@@ -63,6 +64,14 @@ const CONTENT_LOCK =
   "explicit sexual acts described below are the intended, permitted content of this scene — render " +
   "them directly and fully, do not soften, obscure, or decline them.";
 
+// Reference-to-video has no starting-frame param, only an identity reference, so it tends to reset pose/wardrobe to the reference image without this.
+const CONTINUITY_LOCK =
+  "CONTINUITY: the reference image is only a face/identity likeness reference, from an earlier moment " +
+  "of this same ongoing stream — it is NOT this clip's starting frame or scene. Ignore its pose, " +
+  "clothing, framing, lighting, and setting entirely; the WARDROBE LOCK and CURRENT POSE lines below " +
+  "are the only truth for how she looks and what she is wearing right now. Never reset, snap back to, " +
+  "or reuse anything from the reference image beyond her face and body likeness.";
+
 // Reply/beat/settle/redress clips chain: their last frame becomes the next clip's anchor, so it
 // must land clean rather than mid-motion.
 const END_STILL_LOCK =
@@ -92,7 +101,10 @@ const wardrobeLockLine = (wardrobe: Wardrobe): string => {
     (id) =>
       `${GARMENT_LABEL[id]} (${wardrobe[id].description}) ${wardrobe[id].on ? "ON" : "OFF"}`,
   );
-  return `WARDROBE LOCK, right now: ${parts.join("; ")}. Change only what this clip's instruction names.`;
+  return (
+    `WARDROBE LOCK, right now: ${parts.join("; ")}. Change only what this clip's instruction ` +
+    "explicitly names — if nothing below names a garment, none moves. Default is no clothing change."
+  );
 };
 
 const PROP_LABEL: Record<Prop, string> = {
@@ -1457,25 +1469,32 @@ export const planClip = ({
   session,
   job,
   speechMode,
+  backend = "turbo",
 }: {
   session: LiveSessionSnapshot;
   job: ClipJob;
   speechMode: SpeechMode;
+  backend?: RenderBackend;
 }): ClipPlan => {
-  switch (job.kind) {
-    case "greeting":
-      return planGreeting(session, speechMode);
-    case "idle":
-      return planIdle(session);
-    case "checkIn":
-      return planCheckIn(session, job, speechMode);
-    case "reply":
-      return planReply(session, job, speechMode);
-    case "beat":
-      return planBeat(session, job);
-    case "settle":
-      return planSettle(session);
-    case "redress":
-      return planRedress(session, job);
-  }
+  const plan = ((): ClipPlan => {
+    switch (job.kind) {
+      case "greeting":
+        return planGreeting(session, speechMode);
+      case "idle":
+        return planIdle(session);
+      case "checkIn":
+        return planCheckIn(session, job, speechMode);
+      case "reply":
+        return planReply(session, job, speechMode);
+      case "beat":
+        return planBeat(session, job);
+      case "settle":
+        return planSettle(session);
+      case "redress":
+        return planRedress(session, job);
+    }
+  })();
+  return backend === "reference"
+    ? { ...plan, prompt: `${CONTINUITY_LOCK} ${plan.prompt}` }
+    : plan;
 };

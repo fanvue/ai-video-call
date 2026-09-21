@@ -1005,3 +1005,38 @@ describe("planClip: settle prop vanish (finding 5)", () => {
     expect(plan.prompt).not.toMatch(/out of frame but within reach/i);
   });
 });
+
+describe("planClip backend prompt", () => {
+  it("adds a continuity lock against the reference image for the reference backend", () => {
+    const s = session();
+    const plan = planClip({
+      session: s,
+      job: { kind: "idle" },
+      speechMode: "text",
+      backend: "reference",
+    });
+    expect(plan.prompt).toMatch(/CONTINUITY:/);
+    expect(plan.prompt.indexOf("CONTINUITY:")).toBe(0);
+  });
+
+  it("omits the continuity lock for the turbo backend, which anchors on a literal starting frame", () => {
+    const s = session();
+    const plan = planClip({
+      session: s,
+      job: { kind: "idle" },
+      speechMode: "text",
+      backend: "turbo",
+    });
+    expect(plan.prompt).not.toMatch(/CONTINUITY:/);
+  });
+
+  it("defaults to no continuity lock when backend is omitted", () => {
+    const s = session();
+    const plan = planClip({
+      session: s,
+      job: { kind: "idle" },
+      speechMode: "text",
+    });
+    expect(plan.prompt).not.toMatch(/CONTINUITY:/);
+  });
+});
