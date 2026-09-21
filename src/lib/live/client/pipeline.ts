@@ -62,9 +62,10 @@ export class ClipPipeline {
     frameUrl: "",
     state: null as unknown as LiveState,
   };
-  // Frame the currently PLAYING clip left the viewer on; set only by onClipStarted (a clip that
-  // was merely pulled to preload must never move this).
+  // Frame the currently PLAYING clip left the viewer on; UI only, set by onClipStarted.
   private displayAnchorFrameUrl = "";
+  // Frame the last clip handed to the player ends on; selection chains from this, since the player preloads the next clip while the current one is still on screen.
+  private playoutCursorFrameUrl = "";
 
   private idleReady: ClipResult[] = [];
   private idleInflightCount = 0;
@@ -127,6 +128,7 @@ export class ClipPipeline {
     const snapshot = getSnapshot();
     this.anchor = { frameUrl: snapshot.seedFrameUrl, state: snapshot.state };
     this.displayAnchorFrameUrl = snapshot.seedFrameUrl;
+    this.playoutCursorFrameUrl = snapshot.seedFrameUrl;
     this.submitChainJob(initialJob, 0);
     // Idle fillers render alongside the greeting on either backend, so one is ready the moment it ends.
     while (this.idleInflightCount < LIVE_TUNABLES.IDLE_MAX_INFLIGHT) {
@@ -180,15 +182,17 @@ export class ClipPipeline {
     if (chained) {
       this.chainedReady.shift();
       this.firstChainClipPlayed = true;
+      this.playoutCursorFrameUrl = chained.seedFrameUrl;
       this.fillIdleStockpile();
       return chained;
     }
     if (!this.firstChainClipPlayed) {
       return null;
     }
+    // Idles loop back to their anchor, so handing one out leaves the cursor where it was.
     const idleIndex = this.idleReady.findIndex(
       (clip) =>
-        this.idleAnchorByClipId.get(clip.clipId) === this.displayAnchorFrameUrl,
+        this.idleAnchorByClipId.get(clip.clipId) === this.playoutCursorFrameUrl,
     );
     if (idleIndex !== -1) {
       const [clip] = this.idleReady.splice(idleIndex, 1);
@@ -205,7 +209,7 @@ export class ClipPipeline {
         this.idleReady.some(
           (clip) =>
             this.idleAnchorByClipId.get(clip.clipId) ===
-            this.displayAnchorFrameUrl,
+            this.playoutCursorFrameUrl,
         ))
     );
   }

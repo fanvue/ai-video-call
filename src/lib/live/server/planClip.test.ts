@@ -334,79 +334,109 @@ describe("planClip: reply catalog -> intents", () => {
     expect(plan.expectedState.body.contact).toBe("self");
     expect(plan.prompt).toMatch(/render the nudity/i);
   });
-});
 
-describe('planClip: reply catalog -> intents ("spin" standing precondition)', () => {
-  it('"spin" while sitting plans a stand-up transition, queuing the spin as its single follow-up', () => {
-    const s = session({ state: state({ body: body({ pose: "sitting" }) }) });
-    const plan = replyPlan("do a spin", s);
-    expect(plan.expectedState.body.pose).toBe("standing");
+  it('"suck the dildo" from standing resolves to exactly fetch-then-use, one clip, no pose/rest beats', () => {
+    const s = session({
+      state: state({ body: body({ pose: "standing", facing: "camera" }) }),
+    });
+    const plan = replyPlan("suck the dildo", s);
+    expect(plan.expectedState.body.prop).toBe("dildo");
     expect(plan.followUps.map((b) => b.intent)).toEqual([
-      { type: "act", act: "spin" },
+      { type: "useProp", mode: "mouth" },
     ]);
     expect(plan.wardrobeIntent).toBeNull();
   });
 
-  it('"spin" while already standing plays the spin directly, ending standing with no mention of sitting', () => {
+  it('"take your bra off" while holding a dildo sets it down in the same clip', () => {
+    const s = session({
+      state: state({ body: body({ hands: "holdingProp", prop: "dildo" }) }),
+    });
+    const plan = replyPlan("take your bra off", s);
+    expect(plan.prompt).toMatch(/sets a dildo down out of frame/i);
+    expect(plan.expectedState.body.prop).toBe("none");
+    expect(plan.expectedState.wardrobe.bra.on).toBe(false);
+    expect(plan.followUps).toEqual([]);
+  });
+
+  it('"take your panties off" while lying repositions and removes in one clip', () => {
+    const s = session({ state: state({ body: body({ pose: "lying" }) }) });
+    const plan = replyPlan("take your panties off", s);
+    expect(plan.prompt).toMatch(/shifts to sit up/i);
+    expect(plan.expectedState.wardrobe.panties.on).toBe(false);
+    expect(plan.followUps).toEqual([]);
+  });
+
+  it('"dance" resolves to a single act intent', () => {
+    const plan = replyPlan("dance for me");
+    expect(plan.followUps).toEqual([]);
+    expect(plan.expectedState.body.pose).toBe("standing");
+  });
+});
+
+describe('planClip: reply catalog -> intents ("spin" one-clip lead-in)', () => {
+  it('"spin" while sitting performs the rise and the spin in ONE clip, no follow-up', () => {
+    const s = session({ state: state({ body: body({ pose: "sitting" }) }) });
+    const plan = replyPlan("do a spin", s);
+    expect(plan.prompt).toMatch(/she rises to her feet/i);
+    expect(plan.expectedState.body.pose).toBe("standing");
+    expect(plan.followUps).toEqual([]);
+    expect(plan.wardrobeIntent).toBeNull();
+  });
+
+  it('"spin" while already standing plays the spin directly, ending standing with no mention of rising', () => {
     const s = session({
       state: state({ body: body({ pose: "standing", facing: "camera" }) }),
     });
     const plan = replyPlan("do a spin", s);
     expect(plan.followUps).toEqual([]);
     expect(plan.expectedState.body.pose).toBe("standing");
-    expect(plan.prompt).not.toMatch(/sitting/i);
+    expect(plan.prompt).not.toMatch(/rises to her feet|sitting/i);
   });
 });
 
-describe("planBeatIntent: preconditions", () => {
-  it("removing panties while lying plans a stand-up clip and re-queues the original beat", () => {
+describe("planBeatIntent: in-clip lead-ins", () => {
+  it("removing panties while lying prepends a sit-up lead-in and finishes the removal in one clip", () => {
     const s = state({ body: body({ pose: "lying" }) });
     const plan = planBeatIntent(
       { type: "removeGarment", garment: "panties" },
       s,
     );
-    expect(plan.precondition).toEqual({
-      type: "pose",
-      pose: "standing",
-      facing: "camera",
-    });
-    expect(plan.nextBody.pose).toBe("standing");
-    expect(plan.nextWardrobe.panties.on).toBe(true);
+    expect(plan.physical).toMatch(/shifts to sit up/i);
+    expect(plan.nextBody.pose).toBe("sitting");
+    expect(plan.nextWardrobe.panties.on).toBe(false);
   });
 
-  it("removing the bottom while sitting needs no precondition (sitting is allowed)", () => {
+  it("removing the bottom while sitting needs no lead-in (sitting is allowed)", () => {
     const s = state({ body: body({ pose: "sitting" }) });
     const plan = planBeatIntent(
       { type: "removeGarment", garment: "bottom" },
       s,
     );
-    expect(plan.precondition).toBeUndefined();
+    expect(plan.physical).not.toMatch(/shifts to sit up|sets .* down/i);
     expect(plan.nextWardrobe.bottom.on).toBe(false);
   });
 
-  it("removing the bra while holding a prop puts it down first", () => {
+  it("removing the bra while holding a prop sets it down first, in the same clip", () => {
     const s = state({
       body: body({ hands: "holdingProp", prop: "vibrator" }),
     });
     const plan = planBeatIntent({ type: "removeGarment", garment: "bra" }, s);
-    expect(plan.precondition).toEqual({ type: "rest" });
+    expect(plan.physical).toMatch(/sets a vibrator down out of frame/i);
     expect(plan.nextBody.hands).toBe("free");
-    expect(plan.nextWardrobe.bra.on).toBe(true);
+    expect(plan.nextBody.prop).toBe("none");
+    expect(plan.nextWardrobe.bra.on).toBe(false);
   });
 
-  it("removing the top while onAllFours stands first, same as any garment from that pose", () => {
+  it("removing the top while onAllFours (not holding a prop) has no lead-in, only panties/bottom reposition", () => {
     const s = state({ body: body({ pose: "onAllFours", facing: "away" }) });
     const plan = planBeatIntent({ type: "removeGarment", garment: "top" }, s);
-    expect(plan.precondition).toEqual({
-      type: "pose",
-      pose: "standing",
-      facing: "camera",
-    });
+    expect(plan.physical).not.toMatch(/shifts to sit up|rises to her feet/i);
+    expect(plan.nextWardrobe.top.on).toBe(false);
   });
 });
 
-describe("planBeat: precondition follow-up", () => {
-  it("plans the precondition clip and re-queues the ORIGINAL beat (same attempt) as its only follow-up", () => {
+describe("planBeat: always one clip, no follow-ups", () => {
+  it("plans the whole removal (with its lead-in) in a single clip, no follow-up", () => {
     const s = session({ state: state({ body: body({ pose: "lying" }) }) });
     const beat: PlannedBeat = {
       id: "b1",
@@ -418,24 +448,8 @@ describe("planBeat: precondition follow-up", () => {
       job: { kind: "beat", beat },
       speechMode: "text",
     });
-    expect(plan.expectedState.body.pose).toBe("standing");
-    expect(plan.expectedState.wardrobe.panties.on).toBe(true);
-    expect(plan.followUps).toEqual([beat]);
-  });
-
-  it("has no follow-up once the precondition is already met", () => {
-    const s = session({ state: state({ body: body({ pose: "standing" }) }) });
-    const beat: PlannedBeat = {
-      id: "b1",
-      intent: { type: "removeGarment", garment: "panties" },
-      attempt: 0,
-    };
-    const plan = planClip({
-      session: s,
-      job: { kind: "beat", beat },
-      speechMode: "text",
-    });
-    expect(plan.followUps).toEqual([]);
+    expect(plan.prompt).toMatch(/shifts to sit up/i);
     expect(plan.expectedState.wardrobe.panties.on).toBe(false);
+    expect(plan.followUps).toEqual([]);
   });
 });

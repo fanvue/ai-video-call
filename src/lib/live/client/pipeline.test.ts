@@ -1000,7 +1000,7 @@ describe("ClipPipeline", () => {
     expect(pipeline.getBufferStats().idleReady).toBe(0);
   });
 
-  it("does not move the display anchor on a pull that never plays; onClipStarted does", async () => {
+  it("chains the next pull from the last handed-out clip, not the displayed frame (no scene jump on preload)", async () => {
     const queue = makeJobQueue();
     const pipeline = trackedPipeline({
       now: nowFn,
@@ -1009,26 +1009,22 @@ describe("ClipPipeline", () => {
     });
 
     pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
-    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting -> A1
-    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // idles from A1 ready
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting -> A0 (loops)
+    const greeting = pipeline.nextClip();
+    pipeline.onClipStarted(greeting!.seedFrameUrl);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // A0 idles stocked
 
-    // Two pulls (as the player does to preload one clip ahead) must not move the anchor by
-    // themselves.
-    const first = pipeline.nextClip();
-    const second = pipeline.nextClip();
-    expect(first).not.toBeNull();
-    expect(second).not.toBeNull();
+    queue.push(REPLY_JOB);
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // reply -> A2
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // bridge idles from A2 stocked
 
-    // Neither pulled clip has "started" yet, so an idle seeded from the original anchor is still
-    // eligible to play next — proof the anchor never moved.
-    pipeline.requeue(first!);
-    pipeline.requeue(second!);
-    const stillOldAnchor = pipeline.nextClip();
-    expect(stillOldAnchor?.seedFrameUrl).toBe(ANCHOR_0);
-
-    pipeline.onClipStarted(freshFrame());
-    // A fresh idle stocked against the old anchor no longer matches the (now moved) display
-    // anchor, so nothing plays until stock catches up.
-    expect(pipeline.nextClip()).toBeNull();
+    // Preload pull while the greeting is still on screen: the clip behind the reply must continue from the reply's end frame.
+    const reply = pipeline.nextClip();
+    expect(reply?.jobKind).toBe("reply");
+    const behindReply = pipeline.nextClip();
+    expect(behindReply).not.toBeNull();
+    expect(behindReply?.seedFrameUrl).toBe(reply?.seedFrameUrl);
+    expect(behindReply?.seedFrameUrl).not.toBe(ANCHOR_0);
   });
 });

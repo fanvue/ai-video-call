@@ -11,11 +11,11 @@ live in `src/lib/live/contract.ts` and are the only coupling between the two hal
    N+1 is already rendering, seeded from clip N's last frame. Playback is gapless.
 2. **Stateful and grounded.** One typed `LiveState` (body, wardrobe, props, pose, scene) is the
    single source of truth. Every prompt is derived from it. Every rendered frame is checked
-   against it before it becomes the next seed, and repaired if it drifted. Nothing appears,
+   against it before it becomes the next seed, and rejected if it drifted. Nothing appears,
    disappears, or changes unless a job transitions the state.
 3. **Requests drive the scene, idle never does.** Idle clips hold the current state with small
    grounded life (breathing, blinking, small shifts, glancing at the chat). Only `reply` /
-   `beat` / `settle` / `redress` jobs may change `LiveState`.
+   `beat` jobs may change `LiveState`.
 4. **Chat-first.** She reads and types on camera before acting. Her text reply lands in the
    chat panel in sync with her typing beat. Speech is off by default (`speechMode: "text"`);
    the video model's native speech is unreliable and is kept only as an experimental mode.
@@ -58,7 +58,7 @@ The chain therefore has two modes:
   `IDLE_BUFFER_TARGET` ready and up to `IDLE_MAX_INFLIGHT` rendering in parallel, all from one
   anchor. Guard and identity correction run on the anchor off the critical path; a repaired
   anchor replaces the old one and the stockpile is rebuilt from it.
-- **Chained action.** `greeting`, `reply`, `beat`, `settle`, `redress` and `checkIn` are
+- **Chained action.** `greeting`, `reply`, `beat` and `checkIn` are
   seeded from the frame currently on the anchor and chain frame to frame. Their last frame
   (guarded, repaired) becomes the new anchor. When the anchor changes, buffered idle loops from
   the old anchor are discarded and new ones are rendered from the new anchor immediately.
@@ -90,18 +90,20 @@ Invariants:
 2. Idle loops already buffered keep playing until the reply clip is ready; then it plays at the
    next boundary. Idle renders in flight for the old anchor are left to finish and discarded
    (cost logged) once the anchor changes.
-3. Follow-up beats chain after the reply, then `settle` returns her to the baseline pose. The
-   settle clip's last frame is the new anchor.
+3. Follow-up beats chain after the reply. The last beat's last frame is the new anchor; she
+   stays wherever the request left her (a `rest` beat is scheduled only after
+   `REST_AFTER_IDLE_MS` of inactivity, and only puts down a prop / frees her hands).
 
 ## Wardrobe and props
 
 - `Wardrobe` is a per-garment record (`top`, `bottom`, `bra`, `panties`, each `on | off`, plus a
   description string captured at greeting from the reference photo). Strip and redress move one
   garment at a time. The prompt names the exact garment as described.
-- After `REDRESS_AFTER_IDLE_MS` (120000) with no request while any garment is off, the director
-  queues `redress` jobs (one garment per clip, reverse order of removal).
-- Props: `none | fetching | <toyId>`. A toy must be fetched on camera (one clip) before it can
-  be held, and is put down before the next unrelated request.
+- Nothing is ever put back on automatically; only a fan request (or a garment correction) adds a
+  garment.
+- Props: `none | fetching | <toyId>`. A toy is fetched on camera (one clip) before it is used.
+  If an unrelated request arrives while she holds it, she sets it down inside that request's own
+  clip (a lead-in), never in a separate clip.
 
 ## Frame guard
 
@@ -209,6 +211,12 @@ payment stack behind human approval.
   only when both halves independently match an act) and each clause is negation-checked before
   being resolved, so "take your top off then shake your ass" chains two beats and "don't take
   your top off" locks against undressing instead of matching the strip verb.
+- **One clip per request, always.** A fan request performs entirely in the clip it's given, from
+  whatever state she's currently in — there is no separate transition/precondition clip.
+  `planBeatIntent` instead prepends a short in-clip lead-in sentence (setting a held prop down,
+  sitting up from lying/onAllFours/bentOver/kneeling before a panties/bottom change, or rising to
+  her feet before spin/dance/twerk) and re-times the rest of that beat's choreography to still fit
+  `ACTION_CLIP_SEC`, rather than queuing the precondition as its own beat.
 - Chat-first typing lead is estimated from the fan's own request length at plan time (before the
   reply LLM has run), since render must start immediately in parallel with reply generation. The
   final `ClipResult.reply.typingLeadSec` is recomputed from the actual reply text once it lands,
@@ -217,17 +225,14 @@ payment stack behind human approval.
   a chat reply never costs two clips just to fit the typing lead in front of the act. The clip
   stays typing-only (the beat becomes a follow-up instead) only when the first beat holds the pose
   with nothing to fold in (small talk) or is a fetch, since fetch-then-use must stay two clips.
-- `correctFrameIdentityDrift` (in `src/lib/fal/requestFrameIdentityCorrection.ts`) now takes a
-  `prompt` override so `frameGuard.repairFrame` can reuse the same nano-banana edit endpoint with
-  an issue-specific instruction instead of the generic drift-correction prompt.
-- Timing rule: `reply`, `beat`, `settle`, `redress`, `checkIn`, and `greeting` clips run
-  `ACTION_CLIP_SEC` (11s — must stay above `IDLE_CLIP_SEC`'s 10s, both already at the fal floor,
-  since `planReply` tells a hold-only beat from a real one by comparing the two); only `idle` stays
-  at `IDLE_CLIP_SEC`. Every non-loop job now runs `guardFrame` (cheap, mid-chain included, so drift
-  is caught beat-by-beat instead of compounding silently), but `repairFrame` (the slow pixel-edit
-  step) only runs for the clip that ends the chain (`settle`/`redress`/`checkIn`/`greeting`) —
-  `reply`/`beat` skip it so a flagged mid-chain beat doesn't hold up the next beat that's already
-  queued behind it. Drift is bounded to one chain's length, not eliminated mid-chain.
+- `correctFrameIdentityDrift` (in `src/lib/fal/requestFrameIdentityCorrection.ts`) takes a
+  `prompt` override; `frameGuard.repairFrame` still exists as its caller but is no longer invoked
+  by `generateClip` (a drifted clip is rejected and re-rendered, not pixel-patched).
+- Timing rule: `reply`, `beat`, `checkIn`, and `greeting` clips run `ACTION_CLIP_SEC` (11s — must
+  stay above `IDLE_CLIP_SEC`'s 10s, both already at the fal floor, since `planReply` tells a
+  hold-only beat from a real one by comparing the two); only `idle` stays at `IDLE_CLIP_SEC`. Every
+  clip is frame-verified before it can play or seed the next one (see "Frame guard"), so drift is
+  caught clip by clip rather than compounding.
 - `vitest.config.ts` declares the `@/` alias (vitest does not read `tsconfig.json` paths on its
   own) and stubs the env vars `@/env` requires, so server modules can be unit tested without a
   real `.env`.

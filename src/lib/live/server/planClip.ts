@@ -25,9 +25,9 @@ export type ClipPlan = {
   needsReplyText: boolean;
   // Text to use verbatim without calling the reply LLM (greeting only).
   fixedReplyText: string | null;
-  // Whether THIS clip is its own removeGarment/addGarment beat, for generateClip's wardrobe-vs-hold classification; null for a precondition/transition clip too, since it doesn't touch wardrobe itself.
+  // Whether THIS clip is its own removeGarment/addGarment beat, for generateClip's wardrobe-vs-hold classification.
   wardrobeIntent: "remove" | "add" | null;
-  // The garment removeGarment/addGarment targets; exempt from generateClip's mismatch rejection and reconciled from observation instead, so the director's bounded retry keeps working. Unset for a precondition clip.
+  // The garment removeGarment/addGarment targets; exempt from generateClip's mismatch rejection and reconciled from observation instead, so the director's bounded retry keeps working.
   targetGarment?: GarmentId;
   // This clip's own sexual-content status (see buildPrompt's CONTENT_LOCK). Used with wardrobeIntent
   // by generateClip to decide whether this is a hold clip that must be frame-verified before it can play.
@@ -235,53 +235,7 @@ export type BeatPlan = {
   nextBody: Body;
   durationSec: number;
   explicit: boolean;
-  // Set when this beat's own plan is actually a precondition clip; planBeat/planReply must re-queue
-  // the original intent as this clip's single follow-up.
-  precondition?: BeatIntent;
 };
-
-// panties/bottom need sitting or standing; bra/top need a free hand; anything from lying/onAllFours/
-// bentOver stands first regardless of which garment.
-const garmentPrecondition = (
-  garment: GarmentId,
-  body: Body,
-): BeatIntent | null => {
-  if (
-    body.pose === "lying" ||
-    body.pose === "onAllFours" ||
-    body.pose === "bentOver"
-  ) {
-    return { type: "pose", pose: "standing", facing: "camera" };
-  }
-  if (
-    (garment === "panties" || garment === "bottom") &&
-    body.pose !== "sitting" &&
-    body.pose !== "standing"
-  ) {
-    return { type: "pose", pose: "standing", facing: "camera" };
-  }
-  if (
-    (garment === "bra" || garment === "top") &&
-    body.hands === "holdingProp"
-  ) {
-    return { type: "rest" };
-  }
-  return null;
-};
-
-// These read as a stationary showcase move; playing one from a seated end frame is what makes the
-// model reconcile a "sitting" NOW line against a standing frame by moving again next clip.
-const ACTS_REQUIRE_STANDING = new Set<
-  Extract<BeatIntent, { type: "act" }>["act"]
->(["spin", "dance", "twerk"]);
-
-const actPrecondition = (
-  act: Extract<BeatIntent, { type: "act" }>["act"],
-  body: Body,
-): BeatIntent | null =>
-  ACTS_REQUIRE_STANDING.has(act) && body.pose !== "standing"
-    ? { type: "pose", pose: "standing", facing: body.facing }
-    : null;
 
 const removalChoreo = (
   id: GarmentId,
@@ -342,16 +296,19 @@ const planAct = (
         durationSec: ACTION_BEAT_SEC,
         explicit: true,
       };
-    case "twerk":
+    case "twerk": {
+      const leadIn =
+        body.pose !== "standing" ? "0-2s: she rises to her feet. " : "";
       return {
         physical:
-          "Standing with her back to the webcam, she shakes and bounces her hips and ass to a beat " +
-          "only she can hear. No clothing changes.",
+          `${leadIn}Standing with her back to the webcam, she shakes and bounces her hips and ass ` +
+          "to a beat only she can hear. No clothing changes.",
         nextWardrobe: wardrobe,
-        nextBody: body,
+        nextBody: { ...body, pose: "standing", facing: "away" },
         durationSec: ACTION_BEAT_SEC,
         explicit: false,
       };
+    }
     case "bounce":
       return {
         physical: isOn(wardrobe, "top")
@@ -379,15 +336,17 @@ const planAct = (
         durationSec: ACTION_BEAT_SEC,
         explicit: false,
       };
-    case "dance":
+    case "dance": {
+      const leadIn =
+        body.pose !== "standing" ? "0-2s: she rises to her feet. " : "";
       return {
-        physical:
-          "She sways her hips to a beat only she can hear, full body in frame. No clothing changes.",
+        physical: `${leadIn}She sways her hips to a beat only she can hear, full body in frame. No clothing changes.`,
         nextWardrobe: wardrobe,
         nextBody: { ...body, pose: "standing" },
         durationSec: ACTION_BEAT_SEC,
         explicit: false,
       };
+    }
     case "crawl":
       return {
         physical:
@@ -401,10 +360,14 @@ const planAct = (
         durationSec: ACTION_BEAT_SEC,
         explicit: false,
       };
-    case "spin":
+    case "spin": {
+      const leadIn =
+        body.pose !== "standing"
+          ? "0-2s: she rises to her feet."
+          : "0-2s: she shifts her weight, ready to turn.";
       return {
         physical:
-          "0-2s: she shifts her weight, ready to turn. 2-8s: she turns a full 360-degree circle in " +
+          `${leadIn} 2-8s: she turns a full 360-degree circle in ` +
           "place, showing her body from every angle; every garment she is wearing stays exactly on " +
           "her body the entire turn. 8-11s: she settles standing, facing the webcam, holding still.",
         nextWardrobe: wardrobe,
@@ -412,6 +375,7 @@ const planAct = (
         durationSec: ACTION_BEAT_SEC,
         explicit: false,
       };
+    }
     case "gesture":
       return {
         physical:
@@ -445,17 +409,49 @@ const planAct = (
   }
 };
 
-export const planBeatIntent = (
+// A held real prop (not "none"/"fetching") occupies a hand; any intent other than actually
+// fetching or using that prop first sets it down in the same clip instead of a separate one.
+const isHoldingRealProp = (body: Body): boolean =>
+  body.hands === "holdingProp" &&
+  body.prop !== "none" &&
+  body.prop !== "fetching";
+
+// Poses the panties/bottom removal choreography can't be performed from directly — she needs to
+// reposition (sit up) in the same clip first.
+const NEEDS_SITUP_POSES = new Set<Body["pose"]>([
+  "lying",
+  "onAllFours",
+  "bentOver",
+  "kneeling",
+]);
+
+const PROP_SETDOWN_SEC = 1;
+const SIT_UP_SEC = 2;
+
+const propSetDownLine = (
+  prop: Exclude<Body["prop"], "none" | "fetching">,
+): string =>
+  `0-${PROP_SETDOWN_SEC}s: she sets ${PROP_LABEL[prop]} down out of frame.`;
+
+const SIT_UP_LINE = `0-${SIT_UP_SEC}s: she shifts to sit up on the edge of the bed.`;
+
+// Shifts a choreo's "<start>-<end>s:" time-boxes by offsetSec (clamped) so a lead-in can precede it.
+const shiftChoreoTimes = (physical: string, offsetSec: number): string =>
+  physical.replace(/(\d+)-(\d+)s:/g, (_match, start: string, end: string) => {
+    const shiftedStart = Math.min(ACTION_BEAT_SEC, Number(start) + offsetSec);
+    const shiftedEnd = Math.min(ACTION_BEAT_SEC, Number(end) + offsetSec);
+    return `${shiftedStart}-${shiftedEnd}s:`;
+  });
+
+// The choreography library itself, with no lead-in handling — every request performs entirely
+// from the body it is given.
+const planBeatIntentCore = (
   intent: BeatIntent,
-  state: LiveState,
+  wardrobe: Wardrobe,
+  body: Body,
 ): BeatPlan => {
-  const { wardrobe, body } = state;
   switch (intent.type) {
-    case "removeGarment": {
-      const precondition = garmentPrecondition(intent.garment, body);
-      if (precondition) {
-        return { ...planBeatIntent(precondition, state), precondition };
-      }
+    case "removeGarment":
       return {
         physical: removalChoreo(intent.garment, wardrobe, body),
         nextWardrobe: removeGarment(wardrobe, intent.garment),
@@ -463,12 +459,7 @@ export const planBeatIntent = (
         durationSec: ACTION_BEAT_SEC,
         explicit: true,
       };
-    }
-    case "addGarment": {
-      const precondition = garmentPrecondition(intent.garment, body);
-      if (precondition) {
-        return { ...planBeatIntent(precondition, state), precondition };
-      }
+    case "addGarment":
       return {
         physical: dressChoreo(intent.garment, wardrobe),
         nextWardrobe: addGarment(wardrobe, intent.garment),
@@ -476,7 +467,6 @@ export const planBeatIntent = (
         durationSec: ACTION_BEAT_SEC,
         explicit: false,
       };
-    }
     case "pose":
       return {
         physical:
@@ -542,13 +532,8 @@ export const planBeatIntent = (
         durationSec: ACTION_BEAT_SEC,
         explicit: true,
       };
-    case "act": {
-      const precondition = actPrecondition(intent.act, body);
-      if (precondition) {
-        return { ...planBeatIntent(precondition, state), precondition };
-      }
+    case "act":
       return planAct(intent, wardrobe, body);
-    }
     case "hold":
       return {
         physical: intent.line,
@@ -569,6 +554,50 @@ export const planBeatIntent = (
         explicit: false,
       };
   }
+};
+
+// One clip, from wherever she currently is: prepends a short lead-in and re-times the
+// choreography when the request can't be performed directly from the current body.
+export const planBeatIntent = (
+  intent: BeatIntent,
+  state: LiveState,
+): BeatPlan => {
+  const { wardrobe, body } = state;
+
+  if (
+    isHoldingRealProp(body) &&
+    intent.type !== "fetchProp" &&
+    intent.type !== "useProp" &&
+    intent.type !== "rest"
+  ) {
+    const prop = body.prop as Exclude<Body["prop"], "none" | "fetching">;
+    const freedBody: Body = {
+      ...body,
+      prop: "none",
+      hands: "free",
+      contact: "none",
+    };
+    const base = planBeatIntentCore(intent, wardrobe, freedBody);
+    return {
+      ...base,
+      physical: `${propSetDownLine(prop)} ${shiftChoreoTimes(base.physical, PROP_SETDOWN_SEC)}`,
+    };
+  }
+
+  if (
+    (intent.type === "removeGarment" || intent.type === "addGarment") &&
+    (intent.garment === "panties" || intent.garment === "bottom") &&
+    NEEDS_SITUP_POSES.has(body.pose)
+  ) {
+    const sittingBody: Body = { ...body, pose: "sitting" };
+    const base = planBeatIntentCore(intent, wardrobe, sittingBody);
+    return {
+      ...base,
+      physical: `${SIT_UP_LINE} ${shiftChoreoTimes(base.physical, SIT_UP_SEC)}`,
+    };
+  }
+
+  return planBeatIntentCore(intent, wardrobe, body);
 };
 
 // --- Reply intent catalog ---------------------------------------------------
@@ -816,12 +845,7 @@ const spreadLegsIntents = (text: string, body: Body): BeatIntent[] | null => {
 };
 
 const twerkIntents = (text: string): BeatIntent[] | null =>
-  RE_TWERK.test(text)
-    ? [
-        { type: "pose", pose: "standing", facing: "away" },
-        { type: "act", act: "twerk" },
-      ]
-    : null;
+  RE_TWERK.test(text) ? [{ type: "act", act: "twerk" }] : null;
 
 const spinIntents = (text: string): BeatIntent[] | null =>
   RE_SPIN.test(text) ? [{ type: "act", act: "spin" }] : null;
@@ -857,13 +881,8 @@ const toyIntents = (text: string): BeatIntent[] | null => {
 const touchIntents = (text: string): BeatIntent[] | null =>
   RE_TOUCH.test(text) ? [{ type: "touch" }] : null;
 
-const danceIntents = (text: string, body: Body): BeatIntent[] | null =>
-  RE_DANCE.test(text)
-    ? [
-        { type: "pose", pose: "standing", facing: body.facing },
-        { type: "act", act: "dance" },
-      ]
-    : null;
+const danceIntents = (text: string): BeatIntent[] | null =>
+  RE_DANCE.test(text) ? [{ type: "act", act: "dance" }] : null;
 
 const drinkIntents = (text: string): BeatIntent[] | null =>
   RE_DRINK.test(text)
@@ -957,7 +976,7 @@ const matchIntents = (
   poseIntents(text, body) ??
   toyIntents(text) ??
   touchIntents(text) ??
-  danceIntents(text, body) ??
+  danceIntents(text) ??
   drinkIntents(text) ??
   tipIntents(text) ??
   smallTalkIntents(text) ??
@@ -1042,16 +1061,6 @@ const capIntents = (intents: BeatIntent[]): BeatIntent[] => {
   return intents;
 };
 
-const continuesProp = (text: string): boolean =>
-  RE_TOY_ANY.test(text) || RE_DRINK.test(text) || RE_INSERT.test(text);
-
-// An unrelated request first sets down whatever hand-held object was in play; a satisfied rest is
-// dropped for free at dispatch time, so a leading rest here never costs a wasted clip.
-const maybeRest = (text: string, body: Body): BeatIntent[] =>
-  body.prop === "none" || body.prop === "fetching" || continuesProp(text)
-    ? []
-    : [{ type: "rest" }];
-
 // Clause-to-clause state isn't simulated here; a stale default self-filters via isIntentSatisfied later.
 const resolveIntents = (
   text: string,
@@ -1060,15 +1069,11 @@ const resolveIntents = (
 ): BeatIntent[] => {
   const correction = garmentCorrectionIntents(text);
   if (correction) {
-    return capIntents(
-      dedupeConsecutiveIntents([...maybeRest(text, body), ...correction]),
-    );
+    return capIntents(dedupeConsecutiveIntents(correction));
   }
 
   const clauses = splitClauses(text, wardrobe, body);
-  const allIntents: BeatIntent[] = [
-    ...(clauses.some(continuesProp) ? [] : maybeRest(text, body)),
-  ];
+  const allIntents: BeatIntent[] = [];
 
   for (const clause of clauses) {
     const intents = matchIntents(clause, wardrobe, body);
@@ -1289,10 +1294,7 @@ const planReply = (
     durationSec,
   });
 
-  const followUpIntents = beatPlan.precondition
-    ? [first, ...restIntents]
-    : restIntents;
-  let cappedFollowUps = followUpIntents;
+  let cappedFollowUps = restIntents;
   if (cappedFollowUps.length > 6) {
     console.warn(
       `planReply: ${cappedFollowUps.length} follow-up intents resolved, dropping the tail beyond the contract's 6-beat cap`,
@@ -1309,18 +1311,14 @@ const planReply = (
 
   const typingLeadSec = job.channel === "chat" ? typingLeadSecFor(job.text) : 0;
 
-  // A precondition clip (e.g. standing up first) doesn't touch wardrobe itself, even when `first`
-  // is a removeGarment/addGarment — the actual garment change is deferred to the re-queued beat.
-  const wardrobeIntent: ClipPlan["wardrobeIntent"] = beatPlan.precondition
-    ? null
-    : first.type === "removeGarment"
+  const wardrobeIntent: ClipPlan["wardrobeIntent"] =
+    first.type === "removeGarment"
       ? "remove"
       : first.type === "addGarment"
         ? "add"
         : null;
   const targetGarment: GarmentId | undefined =
-    !beatPlan.precondition &&
-    (first.type === "removeGarment" || first.type === "addGarment")
+    first.type === "removeGarment" || first.type === "addGarment"
       ? first.garment
       : undefined;
 
@@ -1360,29 +1358,16 @@ const planBeat = (
     explicit: beatPlan.explicit,
     durationSec,
   });
-  const followUps: PlannedBeat[] = beatPlan.precondition
-    ? [
-        {
-          id: job.beat.id,
-          intent: job.beat.intent,
-          attempt: job.beat.attempt,
-          ...(job.beat.requestId !== undefined
-            ? { requestId: job.beat.requestId }
-            : {}),
-        },
-      ]
-    : [];
+  const followUps: PlannedBeat[] = [];
   const beatIntent = job.beat.intent;
-  const wardrobeIntent: ClipPlan["wardrobeIntent"] = beatPlan.precondition
-    ? null
-    : beatIntent.type === "removeGarment"
+  const wardrobeIntent: ClipPlan["wardrobeIntent"] =
+    beatIntent.type === "removeGarment"
       ? "remove"
       : beatIntent.type === "addGarment"
         ? "add"
         : null;
   const targetGarment: GarmentId | undefined =
-    !beatPlan.precondition &&
-    (beatIntent.type === "removeGarment" || beatIntent.type === "addGarment")
+    beatIntent.type === "removeGarment" || beatIntent.type === "addGarment"
       ? beatIntent.garment
       : undefined;
   return {
