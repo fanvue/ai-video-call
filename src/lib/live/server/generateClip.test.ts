@@ -139,7 +139,7 @@ describe("generateClip: anchored idle loop", () => {
     expect(result.timings.repairMs).toBe(0);
   });
 
-  it("on the reference backend (no end frame), falls back to the chained path", async () => {
+  it("on the reference backend (no end frame), skips extract/guard/repair too — its result frame is never reused as a seed", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: false, render });
     const req = clipRequest({ job: { kind: "idle" }, backend: "reference" });
 
@@ -148,9 +148,12 @@ describe("generateClip: anchored idle loop", () => {
     expect(render).toHaveBeenCalledWith(
       expect.objectContaining({ endFrameUrl: undefined }),
     );
-    expect(extractLastFrameUrl).toHaveBeenCalled();
-    expect(guardFrame).toHaveBeenCalled();
+    expect(extractLastFrameUrl).not.toHaveBeenCalled();
+    expect(guardFrame).not.toHaveBeenCalled();
+    expect(repairFrame).not.toHaveBeenCalled();
+    expect(correctFrameIdentityDrift).not.toHaveBeenCalled();
     expect(result.loops).toBe(false);
+    expect(result.seedFrameUrl).toBe(req.session.seedFrameUrl);
   });
 });
 
@@ -230,5 +233,36 @@ describe("generateClip: chained jobs", () => {
     expect(correctFrameIdentityDrift).not.toHaveBeenCalled();
     expect(result.guard.repaired).toBe(true);
     expect(result.seedFrameUrl).toBe("https://example.com/repaired.jpg");
+  });
+
+  it("runs the periodic identity correction on turbo when due and nothing was repaired", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    correctFrameIdentityDrift.mockResolvedValue(
+      "https://example.com/corrected.jpg",
+    );
+    const req = clipRequest({
+      job: { kind: "settle" },
+      session: session({ elapsedSec: 40 }),
+    });
+
+    const result = await generateClip(req);
+
+    expect(correctFrameIdentityDrift).toHaveBeenCalled();
+    expect(result.seedFrameUrl).toBe("https://example.com/corrected.jpg");
+  });
+
+  it("never runs the periodic identity correction on the reference backend, even when due and unrepaired", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: false, render });
+    const req = clipRequest({
+      job: { kind: "settle" },
+      backend: "reference",
+      session: session({ elapsedSec: 40 }),
+    });
+
+    const result = await generateClip(req);
+
+    expect(guardFrame).toHaveBeenCalled();
+    expect(correctFrameIdentityDrift).not.toHaveBeenCalled();
+    expect(result.seedFrameUrl).toBe("https://example.com/extracted.jpg");
   });
 });

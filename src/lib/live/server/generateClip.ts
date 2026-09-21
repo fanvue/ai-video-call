@@ -114,6 +114,10 @@ export const generateClip = async (
   if (isAnchoredLoop) {
     // Loops start and end on the same anchor frame by construction — nothing to extract or guard.
     seedFrameUrl = session.seedFrameUrl;
+  } else if (job.kind === "idle") {
+    // Idle's result frame is matched for playback by the anchor it was rendered FROM, never reused
+    // as a seed (see pipeline.ts), so extracting/guarding/correcting it is pure wasted latency.
+    seedFrameUrl = session.seedFrameUrl;
   } else {
     const frameStarted = Date.now();
     try {
@@ -169,9 +173,12 @@ export const generateClip = async (
       }
       repairMs = Date.now() - repairStarted;
 
-      // A repair already re-anchors identity against the anchor image, so the periodic identity
-      // correction pass is redundant (and off the critical path saved) whenever a repair just ran.
-      if (!repaired && dueForCorrection(session.elapsedSec, plan.durationSec)) {
+      // Blind periodic correction is the main path by which the upload photo's wardrobe/pose leaks back into a live seed on the reference backend; issue-scoped repairFrame above is kept as the sole correction there.
+      if (
+        !repaired &&
+        backend === "turbo" &&
+        dueForCorrection(session.elapsedSec, plan.durationSec)
+      ) {
         try {
           seedFrameUrl = await withTimeout(
             correctFrameIdentityDrift({
