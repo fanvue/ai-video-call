@@ -101,6 +101,14 @@ Invariants:
   garment at a time. The prompt names the exact garment as described.
 - Nothing is ever put back on automatically; only a fan request (or a garment correction) adds a
   garment.
+- Removal/dress clips run the full `MAX_CLIP_SEC` (15s), staged as mechanically explicit,
+  time-boxed steps (clasp/straps for a bra, waistband/steps for panties or bottoms, etc.) ending in
+  ~2s of stillness, plus a fabric-physics line — never a same-motion "rip it off".
+- A facing change is always described as part of settling into the new pose or act (e.g. "turning
+  as she settles"), never as a standalone spin/turn; `doggy` and ass-spread apply the same rule via
+  an in-clip lead-in instead of a separate pose beat.
+- An unrecognized but plainly physical request (`RE_GENERIC_ACTION`) is performed near-verbatim
+  (the `verbatim` act) instead of falling back to a friendly acknowledgement hold.
 - Props: `none | fetching | <toyId>`. A toy is fetched on camera (one clip) before it is used.
   If an unrelated request arrives while she holds it, she sets it down inside that request's own
   clip (a lead-in), never in a separate clip.

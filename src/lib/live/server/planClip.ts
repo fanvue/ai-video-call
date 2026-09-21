@@ -237,48 +237,135 @@ export type BeatPlan = {
   explicit: boolean;
 };
 
+// NEEDS_SITUP_POSES already repositions lying/onAllFours/bentOver/kneeling to sitting before a
+// panties/bottom beat reaches here on the reply path, so "lying" mechanics below are for direct calls only.
+type Posture = "standing" | "sitting" | "lying";
+
+const posture = (pose: Body["pose"]): Posture =>
+  pose === "standing" ? "standing" : pose === "lying" ? "lying" : "sitting";
+
+// Appended to every wardrobe clip's action text (never part of the timeboxed mechanics above),
+// as a second guard against the model inventing fabric that stretches, tears, or teleports.
+const WARDROBE_PHYSICS_LINE =
+  "The fabric moves only where her hands move it; it slides, folds and hangs with real weight and never vanishes, stretches, tears or teleports.";
+
 const removalChoreo = (
   id: GarmentId,
   wardrobe: Wardrobe,
   body: Body,
 ): string => {
   const desc = describeGarment(wardrobe, id);
-  const standing = body.pose === "standing";
   switch (id) {
     case "bra":
       return (
-        `0-2s: both hands reach behind her back and unhook her ${desc}. 2-5s: the straps slide off ` +
-        "her shoulders and down her arms, one at a time. 5-8s: she brings it forward and off, sets it " +
-        "out of frame. 8-11s: hands rest, still, chest bare."
+        `0-3s: both hands reach behind her back and find the clasp of her ${desc}, unhooking it with ` +
+        "a single hook release. 3-6s: her shoulders roll forward as the straps loosen and slide down " +
+        "her upper arms. 6-9s: she brings one arm through, then the other. 9-13s: the cups fall " +
+        "forward; she catches it in one hand, lowers it, and sets it out of frame. 13-15s: hands come " +
+        "to rest, still, chest bare."
       );
     case "top":
       return (
-        `0-2s: she crosses her arms and grips the hem of her ${desc}. 2-5s: she pulls it up and over ` +
-        "her head. 5-8s: arms come free, hair falls back, she sets it out of frame. 8-11s: hands rest, still."
+        `0-3s: she crosses her arms at the hem of her ${desc} and gathers the fabric. 3-6s: she lifts ` +
+        "it up over her torso and over her head, her head briefly covered. 6-9s: her arms come free " +
+        "one at a time and her hair falls back. 9-13s: she sets it out of frame. 13-15s: hands rest, still."
       );
-    case "panties":
-      return standing
-        ? `0-2s: thumbs hook the waistband of her ${desc} at her hips. 2-5s: she bends forward and ` +
-            "slides them down her thighs. 5-8s: past her knees, she steps out with each foot, sets " +
-            "them out of frame. 8-11s: she straightens up, still."
-        : `0-2s: thumbs hook the waistband of her ${desc} at her hips. 2-5s: she lifts her hips and ` +
-            "slides them down her thighs. 5-8s: past her knees, one foot out then the other, sets " +
-            "them out of frame. 8-11s: she settles back, still.";
-    case "bottom":
-      return standing
-        ? `0-2s: she unfastens her ${desc} at the waist. 2-5s: she slides them down her legs. 5-8s: ` +
-            "she steps out with each foot, sets them out of frame. 8-11s: she straightens up, still."
-        : `0-2s: she unfastens her ${desc} at the waist. 2-5s: she lifts her hips and slides them ` +
-            "down her thighs. 5-8s: past her knees, one foot out then the other, sets them out of " +
-            "frame. 8-11s: she settles back, still.";
+    case "panties": {
+      switch (posture(body.pose)) {
+        case "standing":
+          return (
+            `0-3s: thumbs hook the waistband of her ${desc} at her hips. 3-6s: she pushes it down ` +
+            "over her hips to mid-thigh. 6-9s: she bends forward slightly, pushing it down to her " +
+            "knees. 9-12s: she lifts one foot out, then the other. 12-13s: she straightens up, " +
+            "holding them in one hand, and sets them aside. 13-15s: hands rest, still."
+          );
+        case "lying":
+          return (
+            `0-3s: her knees bend and her hips lift, the waistband of her ${desc} coming free at her ` +
+            "hips. 3-6s: she slides it down her thighs. 6-9s: her legs raise. 9-13s: she pulls them " +
+            "off over her feet, one at a time, and sets them aside. 13-15s: hands rest, still."
+          );
+        case "sitting":
+        default:
+          return (
+            `0-3s: thumbs hook the waistband of her ${desc}. 3-6s: she lifts her hips off the seat ` +
+            "and slides it down to her thighs. 6-9s: she sits back down. 9-13s: she pulls them down " +
+            "past her knees and off over her feet, one at a time. 13-15s: hands rest, still."
+          );
+      }
+    }
+    case "bottom": {
+      const isSkirt = /skirt/i.test(desc);
+      if (isSkirt) {
+        return (
+          `0-3s: she unzips or unhooks her ${desc} at the hip. 3-6s: she lets it drop and settle at ` +
+          "her feet. 6-9s: she steps out of it with each foot. 9-13s: she picks it up and sets it out " +
+          "of frame. 13-15s: hands rest, still."
+        );
+      }
+      return posture(body.pose) === "standing"
+        ? `0-3s: thumbs hook the waistband of her ${desc} at her hips. 3-6s: she pushes it down over ` +
+            "her hips to mid-thigh. 6-9s: she bends forward slightly, pushing it down to her knees. " +
+            "9-12s: she lifts one foot out, then the other. 12-13s: she straightens up, holding them " +
+            "in one hand, and sets them aside. 13-15s: hands rest, still."
+        : `0-3s: thumbs hook the waistband of her ${desc}. 3-6s: she lifts her hips and slides it ` +
+            "down to her thighs. 6-9s: she pulls them down past her knees and off over her feet, one " +
+            "at a time. 9-13s: she sets them out of frame. 13-15s: hands rest, still.";
+    }
   }
 };
 
-const dressChoreo = (id: GarmentId, wardrobe: Wardrobe): string =>
-  `0-3s: she picks up her ${GARMENT_LABEL[id]} (${describeGarment(wardrobe, id)}) and puts it back ` +
-  "on, grounded and unhurried. 3-11s: she settles, still.";
+const dressChoreo = (id: GarmentId, wardrobe: Wardrobe, body: Body): string => {
+  const desc = describeGarment(wardrobe, id);
+  switch (id) {
+    case "bra":
+      return (
+        `0-3s: she picks up her bra (${desc}) and brings it to her chest, cups in place. 3-6s: she ` +
+        "threads one arm through a strap, then the other. 6-9s: she reaches behind her back and finds " +
+        "the clasp. 9-13s: she hooks it closed, the straps settling on her shoulders. 13-15s: hands rest, still."
+      );
+    case "top":
+      return (
+        `0-3s: she picks up her top (${desc}) and gathers the hem in both hands. 3-6s: she lowers it ` +
+        "over her head, arms finding the sleeves as it comes down. 6-9s: it settles over her torso, " +
+        "her hair falling back into place. 9-13s: she smooths it down. 13-15s: hands rest, still."
+      );
+    case "panties":
+      return posture(body.pose) === "standing"
+        ? `0-3s: she picks up her panties (${desc}) and steps one foot in, then the other. 3-6s: she ` +
+            "pulls them up her calves and past her knees. 6-9s: she bends forward slightly, drawing " +
+            "them up her thighs. 9-13s: she straightens up, hooking the waistband into place at her " +
+            "hips. 13-15s: hands rest, still."
+        : `0-3s: she picks up her panties (${desc}) and slides one foot in, then the other, over her ` +
+            "feet. 3-6s: she draws them up her calves and thighs. 6-9s: she lifts her hips off the " +
+            "seat. 9-13s: she settles back down, the waistband in place at her hips. 13-15s: hands rest, still.";
+    case "bottom": {
+      const isSkirt = /skirt/i.test(desc);
+      if (isSkirt) {
+        return (
+          `0-3s: she picks up her ${desc} and steps into it with each foot. 3-6s: she draws it up her ` +
+          "legs to her hips. 6-9s: she settles it into place at her waist. 9-13s: she hooks or zips it " +
+          "closed at the hip. 13-15s: hands rest, still."
+        );
+      }
+      return posture(body.pose) === "standing"
+        ? `0-3s: she picks up her ${desc} and steps one foot in, then the other. 3-6s: she pulls them ` +
+            "up her legs and past her knees. 6-9s: she bends forward slightly, drawing them up her " +
+            "thighs. 9-13s: she straightens up, fastening the waistband. 13-15s: hands rest, still."
+        : `0-3s: she picks up her ${desc} and slides one foot in, then the other. 3-6s: she draws them ` +
+            "up her calves and thighs. 6-9s: she lifts her hips. 9-13s: she settles back down, " +
+            "fastening the waistband. 13-15s: hands rest, still.";
+    }
+  }
+};
 
-const EXPLICIT_ACTS = new Set(["grind", "spread"]);
+const EXPLICIT_ACTS = new Set([
+  "grind",
+  "spread",
+  "doggy",
+  "spank",
+  "boobPlay",
+]);
 
 const planAct = (
   intent: Extract<BeatIntent, { type: "act" }>,
@@ -311,22 +398,56 @@ const planAct = (
     }
     case "bounce":
       return {
-        physical: isOn(wardrobe, "top")
-          ? `She bounces gently, her ${describeGarment(wardrobe, "top")} moving with her. Nothing comes off, nothing else changes.`
-          : "She bounces gently, nothing else changes.",
+        physical: (() => {
+          const surface =
+            body.pose === "standing" ? "on her heels" : "on her seat";
+          const topLine = isOn(wardrobe, "top")
+            ? `, her ${describeGarment(wardrobe, "top")} moving with her`
+            : "";
+          return `Hands free or resting lightly on her thighs, she bounces up and down ${surface} so her chest moves${topLine}. Nothing comes off, nothing else changes.`;
+        })(),
         nextWardrobe: wardrobe,
         nextBody: body,
         durationSec: ACTION_BEAT_SEC,
         explicit: false,
       };
-    case "spread":
+    case "spread": {
+      if (intent.detail === "ass") {
+        const alreadyBack =
+          body.pose === "onAllFours" || body.pose === "bentOver";
+        const leadIn = alreadyBack
+          ? ""
+          : "0-3s: she turns her hips away from the webcam and bends forward at the waist, settling into position. ";
+        return {
+          physical:
+            `${leadIn}Facing away and bent forward, she reaches back with both hands and pulls her ` +
+            "ass cheeks apart, holding them open toward the lens, looking back over her shoulder. No clothing changes.",
+          nextWardrobe: wardrobe,
+          nextBody: {
+            ...body,
+            pose: "bentOver",
+            facing: "away",
+            hands: "onBody",
+            contact: "self",
+          },
+          durationSec: ACTION_BEAT_SEC,
+          explicit: true,
+        };
+      }
+      const legsLine =
+        body.pose === "standing"
+          ? "She steps her feet wide apart and bends forward slightly, legs spread toward the lens."
+          : body.pose === "lying"
+            ? "Lying down, she draws her knees up and lets them fall open, legs spread toward the lens."
+            : "She draws her knees up and lets them fall open, legs spread toward the lens.";
       return {
-        physical: `She spreads her legs open, staying ${POSE_DESCRIPTION[body.pose]}, facing the webcam. No clothing changes.`,
+        physical: `${legsLine} No clothing changes.`,
         nextWardrobe: wardrobe,
         nextBody: body,
         durationSec: ACTION_BEAT_SEC,
         explicit: true,
       };
+    }
     case "sway":
       return {
         physical:
@@ -406,6 +527,55 @@ const planAct = (
         durationSec: ACTION_BEAT_SEC,
         explicit: false,
       };
+    case "doggy":
+      return {
+        physical:
+          "0-4s: she lowers herself onto her hands and knees on the bed, turning her hips toward the " +
+          "webcam as she settles — she does not stand up or turn a full circle, the turn happens as " +
+          "part of the same movement. 4-8s: on her hands and knees, back arched, she rocks her hips in " +
+          "a slow, steady rhythm. 8-11s: she glances back over her shoulder at the lens, still rocking. " +
+          "No clothing changes.",
+        nextWardrobe: wardrobe,
+        nextBody: {
+          ...body,
+          pose: "onAllFours",
+          facing: "away",
+          hands: "free",
+          contact: "none",
+        },
+        durationSec: ACTION_BEAT_SEC,
+        explicit: true,
+      };
+    case "spank": {
+      const turnsToSide = body.facing === "camera";
+      return {
+        physical:
+          "One hand comes around and spanks her own ass cheek, a few firm slaps, visible skin " +
+          `reaction, eyes on the lens${turnsToSide ? " — she turns her hips to the side as part of the same motion" : ""}. ` +
+          "No clothing changes.",
+        nextWardrobe: wardrobe,
+        nextBody: turnsToSide ? { ...body, facing: "side" } : body,
+        durationSec: ACTION_BEAT_SEC,
+        explicit: true,
+      };
+    }
+    case "boobPlay": {
+      const layer = isOn(wardrobe, "bra")
+        ? describeGarment(wardrobe, "bra")
+        : isOn(wardrobe, "top")
+          ? describeGarment(wardrobe, "top")
+          : null;
+      const overFabric = layer ? ` over her ${layer}` : "";
+      return {
+        physical:
+          `Both hands come up and cup her own breasts${overFabric}, squeezing gently, thumbs circling ` +
+          "slowly over where her nipples are. No clothing changes.",
+        nextWardrobe: wardrobe,
+        nextBody: body,
+        durationSec: ACTION_BEAT_SEC,
+        explicit: true,
+      };
+    }
   }
 };
 
@@ -435,11 +605,16 @@ const propSetDownLine = (
 
 const SIT_UP_LINE = `0-${SIT_UP_SEC}s: she shifts to sit up on the edge of the bed.`;
 
-// Shifts a choreo's "<start>-<end>s:" time-boxes by offsetSec (clamped) so a lead-in can precede it.
-const shiftChoreoTimes = (physical: string, offsetSec: number): string =>
+// Shifts a choreo's "<start>-<end>s:" time-boxes by offsetSec (clamped to the beat's own duration,
+// e.g. 15s for a wardrobe beat vs 11s otherwise) so a lead-in can precede it.
+const shiftChoreoTimes = (
+  physical: string,
+  offsetSec: number,
+  capSec: number,
+): string =>
   physical.replace(/(\d+)-(\d+)s:/g, (_match, start: string, end: string) => {
-    const shiftedStart = Math.min(ACTION_BEAT_SEC, Number(start) + offsetSec);
-    const shiftedEnd = Math.min(ACTION_BEAT_SEC, Number(end) + offsetSec);
+    const shiftedStart = Math.min(capSec, Number(start) + offsetSec);
+    const shiftedEnd = Math.min(capSec, Number(end) + offsetSec);
     return `${shiftedStart}-${shiftedEnd}s:`;
   });
 
@@ -453,25 +628,26 @@ const planBeatIntentCore = (
   switch (intent.type) {
     case "removeGarment":
       return {
-        physical: removalChoreo(intent.garment, wardrobe, body),
+        physical: `${removalChoreo(intent.garment, wardrobe, body)} ${WARDROBE_PHYSICS_LINE}`,
         nextWardrobe: removeGarment(wardrobe, intent.garment),
         nextBody: { ...body, hands: "free", contact: "none" },
-        durationSec: ACTION_BEAT_SEC,
+        durationSec: LIVE_TUNABLES.MAX_CLIP_SEC,
         explicit: true,
       };
     case "addGarment":
       return {
-        physical: dressChoreo(intent.garment, wardrobe),
+        physical: `${dressChoreo(intent.garment, wardrobe, body)} ${WARDROBE_PHYSICS_LINE}`,
         nextWardrobe: addGarment(wardrobe, intent.garment),
         nextBody: body,
-        durationSec: ACTION_BEAT_SEC,
+        durationSec: LIVE_TUNABLES.MAX_CLIP_SEC,
         explicit: false,
       };
     case "pose":
       return {
         physical:
-          `She moves from her current pose into ${POSE_DESCRIPTION[intent.pose]}, ` +
-          `${FACING_TRANSITION_LABEL[intent.facing]}. The fixed webcam does not move. No clothing changes.`,
+          `She moves from her current pose into ${POSE_DESCRIPTION[intent.pose]}, turning as she settles ` +
+          `so she ends up ${FACING_TRANSITION_LABEL[intent.facing]}. The fixed webcam does not move. She ` +
+          "does not spin or turn a full circle. No clothing changes.",
         nextWardrobe: wardrobe,
         nextBody: { ...body, pose: intent.pose, facing: intent.facing },
         durationSec: ACTION_BEAT_SEC,
@@ -522,16 +698,29 @@ const planBeatIntentCore = (
         explicit: false,
       };
     }
-    case "touch":
+    case "touch": {
+      const coveringDesc = wardrobe.panties.on
+        ? `over her ${describeGarment(wardrobe, "panties")}`
+        : wardrobe.bottom.on
+          ? `over her ${describeGarment(wardrobe, "bottom")}`
+          : "over her bare skin";
+      const positionLine =
+        body.pose === "standing"
+          ? "standing with her legs slightly apart, one hand slides down the front of her body"
+          : body.pose === "lying" || body.pose === "onAllFours"
+            ? "she reaches one hand back between her legs"
+            : "sitting with her knees apart, one hand slides down between her legs";
       return {
         physical:
-          "One hand moves onto her own body and stays there, fingers visibly attached, touching " +
-          "herself, external contact only, never inserting. The other arm supports her.",
+          `0-2s: ${positionLine}, her fingers settling ${coveringDesc}. 2-8s: her fingers rub in a ` +
+          `steady rhythm ${coveringDesc}, external contact only, never inserting. 8-11s: her hips rock ` +
+          "gently and her breathing quickens, fingers still moving, eyes on the lens.",
         nextWardrobe: wardrobe,
         nextBody: { ...body, hands: "onBody", contact: "self" },
         durationSec: ACTION_BEAT_SEC,
         explicit: true,
       };
+    }
     case "act":
       return planAct(intent, wardrobe, body);
     case "hold":
@@ -551,7 +740,7 @@ const planBeatIntentCore = (
         nextWardrobe: wardrobe,
         nextBody: body,
         durationSec: ACTION_BEAT_SEC,
-        explicit: false,
+        explicit: RE_SEXUAL_NOUN.test(intent.text),
       };
   }
 };
@@ -580,7 +769,7 @@ export const planBeatIntent = (
     const base = planBeatIntentCore(intent, wardrobe, freedBody);
     return {
       ...base,
-      physical: `${propSetDownLine(prop)} ${shiftChoreoTimes(base.physical, PROP_SETDOWN_SEC)}`,
+      physical: `${propSetDownLine(prop)} ${shiftChoreoTimes(base.physical, PROP_SETDOWN_SEC, base.durationSec)}`,
     };
   }
 
@@ -593,7 +782,7 @@ export const planBeatIntent = (
     const base = planBeatIntentCore(intent, wardrobe, sittingBody);
     return {
       ...base,
-      physical: `${SIT_UP_LINE} ${shiftChoreoTimes(base.physical, SIT_UP_SEC)}`,
+      physical: `${SIT_UP_LINE} ${shiftChoreoTimes(base.physical, SIT_UP_SEC, base.durationSec)}`,
     };
   }
 
@@ -651,8 +840,9 @@ const RE_TOY_DILDO = /\bdildos?\b/i;
 const RE_INSERT =
   /\b(insert|inside (her|your|my)|stick it in|in (her|your|my) (pussy|cunt|ass|butt))\b/i;
 const RE_SUCK = /\b(suck|blowjob|blow job)\b/i;
+// Breast-noun phrasing is intentionally excluded here — that routes to boobPlay/bounce instead.
 const RE_TOUCH =
-  /\b(touch (yourself|your (pussy|clit))|masturbat\w*|finger\w* yourself|insert (your |a )?fingers?|play with (yourself|your (pussy|clit))|rub (your (pussy|clit)|yourself)|joi|jerk[\s-]?off)\b/i;
+  /\b(touch (yourself|your (pussy|clit))|masturbat\w*|finger\w*\s+(yourself|your pussy)|insert (your |a )?fingers?|play with (yourself|your (pussy|clit))|rub (your|ur) (clit|pussy)|rub (your (pussy|clit)|yourself)|joi|jerk[\s-]?off|get yourself off|make yourself cum|cum for me|orgasm\w*)\b/i;
 const RE_DANCE = /\b(dance|sway)\b/i;
 const RE_DRINK = /\b(drink|sip|water|coffee|tea)\b/i;
 const RE_TIP = /\b(tip(ped)?|thank you|thanks)\b/i;
@@ -664,11 +854,19 @@ const RE_GESTURE =
 const RE_TONGUE =
   /\b(show (me |us )?(your |ur )?tongue|stick out (your |ur )?tongue|lick (your |ur )?lips)\b/i;
 const RE_BOUNCE =
-  /\b(jiggle (your |ur |her )?(tits|boobs|chest)|bounce (your |ur |her )?(tits|boobs|chest)|bounce for me)\b/i;
+  /\b((jiggle|bounce|shake) (your |ur |her |those |them )?(tits|boobs|chest|titties)|bounce for me)\b/i;
 const RE_DOGGY = /\b(doggy\w*|all fours|hands and knees)\b/i;
+const RE_SPANK =
+  /\bspank(s|ing)?\b|\bslap (your |ur |that )?(ass|butt|booty|cheeks?)\b|\bsmack (your |ur |that )?(ass|butt|booty)\b/i;
+const RE_SQUEEZE =
+  /\b(squeeze|grab|cup|grope) (your |ur |those |them )?(tits|boobs|chest|ass|butt|booty)\b/i;
+const RE_BOOB_PLAY =
+  /\b(rub|hold|cup|massage|play with) (your |ur |those |them )?(tits|boobs|chest|nipples)\b/i;
 const RE_BEND = /\bbend(ing)?\s+over\b/i;
 const RE_CRAWL = /\bcrawl(ing)?\b/i;
-const RE_SPREAD = /\bspread (your |ur )?legs\b/i;
+const RE_SPREAD_LEGS = /\b(spread|open) (your |ur )?legs\b/i;
+const RE_SPREAD_ASS =
+  /\bspread (your |ur )?(ass|cheeks)\b|\bshow (me |us )?(your |ur )?ass(hole)?\b/i;
 const RE_TWERK =
   /\bshake (your |ur |that |her )?(ass|booty)\b|\bshake it\b|\btwerk\w*\b|\bbooty\b/i;
 const RE_COME_CLOSER =
@@ -678,7 +876,11 @@ const RE_SPIN =
   /\bspins?\b|\bspinning\b|\bdo a spin\b|\bfull (turn|circle|360)\b|\b360\b/i;
 
 const RE_GENERIC_ACTION =
-  /\b(show|do|try|give|move|walk|stand|pose|face|look|point|lift|raise|lower|open|close|hold|grab|pull|push|rotate|flex|stretch|arch|squat|jump|hop|shake|wiggle|roll|flip)\b/i;
+  /\b(show|do|try|give|move|walk|stand|pose|face|look|point|lift|raise|lower|open|close|hold|grab|pull|push|rotate|flex|stretch|arch|squat|jump|hop|shake|wiggle|roll|flip|spank|slap|smack|squeeze|cup|grope|rub|lick|suck|kiss|bite|twist|jiggle|bounce|spread|finger|ride|hump|tease|flash|strip|undress|tug|pinch|flick|thrust|kneel|crawl|sit|lie|lay|turn|bend|wave|blow)\b/i;
+
+// Sexual/body nouns that make an unrecognized-but-physical (verbatim) request explicit content.
+const RE_SEXUAL_NOUN =
+  /\b(tits?|boobs?|ass|pussy|clit|nipples?|cum|fuck\w*|suck\w*|dildo|vibrator|naked|nude)\b/i;
 
 const RE_POSE: Partial<Record<Pose, RegExp>> = {
   standing: /\b(stand up|get up|on your feet)\b/i,
@@ -802,12 +1004,23 @@ const bounceIntents = (text: string): BeatIntent[] | null =>
   RE_BOUNCE.test(text) ? [{ type: "act", act: "bounce" }] : null;
 
 const doggyIntents = (text: string): BeatIntent[] | null =>
-  RE_DOGGY.test(text)
-    ? [
-        { type: "pose", pose: "onAllFours", facing: "away" },
-        { type: "act", act: "grind" },
-      ]
-    : null;
+  RE_DOGGY.test(text) ? [{ type: "act", act: "doggy" }] : null;
+
+const spankIntents = (text: string): BeatIntent[] | null =>
+  RE_SPANK.test(text) ? [{ type: "act", act: "spank" }] : null;
+
+// squeeze/grab/cup/grope routes to boobPlay for a chest noun, or ass-spread for an ass noun.
+const squeezeIntents = (text: string): BeatIntent[] | null => {
+  const match = RE_SQUEEZE.exec(text);
+  if (!match) return null;
+  const isAss = /\b(ass|butt|booty)\b/i.test(match[3] ?? "");
+  return isAss
+    ? [{ type: "act", act: "spread", detail: "ass" }]
+    : [{ type: "act", act: "boobPlay" }];
+};
+
+const boobPlayIntents = (text: string): BeatIntent[] | null =>
+  RE_BOOB_PLAY.test(text) ? [{ type: "act", act: "boobPlay" }] : null;
 
 const bendOverIntents = (text: string, body: Body): BeatIntent[] | null => {
   if (!RE_BEND.test(text)) return null;
@@ -834,13 +1047,16 @@ const crawlIntents = (text: string): BeatIntent[] | null =>
       ]
     : null;
 
-const spreadLegsIntents = (text: string, body: Body): BeatIntent[] | null => {
-  if (!RE_SPREAD.test(text)) return null;
+const spreadIntents = (text: string, body: Body): BeatIntent[] | null => {
+  if (RE_SPREAD_ASS.test(text)) {
+    return [{ type: "act", act: "spread", detail: "ass" }];
+  }
+  if (!RE_SPREAD_LEGS.test(text)) return null;
   const pose: Pose =
-    body.pose === "sitting" || body.pose === "lying" ? body.pose : "sitting";
+    body.pose === "standing" || body.pose === "lying" ? body.pose : "sitting";
   return [
     { type: "pose", pose, facing: "camera" },
-    { type: "act", act: "spread" },
+    { type: "act", act: "spread", detail: "legs" },
   ];
 };
 
@@ -964,11 +1180,14 @@ const matchIntents = (
   revealIntents(text) ??
   gestureIntents(text) ??
   tongueIntents(text) ??
+  spankIntents(text) ??
+  squeezeIntents(text) ??
+  boobPlayIntents(text) ??
   bounceIntents(text) ??
   doggyIntents(text) ??
   bendOverIntents(text, body) ??
   crawlIntents(text) ??
-  spreadLegsIntents(text, body) ??
+  spreadIntents(text, body) ??
   twerkIntents(text) ??
   spinIntents(text) ??
   comeCloserIntents(text, body) ??

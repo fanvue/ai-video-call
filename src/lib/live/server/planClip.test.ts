@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   LIVE_TUNABLES,
+  type BeatIntent,
   type Body,
   type CreatorProfile,
   type LiveSessionSnapshot,
@@ -302,14 +303,66 @@ describe("planClip: reply catalog -> intents", () => {
     expect(plan.prompt).toMatch(/friendly acknowledgement/i);
   });
 
-  it("doggy resolves to a pose-then-grind pair, dropping the pose beat once already there", () => {
-    const s = session({
-      state: state({ body: body({ pose: "onAllFours", facing: "away" }) }),
-    });
-    const plan = replyPlan("get on all fours and grind for me", s);
-    // Pose already satisfied, so the reply clip itself is the grind act, not a redundant pose hold.
+  it('"doggy" resolves to a single act, one clip, no separate pose beat', () => {
+    const plan = replyPlan("doggy style please");
+    expect(plan.followUps).toEqual([]);
     expect(plan.expectedState.body.pose).toBe("onAllFours");
+    expect(plan.expectedState.body.facing).toBe("away");
+    expect(plan.prompt).toMatch(/hands and knees/i);
+    expect(plan.prompt).not.toMatch(/360-degree|she turns a full/i);
     expect(plan.prompt).toMatch(/render the nudity/i);
+  });
+
+  it('"spank your ass" resolves to the spank act, explicit', () => {
+    const plan = replyPlan("spank your ass");
+    expect(plan.followUps).toEqual([]);
+    expect(plan.prompt).toMatch(/render the nudity/i);
+    expect(plan.prompt).toMatch(/spanks her own ass/i);
+  });
+
+  it('"slap that ass" also resolves to the spank act', () => {
+    const plan = replyPlan("slap that ass");
+    expect(plan.prompt).toMatch(/spanks her own ass/i);
+  });
+
+  it('"squeeze your tits" routes to boobPlay', () => {
+    const plan = replyPlan("squeeze your tits");
+    expect(plan.prompt).toMatch(/cup her own breasts/i);
+  });
+
+  it('"squeeze your ass" routes to the ass-spread act instead', () => {
+    const plan = replyPlan("squeeze your ass");
+    expect(plan.prompt).toMatch(/pulls her ass cheeks apart/i);
+  });
+
+  it('"rub your tits" and "play with your nipples" route to boobPlay', () => {
+    expect(replyPlan("rub your tits").prompt).toMatch(/cup her own breasts/i);
+    expect(replyPlan("play with your nipples").prompt).toMatch(
+      /cup her own breasts/i,
+    );
+  });
+
+  it('"jiggle tits" resolves to the bounce act', () => {
+    const plan = replyPlan("jiggle tits");
+    expect(plan.followUps).toEqual([]);
+    expect(plan.expectedState.body).toEqual(session().state.body);
+  });
+
+  it('"masturbate for me" resolves to touch', () => {
+    const plan = replyPlan("masturbate for me");
+    expect(plan.expectedState.body.contact).toBe("self");
+    expect(plan.prompt).toMatch(/render the nudity/i);
+  });
+
+  it('"make yourself cum" resolves to touch', () => {
+    const plan = replyPlan("make yourself cum");
+    expect(plan.expectedState.body.contact).toBe("self");
+  });
+
+  it('an unknown request ("wiggle your toes") falls through to verbatim, not the friendly hold', () => {
+    const plan = replyPlan("wiggle your toes");
+    expect(plan.prompt).not.toMatch(/friendly acknowledgement/i);
+    expect(plan.prompt).toMatch(/wiggle your toes/i);
   });
 
   it("come closer steps framing in one direction only", () => {
@@ -451,5 +504,178 @@ describe("planBeat: always one clip, no follow-ups", () => {
     expect(plan.prompt).toMatch(/shifts to sit up/i);
     expect(plan.expectedState.wardrobe.panties.on).toBe(false);
     expect(plan.followUps).toEqual([]);
+  });
+});
+
+describe("planClip: wardrobe change realism", () => {
+  it("bra removal runs 15s with staged clasp/strap mechanics, never 'over her head'", () => {
+    const plan = replyPlan("take off your bra");
+    expect(plan.durationSec).toBe(LIVE_TUNABLES.MAX_CLIP_SEC);
+    expect(plan.prompt).toMatch(/clasp/i);
+    expect(plan.prompt).toMatch(/straps/i);
+    expect(plan.prompt).not.toMatch(/over her head/i);
+  });
+
+  it("panties removal while sitting lifts her hips off the seat", () => {
+    const plan = replyPlan("take off your panties");
+    expect(plan.durationSec).toBe(LIVE_TUNABLES.MAX_CLIP_SEC);
+    expect(plan.prompt).toMatch(/lifts her hips/i);
+  });
+
+  it("panties removal while standing steps out one foot at a time", () => {
+    const s = session({
+      state: state({ body: body({ pose: "standing", facing: "camera" }) }),
+    });
+    const plan = replyPlan("take off your panties", s);
+    expect(plan.durationSec).toBe(LIVE_TUNABLES.MAX_CLIP_SEC);
+    expect(plan.prompt).toMatch(/one foot/i);
+  });
+
+  it("wardrobe clips carry the fabric-physics clause", () => {
+    const plan = replyPlan("take off your top");
+    expect(plan.prompt).toMatch(
+      /never vanishes, stretches, tears or teleports/i,
+    );
+  });
+});
+
+describe("planClip: pose transitions never read as a standalone spin", () => {
+  it("a pose request turning to face away describes the turn as part of settling", () => {
+    const plan = replyPlan("turn around");
+    expect(plan.prompt).toMatch(/does not spin or turn a full circle/i);
+  });
+});
+
+describe("planClip: touch (masturbation) branches on wardrobe coverage", () => {
+  it("keeps the exact 'external contact only, never inserting' clause verbatim", () => {
+    const plan = replyPlan("touch yourself");
+    expect(plan.prompt).toMatch(/external contact only, never inserting/);
+  });
+
+  it("rubs over her panties when panties are on", () => {
+    const plan = replyPlan("touch yourself");
+    expect(plan.prompt).toMatch(/over her black lace panties/i);
+  });
+
+  it("rubs over bare skin once panties and bottoms are both off", () => {
+    const s = session({
+      state: state({
+        wardrobe: wardrobe({
+          bottom: { on: false, description: "denim shorts" },
+          panties: { on: false, description: "black lace panties" },
+          removedOrder: ["bottom", "panties"],
+        }),
+      }),
+    });
+    const plan = replyPlan("touch yourself", s);
+    expect(plan.prompt).toMatch(/over her bare skin/i);
+  });
+
+  it("works from standing without changing pose", () => {
+    const s = session({
+      state: state({ body: body({ pose: "standing", facing: "camera" }) }),
+    });
+    const plan = replyPlan("touch yourself", s);
+    expect(plan.expectedState.body.pose).toBe("standing");
+    expect(plan.prompt).toMatch(/legs slightly apart/i);
+  });
+});
+
+describe("planClip: spread (legs vs ass)", () => {
+  it('"spread your legs" resolves the legs variant', () => {
+    const plan = replyPlan("spread your legs");
+    expect(plan.followUps).toEqual([]);
+    expect(plan.prompt).toMatch(/legs spread toward the lens/i);
+  });
+
+  it('"open your legs" also resolves the legs variant', () => {
+    const plan = replyPlan("open your legs");
+    expect(plan.prompt).toMatch(/legs spread toward the lens/i);
+  });
+
+  it('"spread your cheeks" resolves the ass variant with a lead-in from a forward-facing pose', () => {
+    const plan = replyPlan("spread your cheeks");
+    expect(plan.prompt).toMatch(/turns her hips away.*bends forward/i);
+    expect(plan.prompt).toMatch(/pulls her ass cheeks apart/i);
+    expect(plan.expectedState.body.facing).toBe("away");
+  });
+
+  it('"spread your cheeks" from onAllFours skips the lead-in', () => {
+    const s = session({
+      state: state({ body: body({ pose: "onAllFours", facing: "away" }) }),
+    });
+    const plan = replyPlan("spread your cheeks", s);
+    expect(plan.prompt).not.toMatch(/turns her hips away/i);
+    expect(plan.prompt).toMatch(/pulls her ass cheeks apart/i);
+  });
+
+  it('"show me your ass" resolves to the ass-spread act', () => {
+    const plan = replyPlan("show me your ass");
+    expect(plan.prompt).toMatch(/pulls her ass cheeks apart/i);
+  });
+});
+
+const ALL_ACT_INTENTS: Extract<BeatIntent, { type: "act" }>[] = [
+  { type: "act", act: "twerk" },
+  { type: "act", act: "grind" },
+  { type: "act", act: "bounce" },
+  { type: "act", act: "spread", detail: "legs" },
+  { type: "act", act: "spread", detail: "ass" },
+  { type: "act", act: "sway" },
+  { type: "act", act: "crawl" },
+  { type: "act", act: "gesture" },
+  { type: "act", act: "tongue" },
+  { type: "act", act: "tease" },
+  { type: "act", act: "dance" },
+  { type: "act", act: "doggy" },
+  { type: "act", act: "spank" },
+  { type: "act", act: "boobPlay" },
+];
+
+describe("planAct purity: no incidental spins outside the spin act", () => {
+  it("no non-spin act ever mentions spinning, twirling, a full turn, or 360", () => {
+    const s = state();
+    for (const intent of ALL_ACT_INTENTS) {
+      const plan = planBeatIntent(intent, s);
+      expect(plan.physical).not.toMatch(
+        /\b(spins?|spinning|twirl\w*|full turn|360)\b/i,
+      );
+    }
+  });
+});
+
+describe("planAct: every act leaves wardrobe untouched", () => {
+  it.each(ALL_ACT_INTENTS)(
+    "$act never mutates a dressed wardrobe",
+    (intent) => {
+      const w = wardrobe();
+      const plan = planBeatIntent(intent, state({ wardrobe: w }));
+      expect(plan.nextWardrobe).toEqual(w);
+    },
+  );
+
+  it.each(ALL_ACT_INTENTS)("$act never mutates a nude wardrobe", (intent) => {
+    const nude = wardrobe({
+      top: { on: false, description: "top" },
+      bottom: { on: false, description: "bottom" },
+      bra: { on: false, description: "bra" },
+      panties: { on: false, description: "panties" },
+      removedOrder: ["top", "bottom", "bra", "panties"],
+    });
+    const plan = planBeatIntent(intent, state({ wardrobe: nude }));
+    expect(plan.nextWardrobe).toEqual(nude);
+  });
+});
+
+describe("planClip: compound multi-act request", () => {
+  it('"spank your ass then spread your cheeks, then play with your tits" resolves to [spank, spread(ass), boobPlay] with no inserted pose/rest beats', () => {
+    const plan = replyPlan(
+      "spank your ass then spread your cheeks, then play with your tits",
+    );
+    expect(plan.prompt).toMatch(/spanks her own ass/i);
+    expect(plan.followUps.map((b) => b.intent)).toEqual([
+      { type: "act", act: "spread", detail: "ass" },
+      { type: "act", act: "boobPlay" },
+    ]);
   });
 });
