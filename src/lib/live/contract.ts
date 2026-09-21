@@ -235,12 +235,13 @@ export type ClipResult = z.infer<typeof clipResultSchema>;
 // Tunables shared by both halves
 
 export const LIVE_TUNABLES = {
-  MIN_CLIP_SEC: 8,
+  // 10s is the fal h3-max floor (docs/LIVE_ENGINE.md); below it the API rejects the render.
+  MIN_CLIP_SEC: 10,
   MAX_CLIP_SEC: 15,
   IDLE_CLIP_SEC: 10,
-  // Shorter action beats render faster (render time scales with duration) and give the model less
-  // time to drift, so a request is visibly enacted sooner. Matches the pandora AI-video spike's beat length.
-  ACTION_CLIP_SEC: 8,
+  // Must stay above IDLE_CLIP_SEC: planReply tells a hold-only beat from a real action by comparing
+  // durationSec against IDLE_CLIP_SEC, and both are already at the fal floor.
+  ACTION_CLIP_SEC: 11,
   // Idle loops to keep rendered ahead, and how many idle renders may run at once.
   IDLE_BUFFER_TARGET: 2,
   IDLE_MAX_INFLIGHT: 2,

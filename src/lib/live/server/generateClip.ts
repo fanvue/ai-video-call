@@ -46,7 +46,8 @@ export const generateClip = async (
   const isAnchoredLoop =
     (job.kind === "idle" || job.kind === "greeting") &&
     videoBackend.supportsEndFrame;
-  // reply/beat are mid-chain; only the clip ending the chain (settle/redress/checkIn/greeting) is guarded.
+  // reply/beat have another render queued right behind them; skip the slow repair there so it
+  // doesn't tax the next beat's start time, and only pay it on the clip that ends the chain.
   const isIntermediateBeat = job.kind === "reply" || job.kind === "beat";
 
   const renderStarted = Date.now();
@@ -119,45 +120,49 @@ export const generateClip = async (
     }
     frameMs = Date.now() - frameStarted;
 
-    if (!isIntermediateBeat) {
-      const guardStarted = Date.now();
+    // Every non-loop clip is guarded now, mid-chain (reply/beat) included: drift compounds across
+    // beats, and repair only fires when the (cheap) guard actually flags something.
+    const guardStarted = Date.now();
+    try {
+      guardOutcome = await withTimeout(
+        guardFrame({ frameUrl: seedFrameUrl, expected: plan.expectedState }),
+        GUARD_BUDGET_MS,
+        "guardFrame",
+      );
+    } catch (error) {
+      console.warn(
+        "generateClip: frame guard timed out, skipping check for this clip",
+        error,
+      );
+    }
+    guardMs = Date.now() - guardStarted;
+
+    const repairStarted = Date.now();
+    if (
+      !isIntermediateBeat &&
+      guardOutcome.checked &&
+      guardOutcome.issues.length > 0
+    ) {
       try {
-        guardOutcome = await withTimeout(
-          guardFrame({ frameUrl: seedFrameUrl, expected: plan.expectedState }),
-          GUARD_BUDGET_MS,
-          "guardFrame",
+        seedFrameUrl = await withTimeout(
+          repairFrame({
+            frameUrl: seedFrameUrl,
+            anchorFrameUrl: session.anchorFrameUrl,
+            expected: plan.expectedState,
+            issues: guardOutcome.issues,
+          }),
+          REPAIR_BUDGET_MS,
+          "repairFrame",
         );
+        repaired = true;
       } catch (error) {
         console.warn(
-          "generateClip: frame guard timed out, skipping check for this clip",
+          "generateClip: frame repair failed or timed out, keeping guarded-but-unrepaired frame",
           error,
         );
       }
-      guardMs = Date.now() - guardStarted;
-
-      const repairStarted = Date.now();
-      if (guardOutcome.checked && guardOutcome.issues.length > 0) {
-        try {
-          seedFrameUrl = await withTimeout(
-            repairFrame({
-              frameUrl: seedFrameUrl,
-              anchorFrameUrl: session.anchorFrameUrl,
-              expected: plan.expectedState,
-              issues: guardOutcome.issues,
-            }),
-            REPAIR_BUDGET_MS,
-            "repairFrame",
-          );
-          repaired = true;
-        } catch (error) {
-          console.warn(
-            "generateClip: frame repair failed or timed out, keeping guarded-but-unrepaired frame",
-            error,
-          );
-        }
-      }
-      repairMs = Date.now() - repairStarted;
     }
+    repairMs = Date.now() - repairStarted;
   }
 
   const replyOutcome = await replyTextPromise;

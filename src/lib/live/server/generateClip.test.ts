@@ -158,7 +158,7 @@ describe("generateClip: anchored idle loop", () => {
 });
 
 describe("generateClip: chained jobs", () => {
-  it("a reply job extracts the last frame but skips the guard, since it's mid-chain, and does not loop", async () => {
+  it("a reply job extracts the last frame and guards it (drift compounds mid-chain), but does not loop", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
     writeReply.mockResolvedValue({ text: "mmm okay", nextWorld: "w" });
     const req = clipRequest({
@@ -177,14 +177,18 @@ describe("generateClip: chained jobs", () => {
       "https://example.com/out.mp4",
       expect.any(Number),
     );
-    expect(guardFrame).not.toHaveBeenCalled();
+    expect(guardFrame).toHaveBeenCalled();
     expect(repairFrame).not.toHaveBeenCalled();
     expect(correctFrameIdentityDrift).not.toHaveBeenCalled();
     expect(result.loops).toBe(false);
   });
 
-  it("a beat job (mid-chain) also extracts the frame but skips the guard", async () => {
+  it("a beat job (mid-chain) guards but skips repair even when flagged, so the next queued beat isn't held up by it", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    guardFrame.mockResolvedValue({
+      checked: true,
+      issues: ["top should be on but frame shows it off"],
+    });
     const req = clipRequest({
       job: {
         kind: "beat",
@@ -200,8 +204,13 @@ describe("generateClip: chained jobs", () => {
     const result = await generateClip(req);
 
     expect(extractLastFrameUrl).toHaveBeenCalled();
-    expect(guardFrame).not.toHaveBeenCalled();
-    expect(result.guard.checked).toBe(false);
+    expect(guardFrame).toHaveBeenCalled();
+    expect(repairFrame).not.toHaveBeenCalled();
+    expect(result.guard.checked).toBe(true);
+    expect(result.guard.issues).toEqual([
+      "top should be on but frame shows it off",
+    ]);
+    expect(result.seedFrameUrl).toBe("https://example.com/extracted.jpg");
   });
 
   it("a settle job (ends the chain) runs the guard", async () => {

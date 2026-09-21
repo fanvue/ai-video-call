@@ -160,11 +160,14 @@ payment stack behind human approval.
 - `correctFrameIdentityDrift` (in `src/lib/fal/requestFrameIdentityCorrection.ts`) now takes a
   `prompt` override so `frameGuard.repairFrame` can reuse the same nano-banana edit endpoint with
   an issue-specific instruction instead of the generic drift-correction prompt.
-- Timing rule: `reply`, `beat`, `settle`, `redress`, `checkIn`, and `greeting` clips run the full
-  `ACTION_CLIP_SEC` (15s); only `idle` stays at `IDLE_CLIP_SEC`. `reply` and `beat` are mid-chain
-  (more chained clips follow), so `generateClip` skips `guardFrame`/`repairFrame`/identity
-  correction for them; only the clip that ends the chain (`settle`/`redress`/`checkIn`/`greeting`)
-  runs the full guard.
+- Timing rule: `reply`, `beat`, `settle`, `redress`, `checkIn`, and `greeting` clips run
+  `ACTION_CLIP_SEC` (11s — must stay above `IDLE_CLIP_SEC`'s 10s, both already at the fal floor,
+  since `planReply` tells a hold-only beat from a real one by comparing the two); only `idle` stays
+  at `IDLE_CLIP_SEC`. Every non-loop job now runs `guardFrame` (cheap, mid-chain included, so drift
+  is caught beat-by-beat instead of compounding silently), but `repairFrame` (the slow pixel-edit
+  step) only runs for the clip that ends the chain (`settle`/`redress`/`checkIn`/`greeting`) —
+  `reply`/`beat` skip it so a flagged mid-chain beat doesn't hold up the next beat that's already
+  queued behind it. Drift is bounded to one chain's length, not eliminated mid-chain.
 - `vitest.config.ts` declares the `@/` alias (vitest does not read `tsconfig.json` paths on its
   own) and stubs the env vars `@/env` requires, so server modules can be unit tested without a
   real `.env`.
