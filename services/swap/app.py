@@ -8,6 +8,7 @@ from typing import Any
 
 import fal
 from fal.toolkit import download_file
+from fastapi import WebSocket
 
 # InsightFace inswapper_128 is research-only licensed; a commercial license is
 # required before this leaves the spike.
@@ -83,7 +84,7 @@ class SwapApp(fal.App, keep_alive=120, min_concurrency=0, max_concurrency=2):
         return restored if restored is not None else out
 
     @fal.endpoint("/ws", is_websocket=True)
-    async def ws(self, websocket) -> None:
+    async def ws(self, websocket: WebSocket) -> None:
         # Protocol: first text frame is {"type":"reference","image":"<data uri>"}; then binary JPEG
         # frames (720x1280) in, swapped JPEG frames out, in order; {"type":"stop"} ends the session.
         await websocket.accept()
