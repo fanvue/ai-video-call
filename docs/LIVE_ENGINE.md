@@ -110,21 +110,60 @@ visibleProps[], pose, extraPeople, extraLimbs }`, each garment `"present" | "abs
 (never guessed) and validated with a zod schema — an unparseable or schema-invalid response comes
 back `checked: false`, never adopted.
 
-Every `ClipResult` carries a `verdict: "approved" | "rejected"` and `rejectReason`. A **hold clip**
-(`plan.wardrobeIntent === null && !plan.explicit` — idle, greeting, checkIn, a non-wardrobe act,
-a hold/verbatim line, a pose/framing transition) is verified before it can play: idle checks only
-its midpoint frame (start/end are the anchor by construction); every other hold clip checks both
-its midpoint and last frame. It is **rejected** if either frame couldn't be checked (extraction or
-vision failure/timeout, unparseable JSON), shows a canon-on garment `absent`, or reports
-extraPeople/extraLimbs — fail closed. An approved hold clip reconciles pose only, never wardrobe.
+Every `ClipResult` carries a `verdict: "approved" | "rejected"` and `rejectReason`. Canon is truth
+for the seed frame: any checked frame showing a garment that disagrees with canon in **either**
+direction — worn-but-should-be-off, or off-but-should-be-on — rejects the clip, not just the
+worn-but-should-be-off case. The one exception is a wardrobe clip's own target garment, which is
+exempt from rejection and instead adopted from observation both ways (`reconcileState.ts`), so
+`director.ts`'s bounded retry can re-attempt an unmet removal/add. Observed `"unknown"` never
+counts as a mismatch. `evaluateFrameChecks` in `generateClip.ts` is the single place this rule
+lives, for all four clip kinds:
 
-A **non-hold clip** (a requested wardrobe change or an explicit act) keeps the single last-frame
-guard with directional wardrobe reconciliation (`reconcileState.ts`) and is rejected only for
-extraPeople/extraLimbs, and only when the check ran — this path fails OPEN on an unchecked frame,
-the deliberate asymmetry with hold clips, so a vision refusal can never permanently block a
-legitimately requested explicit clip. Frame repair (`repairFrame`) was retired with this pass; a
-failing clip is rejected and retried as a whole clip instead of pixel-patched. Identity
-re-anchoring against the original upload continues to run on the existing 45s cadence.
+| Clip kind                                                     | Frames checked  | Unchecked frame                  | Checked-frame rejection                                                      |
+| ------------------------------------------------------------- | --------------- | -------------------------------- | ---------------------------------------------------------------------------- |
+| Idle                                                          | midpoint only   | rejects (fail closed)            | any garment mismatch, extraPeople/extraLimbs                                 |
+| Hold (`wardrobeIntent === null && !explicit`)                 | midpoint + last | rejects (fail closed)            | any garment mismatch, extraPeople/extraLimbs                                 |
+| Explicit non-wardrobe (`wardrobeIntent === null && explicit`) | midpoint + last | skips with a warning (fail open) | any garment mismatch, extraPeople/extraLimbs on a checked frame              |
+| Wardrobe (`wardrobeIntent` `"remove"`\|`"add"`)               | last only       | skips with a warning (fail open) | any NON-target garment mismatch, extraPeople/extraLimbs on the checked frame |
+
+The fail-open paths exist so a persistent vision refusal can't permanently block a legitimately
+requested clip. An approved clip reconciles pose unconditionally; wardrobe is only ever reconciled
+for a wardrobe clip's own target garment (never for a hold or explicit non-wardrobe clip, since
+there canon already matches or the clip was rejected). A rejected clip adopts nothing — its state
+stays `plan.expectedState` untouched. `buildPrompt` also adds a short "clothing stays exactly as
+described" line to any clip whose action doesn't already carry an equivalent lock and whose planned
+wardrobe doesn't change, as a second line of defense against the model changing wardrobe when it
+wasn't asked to.
+
+Frame repair (`repairFrame`) was retired with this pass; a failing clip is rejected and retried as
+a whole clip instead of pixel-patched. Identity re-anchoring against the original upload continues
+to run on the existing 45s cadence.
+
+## Job ordering, busy gate and abandonment
+
+- **Reply insertion.** A new fan reply is inserted behind every already-queued beat and fan
+  reply (several fan messages arriving mid-render run FIFO), ahead of any queued viewer reply,
+  and ahead of background work (`checkIn`). Viewer requests are always appended at the end.
+- **Busy gate.** `LiveDirector.tick(now, { busy })` is a no-op while `busy` is true, on top of
+  the "queue non-empty" guard. `busy` covers a chain job in flight or not yet promoted/played
+  (`ClipPipeline.isChainActive()`), or the clip on screen being a request/beat rather than idle
+  filler, so `rest`/`checkIn` never schedule mid-request. Idle thresholds measure from
+  `lastActivityAt`, which advances on every fan/viewer request and every non-idle `clipCompleted`.
+- **Displayed vs. canon state.** The director's `liveState` (canon, used to plan the next step)
+  advances at `clipCompleted`, as soon as a clip finishes rendering. The UI's displayed state
+  advances only once that clip is on screen (`GaplessPlayer.onClipStarted` →
+  `ClipPipeline.onClipStarted` / `applyLiveState`). `displayAnchorFrameUrl` likewise moves only
+  on playback, never on a pull used to preload.
+- **Request abandonment.** A chain job gets `LIVE_TUNABLES.CHAIN_MAX_ATTEMPTS` (3) attempts,
+  a rejected verdict counting as a failure. On abandonment only that request's own queued beats
+  are dropped (`LiveDirector.abandonRequest(requestId)`, via the `requestId` the server sets on
+  follow-up beats; director-originated rest beats have none). A request queued behind the failed
+  one starts immediately; `chainTail`/anchor stay where the last successful step left them.
+- **Idempotent completion.** `clipCompleted` ignores a repeat delivery of a `clipId` it has
+  already committed, so follow-ups, transcript and retries are never double-applied.
+- **`world`** is dialogue memory only: it is read by `writeReply`/`writeCheckIn` and never enters
+  the video prompt, wardrobe or body, so an approved clip adopting `nextWorld` cannot change
+  physical canon.
 
 ## Speech
 

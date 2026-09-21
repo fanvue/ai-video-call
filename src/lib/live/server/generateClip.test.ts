@@ -342,6 +342,230 @@ describe("generateClip: hold clips other than idle", () => {
     expect(result.rejectReason).toMatch(/guardFrame/);
     expect(result.seedFrameUrl).toBe(LAST_URL);
   });
+
+  it("is rejected when the last frame shows a canon-off garment back on, naming the last frame and the garment", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    guardFrame.mockImplementation(
+      guardByFrame({
+        [MID_URL]: { issues: [], observed: { wardrobe: { bra: false } } },
+        [LAST_URL]: { issues: [], observed: { wardrobe: { bra: true } } },
+      }),
+    );
+    const req = clipRequest({
+      job: { kind: "checkIn", channel: "chat" },
+      session: session({
+        state: state({
+          wardrobe: wardrobe({
+            bra: { on: false, description: "black lace bra" },
+          }),
+        }),
+      }),
+    });
+
+    const result = await generateClip(req);
+
+    expect(result.verdict).toBe("rejected");
+    expect(result.rejectReason).toBe(
+      "last frame: bra should be off but shows present",
+    );
+  });
+
+  it("is rejected on the midpoint even when the last frame settled back to canon", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    guardFrame.mockImplementation(
+      guardByFrame({
+        [MID_URL]: { issues: [], observed: { wardrobe: { bra: true } } },
+        [LAST_URL]: { issues: [], observed: { wardrobe: { bra: false } } },
+      }),
+    );
+    const req = clipRequest({
+      job: { kind: "checkIn", channel: "chat" },
+      session: session({
+        state: state({
+          wardrobe: wardrobe({
+            bra: { on: false, description: "black lace bra" },
+          }),
+        }),
+      }),
+    });
+
+    const result = await generateClip(req);
+
+    expect(result.verdict).toBe("rejected");
+    expect(result.rejectReason).toBe(
+      "midpoint frame: bra should be off but shows present",
+    );
+  });
+
+  it("approves when both frames report a canon-off garment as unknown rather than present", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    guardFrame.mockResolvedValue({
+      checked: true,
+      issues: [],
+      observed: { wardrobe: {} },
+    });
+    const req = clipRequest({
+      job: { kind: "checkIn", channel: "chat" },
+      session: session({
+        state: state({
+          wardrobe: wardrobe({
+            bra: { on: false, description: "black lace bra" },
+          }),
+        }),
+      }),
+    });
+
+    const result = await generateClip(req);
+
+    expect(result.verdict).toBe("approved");
+    expect(result.rejectReason).toBeNull();
+  });
+});
+
+describe("generateClip: idle canon-off garment", () => {
+  it("is rejected when the midpoint shows a canon-off garment present", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    guardFrame.mockResolvedValue({
+      checked: true,
+      issues: [],
+      observed: { wardrobe: { panties: true } },
+    });
+    const req = clipRequest({
+      job: { kind: "idle" },
+      session: session({
+        state: state({
+          wardrobe: wardrobe({
+            panties: { on: false, description: "black lace panties" },
+          }),
+        }),
+      }),
+    });
+
+    const result = await generateClip(req);
+
+    expect(result.verdict).toBe("rejected");
+    expect(result.rejectReason).toBe(
+      "midpoint frame: panties should be off but shows present",
+    );
+  });
+});
+
+describe("generateClip: explicit non-wardrobe clips", () => {
+  it("checks both frames and rejects on a canon-off garment observed present, when the check ran", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    guardFrame.mockImplementation(
+      guardByFrame({
+        [MID_URL]: { issues: [], observed: { wardrobe: { bra: false } } },
+        [LAST_URL]: { issues: [], observed: { wardrobe: { bra: true } } },
+      }),
+    );
+    const req = clipRequest({
+      job: {
+        kind: "beat",
+        beat: {
+          id: "b1",
+          intent: { type: "useProp", mode: "external" },
+          attempt: 0,
+        },
+      },
+      session: session({
+        state: state({
+          wardrobe: wardrobe({
+            bra: { on: false, description: "black lace bra" },
+          }),
+        }),
+      }),
+    });
+
+    const result = await generateClip(req);
+
+    expect(extractMidFrameUrl).toHaveBeenCalled();
+    expect(extractLastFrameUrl).toHaveBeenCalled();
+    expect(result.verdict).toBe("rejected");
+    expect(result.rejectReason).toBe(
+      "last frame: bra should be off but shows present",
+    );
+  });
+
+  it("approves with a warning when one frame is unchecked (fail-open, asymmetric with hold clips)", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    guardFrame.mockImplementation(async ({ frameUrl }: { frameUrl: string }) =>
+      frameUrl === MID_URL
+        ? { checked: false, issues: [], observed: null }
+        : { checked: true, issues: [], observed: { wardrobe: {} } },
+    );
+    const req = clipRequest({
+      job: {
+        kind: "beat",
+        beat: {
+          id: "b1",
+          intent: { type: "useProp", mode: "external" },
+          attempt: 0,
+        },
+      },
+    });
+
+    const result = await generateClip(req);
+
+    expect(result.verdict).toBe("approved");
+    expect(result.rejectReason).toBeNull();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("fail-open"));
+    warnSpy.mockRestore();
+  });
+});
+
+describe("generateClip: wardrobe clips (removeGarment/addGarment)", () => {
+  it("removeGarment target adoption: bra observed present (unmet removal) is approved, not rejected, and state follows observation", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    guardFrame.mockResolvedValue({
+      checked: true,
+      issues: [],
+      observed: { wardrobe: { bra: true } },
+    });
+    const req = clipRequest({
+      job: {
+        kind: "beat",
+        beat: {
+          id: "b1",
+          intent: { type: "removeGarment", garment: "bra" },
+          attempt: 0,
+        },
+      },
+    });
+
+    const result = await generateClip(req);
+
+    expect(result.verdict).toBe("approved");
+    expect(result.rejectReason).toBeNull();
+    expect(result.state.wardrobe.bra.on).toBe(true);
+  });
+
+  it("removeGarment bra clip is rejected when an untargeted garment (panties) is observed absent while canon has it on", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    guardFrame.mockResolvedValue({
+      checked: true,
+      issues: [],
+      observed: { wardrobe: { bra: false, panties: false } },
+    });
+    const req = clipRequest({
+      job: {
+        kind: "beat",
+        beat: {
+          id: "b1",
+          intent: { type: "removeGarment", garment: "bra" },
+          attempt: 0,
+        },
+      },
+    });
+
+    const result = await generateClip(req);
+
+    expect(result.verdict).toBe("rejected");
+    expect(result.rejectReason).toBe(
+      "last frame: panties should be on but shows absent",
+    );
+  });
 });
 
 describe("generateClip: non-hold clips (requested wardrobe change or explicit act)", () => {
@@ -416,6 +640,28 @@ describe("generateClip: non-hold clips (requested wardrobe change or explicit ac
 
     expect(result.verdict).toBe("approved");
     expect(result.rejectReason).toBeNull();
+  });
+
+  it("a removeGarment beat whose last-frame extraction fails is rejected: no frame means no coherent next seed", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    extractLastFrameUrl.mockRejectedValueOnce(new Error("timed out"));
+    const req = clipRequest({
+      job: {
+        kind: "beat",
+        beat: {
+          id: "b1",
+          intent: { type: "removeGarment", garment: "bra" },
+          attempt: 0,
+        },
+      },
+    });
+
+    const result = await generateClip(req);
+
+    expect(result.verdict).toBe("rejected");
+    expect(result.rejectReason).toBe("extractFrame failed on the last frame");
+    // Nothing advances: the seed stays put and the bra is not claimed removed.
+    expect(result.seedFrameUrl).toBe(req.session.seedFrameUrl);
   });
 
   it("is rejected only for extraPeople/extraLimbs, and only when the check ran", async () => {

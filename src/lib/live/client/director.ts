@@ -21,7 +21,9 @@ export type DirectorState = {
   startedAt: number;
   transcript: TranscriptEntry[];
   jobQueue: ClipJob[];
-  lastRequestAt: number;
+  // Last time genuine (non-idle) activity happened: a fan/viewer request arriving, or a non-idle
+  // clip completing. Idle-threshold ticks (rest / checkIn) measure from this, not wall-clock alone.
+  lastActivityAt: number;
   lastChannel: InputChannel;
   // Each fires at most once per idle window; reset on the next fan request.
   checkedInSinceLastRequest: boolean;
@@ -39,23 +41,26 @@ export type DirectorInit = {
   now: number;
 };
 
-// A new reply job goes behind any beats still running the current request, ahead of idle-priority
-// jobs (checkIn) queued only because nothing else was happening.
+// A new fan reply goes behind every queued beat/fan-reply (FIFO for fan requests), ahead of a
+// queued viewer reply, and ahead of background work (checkIn).
 const insertReplyIndex = (queue: ClipJob[]): number => {
-  let lastBeatIndex = -1;
+  let index = 0;
   for (let i = 0; i < queue.length; i += 1) {
-    if (queue[i]?.kind === "beat") {
-      lastBeatIndex = i;
-    } else if (lastBeatIndex === -1) {
+    const job = queue[i];
+    if (job?.kind === "beat" || (job?.kind === "reply" && job.from === "fan")) {
+      index = i + 1;
+    } else if (job?.kind === "checkIn") {
       break;
     }
   }
-  return lastBeatIndex + 1;
+  return index;
 };
 
 export class LiveDirector {
   private state: DirectorState;
   private idCounter = 0;
+  // Session-scoped, never cleared: guards clipCompleted against re-applying the same clip twice.
+  private committedClipIds = new Set<string>();
 
   constructor(init: DirectorInit) {
     this.state = {
@@ -66,7 +71,7 @@ export class LiveDirector {
       startedAt: init.now,
       transcript: [],
       jobQueue: [{ kind: "greeting" }],
-      lastRequestAt: init.now,
+      lastActivityAt: init.now,
       lastChannel: "chat",
       checkedInSinceLastRequest: false,
       restScheduledSinceLastRequest: false,
@@ -113,7 +118,7 @@ export class LiveDirector {
       ...this.state,
       transcript: [...this.state.transcript, entry],
       jobQueue: queue,
-      lastRequestAt: now,
+      lastActivityAt: now,
       lastChannel: payload.channel,
       checkedInSinceLastRequest: false,
       restScheduledSinceLastRequest: false,
@@ -152,7 +157,7 @@ export class LiveDirector {
       ...this.state,
       transcript: [...this.state.transcript, entry],
       jobQueue: queue,
-      lastRequestAt: now,
+      lastActivityAt: now,
       checkedInSinceLastRequest: false,
       restScheduledSinceLastRequest: false,
     };
@@ -165,11 +170,17 @@ export class LiveDirector {
     if (result.jobKind === "idle") {
       return;
     }
+    // Already committed this exact clip once; a repeat delivery must not double-apply it.
+    if (this.committedClipIds.has(result.clipId)) {
+      return;
+    }
+    this.state = { ...this.state, lastActivityAt: now };
     // The pipeline never plays a rejected clip; refuse its state too so a guard failure can't
     // rewrite canon through a caller that forgot to check the verdict.
     if (result.verdict === "rejected") {
       return;
     }
+    this.committedClipIds.add(result.clipId);
 
     let transcript = this.state.transcript;
     if (result.reply) {
@@ -219,11 +230,24 @@ export class LiveDirector {
     };
   }
 
-  tick(now: number): void {
-    if (this.state.jobQueue.length > 0) {
+  // Drops queued beats owned by an abandoned request; `null` targets only ownerless beats.
+  abandonRequest(requestId: string | null): void {
+    const jobQueue = this.state.jobQueue.filter((job) => {
+      if (job.kind !== "beat") {
+        return true;
+      }
+      return (job.beat.requestId ?? null) !== requestId;
+    });
+    this.state = { ...this.state, jobQueue };
+  }
+
+  // `activity.busy` covers work the queue can't see: a job already dispatched and rendering, or
+  // its clip currently playing. Background jobs must not schedule while either is true.
+  tick(now: number, activity: { busy: boolean }): void {
+    if (this.state.jobQueue.length > 0 || activity.busy) {
       return;
     }
-    const idleMs = now - this.state.lastRequestAt;
+    const idleMs = now - this.state.lastActivityAt;
     const queue: ClipJob[] = [];
     let checkedIn = this.state.checkedInSinceLastRequest;
     let restScheduled = this.state.restScheduledSinceLastRequest;

@@ -161,6 +161,9 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   // Maps a rendered clip's id to what it was, so the player's onClipStarted (id only) can look
   // up job kind / reply for chat-sync and the connecting -> live transition.
   const clipMetaRef = useRef<Map<string, ClipResult>>(new Map());
+  // The clip actually on screen right now (set from onClipStarted), used to gate background
+  // timers on whether that clip is a real request/beat vs. idle filler.
+  const currentPlayingClipIdRef = useRef<string | null>(null);
   const pendingRevealRef = useRef<{
     clipId: string;
     text: string;
@@ -295,6 +298,19 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     return director.getState().jobQueue.length === 0 && pipeline.isChainIdle();
   }, []);
 
+  // Whether background timers (rest/checkIn) must hold off: a chain job in flight or not yet
+  // promoted/played, or the clip currently on screen being a real request/beat rather than idle.
+  const isBusy = useCallback((): boolean => {
+    if (pipelineRef.current?.isChainActive()) {
+      return true;
+    }
+    const clipId = currentPlayingClipIdRef.current;
+    const playing = clipId ? clipMetaRef.current.get(clipId) : null;
+    return (
+      playing !== null && playing !== undefined && playing.jobKind !== "idle"
+    );
+  }, []);
+
   // Ambient room life is the viewer count only: other fans never speak or make requests, so the
   // show is a one-to-one conversation and her state changes only on this fan's requests.
   const tickRoom = useCallback(() => {
@@ -320,11 +336,27 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     setStatus((current) => (current === "connecting" ? "live" : current));
   }, []);
 
-  const handleClipStarted = useCallback(() => {
-    refreshBufferDepth();
-    greetingPlayedRef.current = true;
-    maybeGoLive();
-  }, [maybeGoLive, refreshBufferDepth]);
+  const handleClipStarted = useCallback(
+    (clipId: string) => {
+      currentPlayingClipIdRef.current = clipId;
+      const result = clipMetaRef.current.get(clipId);
+      if (result) {
+        pipelineRef.current?.onClipStarted(result.seedFrameUrl);
+      }
+      // Displayed state only advances once the viewer actually sees the clip, not at render time.
+      if (
+        result &&
+        result.jobKind !== "idle" &&
+        result.verdict === "approved"
+      ) {
+        applyLiveState(result.state);
+      }
+      refreshBufferDepth();
+      greetingPlayedRef.current = true;
+      maybeGoLive();
+    },
+    [applyLiveState, maybeGoLive, refreshBufferDepth],
+  );
 
   useEffect(() => {
     player.setProgressHandler(revealIfDue);
@@ -424,12 +456,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       if (event.lane === "chained") {
         pendingTipCentsRef.current = undefined;
       }
-      // The director owns job sequencing (followUps, settle); it must update before the pipeline
-      // is polled again, and pollChain() below runs synchronously after this returns.
+      // Canon advances here (for planning); the UI's displayed state follows via handleClipStarted.
       director.clipCompleted(result, Date.now());
-      // Read back from the director rather than result.state: idle/filler clips don't commit
-      // their state there, and the UI must not show canon it never actually accepted either.
-      applyLiveState(director.getState().liveState);
       if (result.reply) {
         pendingRevealRef.current = {
           clipId: result.clipId,
@@ -452,13 +480,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       refreshQueueStrip();
       maybeGoLive();
     },
-    [
-      player,
-      refreshBufferDepth,
-      refreshQueueStrip,
-      applyLiveState,
-      maybeGoLive,
-    ],
+    [player, refreshBufferDepth, refreshQueueStrip, maybeGoLive],
   );
 
   const attachVideoElements = useCallback(() => {
@@ -512,6 +534,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       setConnectStage("uploading");
       greetingPlayedRef.current = false;
       clipMetaRef.current = new Map();
+      currentPlayingClipIdRef.current = null;
       currentOwnerRef.current = { type: "studio" };
       currentActRef.current = null;
       pendingTipCentsRef.current = undefined;
@@ -561,6 +584,15 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         onEvent: handlePipelineEvent,
         backend: options.backend ?? "turbo",
         speechMode: options.speechMode ?? "text",
+        abandonDependents: (job) => {
+          const requestId =
+            job.kind === "reply"
+              ? job.requestId
+              : job.kind === "beat"
+                ? (job.beat.requestId ?? null)
+                : null;
+          directorRef.current?.abandonRequest(requestId);
+        },
       });
       pipelineRef.current = pipeline;
 
@@ -582,7 +614,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
           endRef.current();
           return;
         }
-        currentDirector?.tick(Date.now());
+        currentDirector?.tick(Date.now(), { busy: isBusy() });
         pipelineRef.current?.pollChain();
         tickRoom();
       }, 1000);
@@ -593,6 +625,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       player,
       snapshotSource,
       applyLiveState,
+      isBusy,
       tickRoom,
     ],
   );

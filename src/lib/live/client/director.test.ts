@@ -50,8 +50,10 @@ const makeDirector = (state: LiveState = dressedState, now = 0) =>
     now,
   });
 
+// Fresh clipId per call by default; pass clipId explicitly to simulate a repeat delivery.
+let clipResultCounter = 0;
 const clipResult = (overrides: Partial<ClipResult>): ClipResult => ({
-  clipId: "clip-1",
+  clipId: `clip-${++clipResultCounter}`,
   jobKind: "idle",
   videoUrl: "https://example.com/clip.mp4",
   durationSec: 10,
@@ -249,7 +251,7 @@ describe("LiveDirector", () => {
     };
     const director = makeDirector(holdingPropState, 0);
     director.nextJob();
-    director.tick(20_000);
+    director.tick(20_000, { busy: false });
     expect(director.getState().jobQueue).toEqual([
       {
         kind: "beat",
@@ -265,23 +267,23 @@ describe("LiveDirector", () => {
     };
     const director = makeDirector(holdingPropState, 0);
     director.nextJob();
-    director.tick(20_000);
+    director.tick(20_000, { busy: false });
     director.nextJob();
-    director.tick(21_000);
+    director.tick(21_000, { busy: false });
     expect(director.getState().jobQueue).toEqual([]);
   });
 
   it("does not schedule rest when hands are already free", () => {
     const director = makeDirector(dressedState, 0);
     director.nextJob();
-    director.tick(20_000);
+    director.tick(20_000, { busy: false });
     expect(director.getState().jobQueue).toEqual([]);
   });
 
   it("schedules a checkIn after the shorter idle threshold", () => {
     const director = makeDirector(dressedState, 0);
     director.nextJob();
-    director.tick(90_000);
+    director.tick(90_000, { busy: false });
     expect(director.getState().jobQueue).toEqual([
       { kind: "checkIn", channel: "chat" },
     ]);
@@ -383,11 +385,114 @@ describe("LiveDirector", () => {
   it("resets idle timers on a new fan request", () => {
     const director = makeDirector(dressedState, 0);
     director.nextJob();
-    director.tick(90_000);
+    director.tick(90_000, { busy: false });
     director.nextJob();
     director.fanRequest({ text: "hi", channel: "chat" }, 91_000);
     director.nextJob();
-    director.tick(91_500);
+    director.tick(91_500, { busy: false });
     expect(director.getState().jobQueue).toEqual([]);
+  });
+
+  it("runs three fan requests that arrive during one render in FIFO order", () => {
+    const director = makeDirector();
+    director.nextJob(); // consume greeting; request A is now "rendering" (not in the queue)
+    const { job: jobB } = director.fanRequest(
+      { text: "B", channel: "chat" },
+      1000,
+    );
+    expect(director.getState().jobQueue).toEqual([jobB]);
+    const { job: jobC } = director.fanRequest(
+      { text: "C", channel: "chat" },
+      2000,
+    );
+    // C must land behind B, not pre-empt it: A -> B -> C.
+    expect(director.getState().jobQueue).toEqual([jobB, jobC]);
+  });
+
+  it("does not schedule background work while busy, even after the idle threshold elapses", () => {
+    const holdingPropState: LiveState = {
+      ...dressedState,
+      body: { ...baseBody, hands: "holdingProp", prop: "vibrator" },
+    };
+    const director = makeDirector(holdingPropState, 0);
+    director.nextJob();
+    director.tick(25_000, { busy: true });
+    expect(director.getState().jobQueue).toEqual([]);
+    director.tick(25_000, { busy: false });
+    expect(director.getState().jobQueue).toEqual([
+      {
+        kind: "beat",
+        beat: { id: "rest-1", intent: { type: "rest" }, attempt: 0 },
+      },
+    ]);
+  });
+
+  it("drops only the abandoned request's own queued beats", () => {
+    const director = makeDirector();
+    director.nextJob(); // consume greeting
+    director.clipCompleted(
+      clipResult({
+        jobKind: "reply",
+        followUps: [
+          {
+            id: "b1",
+            intent: { type: "act", act: "gesture" },
+            attempt: 0,
+            requestId: "A",
+          },
+          { id: "rest-1", intent: { type: "rest" }, attempt: 0 },
+        ],
+        state: dressedState,
+      }),
+      1000,
+    );
+    const { job: replyB } = director.fanRequest(
+      { text: "B", channel: "chat" },
+      2000,
+    );
+    expect(director.getState().jobQueue).toEqual([
+      {
+        kind: "beat",
+        beat: {
+          id: "b1",
+          intent: { type: "act", act: "gesture" },
+          attempt: 0,
+          requestId: "A",
+        },
+      },
+      {
+        kind: "beat",
+        beat: { id: "rest-1", intent: { type: "rest" }, attempt: 0 },
+      },
+      replyB,
+    ]);
+
+    director.abandonRequest("A");
+
+    expect(director.getState().jobQueue).toEqual([
+      {
+        kind: "beat",
+        beat: { id: "rest-1", intent: { type: "rest" }, attempt: 0 },
+      },
+      replyB,
+    ]);
+  });
+
+  it("ignores a duplicate clipCompleted for a clip it already committed", () => {
+    const director = makeDirector();
+    director.nextJob(); // consume greeting
+    const beat: PlannedBeat = {
+      id: "b1",
+      intent: { type: "act", act: "gesture" },
+      attempt: 0,
+    };
+    const result = clipResult({
+      jobKind: "reply",
+      followUps: [beat],
+      state: dressedState,
+    });
+    director.clipCompleted(result, 1000);
+    director.clipCompleted(result, 1000);
+    expect(director.getState().jobQueue).toEqual([{ kind: "beat", beat }]);
   });
 });

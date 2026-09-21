@@ -124,8 +124,32 @@ const makeJobQueue = () => {
   return {
     push: (job: ClipJob) => queue.push(job),
     next: (): ClipJob => queue.shift() ?? { kind: "idle" },
+    // Mirrors LiveDirector.abandonRequest: drops only beats owned by requestId.
+    abandon: (requestId: string | null) => {
+      for (let i = queue.length - 1; i >= 0; i -= 1) {
+        const job = queue[i];
+        if (
+          job?.kind === "beat" &&
+          (job.beat.requestId ?? null) === requestId
+        ) {
+          queue.splice(i, 1);
+        }
+      }
+    },
   };
 };
+
+const abandonDependentsFor =
+  (queue: ReturnType<typeof makeJobQueue>) =>
+  (job: ClipJob): void => {
+    const requestId =
+      job.kind === "reply"
+        ? job.requestId
+        : job.kind === "beat"
+          ? (job.beat.requestId ?? null)
+          : null;
+    queue.abandon(requestId);
+  };
 
 const REPLY_JOB: ClipJob = {
   kind: "reply",
@@ -333,7 +357,8 @@ describe("ClipPipeline", () => {
 
     pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting -> A1
-    pipeline.nextClip(); // consume the greeting so playback is caught up to A1
+    const greeting = pipeline.nextClip(); // consume the greeting
+    pipeline.onClipStarted(greeting!.seedFrameUrl); // ...and confirm it actually played, at A1
 
     queue.push(REPLY_JOB);
     pipeline.onRequestEnqueued();
@@ -344,6 +369,7 @@ describe("ClipPipeline", () => {
     // sitting in the ready pool.
     const first = pipeline.nextClip();
     expect(first?.jobKind).toBe("reply");
+    pipeline.onClipStarted(first!.seedFrameUrl); // the reply actually plays, moving the anchor to A2
     const second = pipeline.nextClip();
     expect(second?.jobKind).toBe("idle");
     expect(second?.seedFrameUrl).toBe(first?.seedFrameUrl);
@@ -491,16 +517,23 @@ describe("ClipPipeline", () => {
     );
   });
 
-  it("abandons the rest of a chain on repeated failure, draining stale follow-on jobs", async () => {
+  it("abandons the rest of a chain on repeated failure, dropping only that request's own beats", async () => {
     const events: PipelineEvent[] = [];
     const queue = makeJobQueue();
+    // Owned by REPLY_JOB's own requestId, as the server would set it on a follow-up beat.
     const beat: ClipJob = {
       kind: "beat",
-      beat: { id: "b1", intent: { type: "act", act: "gesture" }, attempt: 0 },
+      beat: {
+        id: "b1",
+        intent: { type: "act", act: "gesture" },
+        attempt: 0,
+        requestId: REPLY_JOB.requestId,
+      },
     };
     const pipeline = trackedPipeline({
       now: nowFn,
       onEvent: (e) => events.push(e),
+      abandonDependents: abandonDependentsFor(queue),
       render: async (req) => {
         if (req.job.kind === "reply") {
           queue.push(beat); // as the director would, before the reply is known to have failed
@@ -515,19 +548,90 @@ describe("ClipPipeline", () => {
     pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting
     pipeline.nextClip(); // drain the greeting so it doesn't skew the chainedReady count below
+    const anchorBeforeFailure = pipeline.getCurrentAnchorFrameUrl();
 
     queue.push(REPLY_JOB);
     pipeline.onRequestEnqueued();
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // attempt 1 fails, retries
-    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // attempt 2 fails, abandons + drains beat
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // attempt 2 fails, retries
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // attempt 3 fails, abandons + drops the beat
 
     expect(events.filter((e) => e.type === "error")).toHaveLength(1);
     expect(pipeline.getBufferStats().chainedReady).toBe(0);
-    // The queued beat was drained rather than left to run later from a seed that never rendered.
+    // The queued beat was dropped rather than left to run later from a seed that never rendered.
+    expect(queue.next()).toEqual({ kind: "idle" });
+    // The failed clip never resolved, so it never touched chainTail/anchor.
+    expect(pipeline.getCurrentAnchorFrameUrl()).toBe(anchorBeforeFailure);
+  });
+
+  it("abandons only the failed request's own beats; a different request queued behind it still runs", async () => {
+    const events: PipelineEvent[] = [];
+    const queue = makeJobQueue();
+    const requestA: ClipJob = {
+      kind: "reply",
+      requestId: "A",
+      text: "a",
+      channel: "chat",
+      from: "fan",
+    };
+    const requestB: ClipJob = {
+      kind: "reply",
+      requestId: "B",
+      text: "b",
+      channel: "chat",
+      from: "fan",
+    };
+    const beatForA: ClipJob = {
+      kind: "beat",
+      beat: {
+        id: "beatA",
+        intent: { type: "act", act: "gesture" },
+        attempt: 0,
+        requestId: "A",
+      },
+    };
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: (e) => events.push(e),
+      abandonDependents: abandonDependentsFor(queue),
+      render: async (req) => {
+        if (req.job.kind === "reply" && req.job.requestId === "A") {
+          queue.push(beatForA); // as the director would, before A is known to have failed
+          return delayed(() => {
+            throw new Error("A failed");
+          });
+        }
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting
+    pipeline.nextClip();
+
+    queue.push(requestA);
+    queue.push(requestB); // B is already queued behind A's own beat when A fails
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // A attempt 1 fails, retries
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // A attempt 2 fails, retries
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // A attempt 3 fails, abandons A's beat
+    // A failure doesn't auto-advance the chain; the next tick's pollChain() (as useLiveSession
+    // does every second) is what picks B up, same as it would after any idle chain lane.
+    pipeline.pollChain();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // B, untouched by the abandon, now runs
+
+    expect(events.filter((e) => e.type === "error")).toHaveLength(1);
+    const ready = events.filter(
+      (e) => e.type === "clipReady" && e.lane === "chained",
+    );
+    expect(
+      ready.some((e) => e.type === "clipReady" && e.result.jobKind === "reply"),
+    ).toBe(true);
+    // A's own beat was dropped; B was never touched.
     expect(queue.next()).toEqual({ kind: "idle" });
   });
 
-  it("treats a guard-rejected chain clip as a failure: retries once, then errors, never plays it", async () => {
+  it("treats a guard-rejected chain clip as a failure: retries twice, then errors, never plays it", async () => {
     const events: PipelineEvent[] = [];
     const queue = makeJobQueue();
     let replyRenders = 0;
@@ -556,12 +660,13 @@ describe("ClipPipeline", () => {
     queue.push(REPLY_JOB);
     pipeline.onRequestEnqueued();
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // attempt 1 rejected, retries
-    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // attempt 2 rejected, abandons
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // attempt 2 rejected, retries
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // attempt 3 rejected, abandons
 
-    expect(replyRenders).toBe(2);
-    // Both renders were paid for and both are logged as discarded; neither is ever playable.
+    expect(replyRenders).toBe(3);
+    // Every render was paid for and every one is logged as discarded; none is ever playable.
     const discarded = events.filter((e) => e.type === "clipDiscarded");
-    expect(discarded).toHaveLength(2);
+    expect(discarded).toHaveLength(3);
     expect(discarded.every((e) => e.costUsd === 0.05)).toBe(true);
     const errors = events.filter((e) => e.type === "error");
     expect(errors).toHaveLength(1);
@@ -847,7 +952,8 @@ describe("ClipPipeline", () => {
 
     pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting -> A1
-    pipeline.nextClip(); // consume greeting; displayAnchor = A1
+    const greeting = pipeline.nextClip(); // consume greeting
+    pipeline.onClipStarted(greeting!.seedFrameUrl); // ...playing it; displayAnchor = A1
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // initial idles from A1 ready
 
     queue.push(REPLY_JOB);
@@ -861,6 +967,7 @@ describe("ClipPipeline", () => {
 
     const reply = pipeline.nextClip();
     expect(reply?.jobKind).toBe("reply");
+    pipeline.onClipStarted(reply!.seedFrameUrl); // the reply plays, moving displayAnchor to A2
     const bridgeIdle = pipeline.nextClip();
     expect(bridgeIdle?.jobKind).toBe("idle");
     expect(bridgeIdle?.seedFrameUrl).toBe(reply?.seedFrameUrl);
@@ -891,5 +998,37 @@ describe("ClipPipeline", () => {
 
     expect(events).toHaveLength(0);
     expect(pipeline.getBufferStats().idleReady).toBe(0);
+  });
+
+  it("does not move the display anchor on a pull that never plays; onClipStarted does", async () => {
+    const queue = makeJobQueue();
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => delayed(() => chainAdvancingResult(req)),
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting -> A1
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // idles from A1 ready
+
+    // Two pulls (as the player does to preload one clip ahead) must not move the anchor by
+    // themselves.
+    const first = pipeline.nextClip();
+    const second = pipeline.nextClip();
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+
+    // Neither pulled clip has "started" yet, so an idle seeded from the original anchor is still
+    // eligible to play next — proof the anchor never moved.
+    pipeline.requeue(first!);
+    pipeline.requeue(second!);
+    const stillOldAnchor = pipeline.nextClip();
+    expect(stillOldAnchor?.seedFrameUrl).toBe(ANCHOR_0);
+
+    pipeline.onClipStarted(freshFrame());
+    // A fresh idle stocked against the old anchor no longer matches the (now moved) display
+    // anchor, so nothing plays until stock catches up.
+    expect(pipeline.nextClip()).toBeNull();
   });
 });

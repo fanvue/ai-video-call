@@ -25,12 +25,9 @@ export type ClipPlan = {
   needsReplyText: boolean;
   // Text to use verbatim without calling the reply LLM (greeting only).
   fixedReplyText: string | null;
-  // Direction of THIS clip's own wardrobe change, for reconcileWardrobe: "remove"/"add" for a
-  // removeGarment/addGarment beat, null for everything else including a precondition/transition
-  // clip (it doesn't touch wardrobe itself, even though the beat it re-queues will).
+  // Whether THIS clip is its own removeGarment/addGarment beat, for generateClip's wardrobe-vs-hold classification; null for a precondition/transition clip too, since it doesn't touch wardrobe itself.
   wardrobeIntent: "remove" | "add" | null;
-  // The garment removeGarment/addGarment targets; always reconciled from observation regardless
-  // of wardrobeIntent, so the director's bounded retry keeps working. Unset for a precondition clip.
+  // The garment removeGarment/addGarment targets; exempt from generateClip's mismatch rejection and reconciled from observation instead, so the director's bounded retry keeps working. Unset for a precondition clip.
   targetGarment?: GarmentId;
   // This clip's own sexual-content status (see buildPrompt's CONTENT_LOCK). Used with wardrobeIntent
   // by generateClip to decide whether this is a hold clip that must be frame-verified before it can play.
@@ -183,6 +180,22 @@ const describeState = (wardrobe: Wardrobe, body: Body): string => {
   return `${POSE_DESCRIPTION[body.pose]}, ${FACING_TRANSITION_LABEL[body.facing]}, hands ${HANDS_DESC[body.hands]}${propPart}. ${clothing}`;
 };
 
+const wardrobeUnchanged = (a: Wardrobe, b: Wardrobe): boolean =>
+  a === b ||
+  (GARMENT_ORDER.every(
+    (id) => a[id].on === b[id].on && a[id].description === b[id].description,
+  ) &&
+    a.removedOrder.length === b.removedOrder.length &&
+    a.removedOrder.every((id, i) => id === b.removedOrder[i]));
+
+// Matches the wardrobe-lock phrasing already scattered through the choreography library below, so
+// the fallback line only fires when a clip's own action text doesn't already carry one.
+const HAS_WARDROBE_LOCK_RE =
+  /no clothing change|nothing (comes off|new appears)|stays exactly on her body|no garment is added, removed/i;
+
+const WARDROBE_LOCK_LINE =
+  "Her clothing stays exactly as described; nothing is put on or taken off.";
+
 const buildPrompt = (params: {
   state: LiveState;
   speechMode: SpeechMode;
@@ -192,20 +205,27 @@ const buildPrompt = (params: {
   nextBody: Body;
   explicit: boolean;
   durationSec: number;
-}): string =>
-  [
+}): string => {
+  const needsWardrobeLock =
+    wardrobeUnchanged(params.state.wardrobe, params.nextWardrobe) &&
+    !HAS_WARDROBE_LOCK_RE.test(params.action);
+  return [
     CAMERA_LOCK,
     ANATOMY_LOCK,
     lookLockLine(params.creator.lookLock),
     `ROOM: ${params.state.surroundings}`,
     `NOW: she is ${describeState(params.state.wardrobe, params.state.body)}`,
     params.action,
+    needsWardrobeLock ? WARDROBE_LOCK_LINE : null,
     `By ${params.durationSec}s she is ${describeState(params.nextWardrobe, params.nextBody)}, still, eyes on the lens. The clip ends there.`,
     PHYSICS_LOCK,
     NO_OVERLAY_LOCK,
     params.explicit ? CONTENT_LOCK_PERMISSIVE : CONTENT_LOCK_HOLD,
     speechLockLine(params.speechMode),
-  ].join(" ");
+  ]
+    .filter((line): line is string => line !== null)
+    .join(" ");
+};
 
 // --- Choreography library (planBeatIntent) ----------------------------------
 
@@ -1283,6 +1303,8 @@ const planReply = (
     id: `${job.requestId}-follow-${index}`,
     intent,
     attempt: 0,
+    // Lets the director cancel only this request's dependents if a step of it fails.
+    requestId: job.requestId,
   }));
 
   const typingLeadSec = job.channel === "chat" ? typingLeadSecFor(job.text) : 0;
@@ -1339,7 +1361,16 @@ const planBeat = (
     durationSec,
   });
   const followUps: PlannedBeat[] = beatPlan.precondition
-    ? [{ id: job.beat.id, intent: job.beat.intent, attempt: job.beat.attempt }]
+    ? [
+        {
+          id: job.beat.id,
+          intent: job.beat.intent,
+          attempt: job.beat.attempt,
+          ...(job.beat.requestId !== undefined
+            ? { requestId: job.beat.requestId }
+            : {}),
+        },
+      ]
     : [];
   const beatIntent = job.beat.intent;
   const wardrobeIntent: ClipPlan["wardrobeIntent"] = beatPlan.precondition

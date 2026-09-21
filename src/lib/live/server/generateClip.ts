@@ -18,8 +18,6 @@ import { reconcilePose, reconcileWardrobe } from "./reconcileState";
 import { renderBackendFor } from "./renderClip";
 import { writeCheckIn, writeReply } from "./writeReply";
 
-// A hold clip is rejected outright on this; a non-hold clip's own wardrobe drift is fixed by
-// reconciling state instead (see reconcileState.ts) and is never a rejection reason.
 const ANATOMY_ISSUE_RE = /extra person|extra or malformed limbs/;
 
 const FRAME_BUDGET_MS = 15_000;
@@ -55,9 +53,9 @@ type FrameCheck = {
   issues: string[];
 };
 
-// Extracts + guards one frame of a hold clip. Any failure — extraction timeout, vision
-// timeout/refusal, unparseable JSON — comes back `checked: false` so the caller fails closed.
-const checkHoldFrame = async (
+// Extracts + guards one frame. Any failure — extraction timeout, vision timeout/refusal,
+// unparseable JSON — comes back `checked: false`; the caller decides fail-open vs fail-closed.
+const checkFrame = async (
   videoUrl: string,
   position: "middle" | "last",
   expected: LiveState,
@@ -73,7 +71,7 @@ const checkHoldFrame = async (
     );
   } catch (error) {
     console.warn(
-      `generateClip: ${position} frame extraction failed or timed out on a hold clip`,
+      `generateClip: ${position} frame extraction failed or timed out`,
       error,
     );
     return {
@@ -96,7 +94,7 @@ const checkHoldFrame = async (
     );
   } catch (error) {
     console.warn(
-      `generateClip: guard timed out on the ${position} frame of a hold clip`,
+      `generateClip: guard timed out on the ${position} frame`,
       error,
     );
     return {
@@ -126,44 +124,76 @@ const checkHoldFrame = async (
   };
 };
 
-const missingGarmentIn = (
+type GarmentMismatch = {
+  garment: GarmentId;
+  expectedState: "on" | "off";
+  observedState: "present" | "absent";
+};
+
+// Any non-target garment disagreeing with canon in EITHER direction is a mismatch — a canon-OFF garment observed back on is the drift that used to seed the next clip's prompt with a contradiction. "unknown" is never a mismatch.
+const garmentMismatchIn = (
   check: FrameCheck,
   expected: LiveState,
-): GarmentId | null =>
-  GARMENT_IDS.find(
-    (id) => expected.wardrobe[id].on && check.observed?.wardrobe[id] === false,
-  ) ?? null;
+  targetGarment: GarmentId | undefined,
+): GarmentMismatch | null => {
+  for (const id of GARMENT_IDS) {
+    if (id === targetGarment) continue;
+    const seen = check.observed?.wardrobe[id];
+    if (typeof seen !== "boolean") continue;
+    const wanted = expected.wardrobe[id].on;
+    if (seen !== wanted) {
+      return {
+        garment: id,
+        expectedState: wanted ? "on" : "off",
+        observedState: seen ? "present" : "absent",
+      };
+    }
+  }
+  return null;
+};
 
 const anatomyIssueIn = (check: FrameCheck): string | null =>
   check.issues.find((issue) => ANATOMY_ISSUE_RE.test(issue)) ?? null;
 
-type HoldVerdict = {
+type FrameVerdict = {
   verdict: "approved" | "rejected";
   rejectReason: string | null;
   observedPose: Pose | undefined;
 };
 
-// A hold clip fails closed: an unchecked frame, a garment canon says is worn but is observed bare,
-// or an anatomy issue in any frame rejects the whole clip.
-const evaluateHoldChecks = (
-  frames: Array<{ label: string; check: FrameCheck }>,
-  expected: LiveState,
-): HoldVerdict => {
-  for (const { label, check } of frames) {
-    if (!check.checked) {
+// Single place the symmetric frame-guard rule lives, for all four clip kinds. `failClosed` rejects outright on an unchecked frame (idle/hold); otherwise an unchecked frame just warns and is skipped, so a vision refusal can't permanently block a legitimately requested clip.
+const evaluateFrameChecks = ({
+  checks,
+  expected,
+  targetGarment,
+  failClosed,
+}: {
+  checks: Array<{ label: string; check: FrameCheck }>;
+  expected: LiveState;
+  targetGarment?: GarmentId;
+  failClosed: boolean;
+}): FrameVerdict => {
+  for (const { label, check } of checks) {
+    if (check.checked) continue;
+    // No frame never fails open: canon would advance while the seed stays on the old frame.
+    if (failClosed || check.frameUrl === null) {
       return {
         verdict: "rejected",
         rejectReason: `${check.failedStep} failed on the ${label} frame`,
         observedPose: undefined,
       };
     }
+    console.warn(
+      `generateClip: ${check.failedStep} failed on the ${label} frame, skipping check for this clip (fail-open)`,
+    );
   }
-  for (const { label, check } of frames) {
-    const missing = missingGarmentIn(check, expected);
-    if (missing) {
+  for (const { label, check } of checks) {
+    if (!check.checked) continue;
+    const mismatch = garmentMismatchIn(check, expected, targetGarment);
+    if (mismatch) {
       return {
         verdict: "rejected",
-        rejectReason: `${missing} should be on but the ${label} frame shows it absent`,
+        rejectReason: `${label} frame: ${mismatch.garment} should be ${mismatch.expectedState} but shows ${mismatch.observedState}`,
         observedPose: undefined,
       };
     }
@@ -176,7 +206,7 @@ const evaluateHoldChecks = (
       };
     }
   }
-  const observedPose = [...frames]
+  const observedPose = [...checks]
     .reverse()
     .map(({ check }) => check.observed?.pose)
     .find((pose): pose is Pose => pose !== undefined);
@@ -195,8 +225,10 @@ export const generateClip = async (
   const videoBackend = renderBackendFor(backend);
   // Only idle loops on the anchor; every other job chains forward from a real generated frame, single-image-seed style — pinning a hold's end frame to the seed never stopped it from drifting mid-clip, it only masked the seam for the next clip.
   const isAnchoredLoop = job.kind === "idle" && videoBackend.supportsEndFrame;
-  // Hold clip (idle/greeting/checkIn/non-wardrobe act/hold/pose transition) — must be verified before it can play; see checkHoldFrame below.
+  // Hold clip (idle/greeting/checkIn/non-wardrobe act/hold/pose transition) — must be verified before it can play; see checkFrame below.
   const isHoldClip = plan.wardrobeIntent === null && !plan.explicit;
+  // Explicit act with no wardrobe change of its own (useProp, twerk, ...) — checked like a hold clip but fails open on an unchecked frame; see evaluateFrameChecks.
+  const isExplicitNonWardrobe = plan.wardrobeIntent === null && plan.explicit;
 
   const renderStarted = Date.now();
   const renderPromise = videoBackend.render({
@@ -236,8 +268,9 @@ export const generateClip = async (
   const renderMs = Date.now() - renderStarted;
 
   let seedFrameUrl = session.seedFrameUrl;
-  let frameMs = 0;
-  let guardMs = 0;
+  // No longer split per step: every path now runs its frame check(s) through checkFrame/evaluateFrameChecks and reports total time as verifyMs.
+  const frameMs = 0;
+  const guardMs = 0;
   let verifyMs = 0;
   let guardOutcome: Pick<FrameGuardReport, "checked" | "issues"> & {
     observed: ObservedState | null;
@@ -253,17 +286,18 @@ export const generateClip = async (
   if (job.kind === "idle") {
     // Idle's frame is never reused as a seed (see pipeline.ts), so it always plays from session.seedFrameUrl; only the midpoint needs checking since start/end are the anchor by construction.
     const verifyStarted = Date.now();
-    const midCheck = await checkHoldFrame(
+    const midCheck = await checkFrame(
       rendered.videoUrl,
       "middle",
       plan.expectedState,
     );
     verifyMs = Date.now() - verifyStarted;
     seedFrameUrl = session.seedFrameUrl;
-    const result = evaluateHoldChecks(
-      [{ label: "midpoint", check: midCheck }],
-      plan.expectedState,
-    );
+    const result = evaluateFrameChecks({
+      checks: [{ label: "midpoint", check: midCheck }],
+      expected: plan.expectedState,
+      failClosed: true,
+    });
     verdict = result.verdict;
     rejectReason = result.rejectReason;
     guardOutcome = {
@@ -282,17 +316,48 @@ export const generateClip = async (
     // back by the end; the last frame doubles as this clip's next seed.
     const verifyStarted = Date.now();
     const [midCheck, lastCheck] = await Promise.all([
-      checkHoldFrame(rendered.videoUrl, "middle", plan.expectedState),
-      checkHoldFrame(rendered.videoUrl, "last", plan.expectedState),
+      checkFrame(rendered.videoUrl, "middle", plan.expectedState),
+      checkFrame(rendered.videoUrl, "last", plan.expectedState),
     ]);
     verifyMs = Date.now() - verifyStarted;
-    const result = evaluateHoldChecks(
-      [
+    const result = evaluateFrameChecks({
+      checks: [
         { label: "midpoint", check: midCheck },
         { label: "last", check: lastCheck },
       ],
-      plan.expectedState,
-    );
+      expected: plan.expectedState,
+      failClosed: true,
+    });
+    verdict = result.verdict;
+    rejectReason = result.rejectReason;
+    seedFrameUrl = lastCheck.frameUrl ?? session.seedFrameUrl;
+    guardOutcome = {
+      checked: lastCheck.checked,
+      issues: lastCheck.issues,
+      observed: lastCheck.observed,
+    };
+    if (verdict === "approved") {
+      expectedState = {
+        ...expectedState,
+        body: reconcilePose(expectedState.body, result.observedPose),
+      };
+    }
+  } else if (isExplicitNonWardrobe) {
+    // Same two-frame shape as a hold clip, but fails open on an unchecked frame — a persistent vision refusal must not permanently block a legitimately requested explicit clip.
+    const verifyStarted = Date.now();
+    const [midCheck, lastCheck] = await Promise.all([
+      checkFrame(rendered.videoUrl, "middle", plan.expectedState),
+      checkFrame(rendered.videoUrl, "last", plan.expectedState),
+    ]);
+    verifyMs = Date.now() - verifyStarted;
+    const result = evaluateFrameChecks({
+      checks: [
+        { label: "midpoint", check: midCheck },
+        { label: "last", check: lastCheck },
+      ],
+      expected: plan.expectedState,
+      failClosed: false,
+    });
     verdict = result.verdict;
     rejectReason = result.rejectReason;
     seedFrameUrl = lastCheck.frameUrl ?? session.seedFrameUrl;
@@ -308,60 +373,40 @@ export const generateClip = async (
       };
     }
   } else {
-    // Non-hold (wardrobe change or explicit act): single last-frame guard, never rejected by wardrobe observation (director's bounded retry handles an unmet removal).
-    // Rejected only for extraPeople/extraLimbs when the check ran — unlike hold clips this fails OPEN on an unchecked frame, or a vision refusal would permanently block a legitimately requested explicit clip.
-    const frameStarted = Date.now();
-    try {
-      seedFrameUrl = await withTimeout(
-        extractLastFrameUrl(rendered.videoUrl, FRAME_BUDGET_MS),
-        FRAME_BUDGET_MS,
-        "extractLastFrameUrl",
-      );
-    } catch (error) {
-      console.warn(
-        "generateClip: last-frame extraction failed or timed out, reusing previous seed frame",
-        error,
-      );
-    }
-    frameMs = Date.now() - frameStarted;
-
-    const guardStarted = Date.now();
-    try {
-      guardOutcome = await withTimeout(
-        guardFrame({ frameUrl: seedFrameUrl, expected: plan.expectedState }),
-        GUARD_BUDGET_MS,
-        "guardFrame",
-      );
-    } catch (error) {
-      console.warn(
-        "generateClip: frame guard timed out, skipping check for this clip",
-        error,
-      );
-    }
-    guardMs = Date.now() - guardStarted;
-
-    // State follows the frame: whatever the guard actually saw becomes canon, not the prediction —
-    // wardrobe only in the request's own direction (see reconcileState.ts), pose unconditionally.
-    if (guardOutcome.checked && guardOutcome.observed) {
+    // Wardrobe clip (removeGarment/addGarment): last frame only, the midpoint is mid-removal and ambiguous. The target garment is exempt from rejection and reconciled from observation instead, so director.ts's bounded retry can re-attempt an unmet removal/add.
+    const verifyStarted = Date.now();
+    const lastCheck = await checkFrame(
+      rendered.videoUrl,
+      "last",
+      plan.expectedState,
+    );
+    verifyMs = Date.now() - verifyStarted;
+    const result = evaluateFrameChecks({
+      checks: [{ label: "last", check: lastCheck }],
+      expected: plan.expectedState,
+      targetGarment: plan.targetGarment,
+      failClosed: false,
+    });
+    verdict = result.verdict;
+    rejectReason = result.rejectReason;
+    seedFrameUrl = lastCheck.frameUrl ?? session.seedFrameUrl;
+    guardOutcome = {
+      checked: lastCheck.checked,
+      issues: lastCheck.issues,
+      observed: lastCheck.observed,
+    };
+    if (verdict === "approved") {
       expectedState = {
         ...expectedState,
-        wardrobe: reconcileWardrobe(
-          expectedState.wardrobe,
-          guardOutcome.observed.wardrobe,
-          plan.wardrobeIntent,
-          plan.targetGarment,
-        ),
-        body: reconcilePose(expectedState.body, guardOutcome.observed.pose),
+        wardrobe: lastCheck.observed
+          ? reconcileWardrobe(
+              expectedState.wardrobe,
+              lastCheck.observed.wardrobe,
+              plan.targetGarment,
+            )
+          : expectedState.wardrobe,
+        body: reconcilePose(expectedState.body, result.observedPose),
       };
-    }
-
-    const anatomyIssue = guardOutcome.checked
-      ? (guardOutcome.issues.find((issue) => ANATOMY_ISSUE_RE.test(issue)) ??
-        null)
-      : null;
-    if (anatomyIssue) {
-      verdict = "rejected";
-      rejectReason = anatomyIssue;
     }
   }
 

@@ -159,6 +159,30 @@ describe("planClip: prompt shape", () => {
     const plan = replyPlan("take off your top");
     expect(plan.prompt).toMatch(/render the nudity and sexual acts/i);
   });
+
+  it("adds a wardrobe-lock line to a non-wardrobe action that doesn't already carry one", () => {
+    const plan = replyPlan("touch yourself");
+    expect(plan.wardrobeIntent).toBeNull();
+    expect(plan.prompt).toMatch(
+      /Her clothing stays exactly as described; nothing is put on or taken off\./,
+    );
+  });
+
+  it("does not duplicate an existing wardrobe-lock line already in the action text", () => {
+    const plan = replyPlan("wave hello");
+    expect(plan.prompt).toMatch(/No clothing changes, nothing new appears\./);
+    expect(plan.prompt).not.toMatch(
+      /Her clothing stays exactly as described; nothing is put on or taken off\./,
+    );
+  });
+
+  it("never adds the wardrobe-lock line to a clip that actually changes wardrobe", () => {
+    const plan = replyPlan("take off your top");
+    expect(plan.wardrobeIntent).toBe("remove");
+    expect(plan.prompt).not.toMatch(
+      /Her clothing stays exactly as described; nothing is put on or taken off\./,
+    );
+  });
 });
 
 describe("planClip: reply catalog -> intents", () => {

@@ -169,6 +169,8 @@ export const plannedBeatSchema = z.object({
   intent: beatIntentSchema,
   // Bounded retry: 0 is the first attempt, 1 is the one allowed re-attempt. Never more.
   attempt: z.number().int().min(0).max(1),
+  // The fan/viewer request this beat follows up on; undefined for director-originated beats.
+  requestId: z.string().optional(),
 });
 export type PlannedBeat = z.infer<typeof plannedBeatSchema>;
 
@@ -298,6 +300,8 @@ export const LIVE_TUNABLES = {
   // Idle loops to keep rendered ahead, and how many idle renders may run at once.
   IDLE_BUFFER_TARGET: 2,
   IDLE_MAX_INFLIGHT: 2,
+  // A chain job (reply/beat) gets 3 attempts total; idle stays at 2 (1 retry).
+  CHAIN_MAX_ATTEMPTS: 3,
   // Clips to have ready before the stream is shown as live.
   PRIME_CLIPS: 1,
   // Swap to the next clip this far before the current one ends, to hide the decode gap.

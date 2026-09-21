@@ -26,24 +26,23 @@ describe("reconcileWardrobe", () => {
     const result = reconcileWardrobe(
       wardrobe(),
       { top: true, bottom: true, bra: true, panties: true },
-      "remove",
       "bra",
     );
     expect(result).toEqual(wardrobe());
   });
 
-  it("flips a garment off and appends it to removedOrder when observed shows it off and matches the request's direction", () => {
-    const result = reconcileWardrobe(wardrobe(), { bra: false }, "remove");
+  it("flips the target garment off and appends it to removedOrder when observed shows it off", () => {
+    const result = reconcileWardrobe(wardrobe(), { bra: false }, "bra");
     expect(result.bra.on).toBe(false);
     expect(result.removedOrder).toEqual(["bra"]);
   });
 
-  it("flips a garment on and removes it from removedOrder when observed shows it on and matches the request's direction", () => {
+  it("flips the target garment on and removes it from removedOrder when observed shows it on", () => {
     const expected = wardrobe({
       top: { on: false, description: "top" },
       removedOrder: ["top"],
     });
-    const result = reconcileWardrobe(expected, { top: true }, "add");
+    const result = reconcileWardrobe(expected, { top: true }, "top");
     expect(result.top.on).toBe(true);
     expect(result.removedOrder).toEqual([]);
   });
@@ -53,49 +52,34 @@ describe("reconcileWardrobe", () => {
       bra: { on: false, description: "bra" },
       removedOrder: ["bra"],
     });
-    const result = reconcileWardrobe(expected, { bra: false }, "remove");
+    const result = reconcileWardrobe(expected, { bra: false }, "bra");
     expect(result.removedOrder).toEqual(["bra"]);
   });
 
-  it("ignores garments the observation is silent on", () => {
-    const result = reconcileWardrobe(wardrobe(), {}, "remove");
+  it("ignores the target garment when the observation is silent on it", () => {
+    const result = reconcileWardrobe(wardrobe(), {}, "bra");
     expect(result).toEqual(wardrobe());
   });
 
-  it("preserves each garment's description while flipping its on/off state", () => {
-    const result = reconcileWardrobe(wardrobe(), { panties: false }, "remove");
+  it("preserves the target garment's description while flipping its on/off state", () => {
+    const result = reconcileWardrobe(wardrobe(), { panties: false }, "panties");
     expect(result.panties).toEqual({ on: false, description: "panties" });
   });
 
-  it("direction null ignores unrequested drift: an observed-off garment stays on", () => {
-    const result = reconcileWardrobe(wardrobe(), { bra: false }, null);
+  it("ignores drift on a non-target garment, even when observed", () => {
+    const result = reconcileWardrobe(wardrobe(), { bra: false }, "panties");
     expect(result.bra.on).toBe(true);
     expect(result.removedOrder).toEqual([]);
   });
 
-  it("direction remove + the beat's own target garment observed still on is always reconciled (retry path)", () => {
-    const result = reconcileWardrobe(
-      wardrobe(),
-      { bra: true },
-      "remove",
-      "bra",
-    );
+  it("does nothing when no target garment is given", () => {
+    const result = reconcileWardrobe(wardrobe(), { bra: false, top: false });
+    expect(result).toEqual(wardrobe());
+  });
+
+  it("the target garment observed still on (unmet removal) is always reconciled (retry path)", () => {
+    const result = reconcileWardrobe(wardrobe(), { bra: true }, "bra");
     expect(result.bra.on).toBe(true);
-  });
-
-  it("direction remove adopts an untargeted garment's observed-off drift", () => {
-    const result = reconcileWardrobe(
-      wardrobe(),
-      { panties: false },
-      "remove",
-      "bra",
-    );
-    expect(result.panties.on).toBe(false);
-  });
-
-  it("direction add ignores an untargeted garment's observed-off drift", () => {
-    const result = reconcileWardrobe(wardrobe(), { top: false }, "add", "bra");
-    expect(result.top.on).toBe(true);
   });
 });
 

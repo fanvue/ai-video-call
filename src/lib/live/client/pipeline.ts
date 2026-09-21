@@ -28,6 +28,9 @@ export type ClipPipelineOptions = {
   onEvent: (event: PipelineEvent) => void;
   backend?: RenderBackend;
   speechMode?: SpeechMode;
+  // Called with a chain job that failed past retry, so the caller (director) can drop only that
+  // request's own queued follow-ups instead of the whole queue.
+  abandonDependents?: (job: ClipJob) => void;
 };
 
 export type SnapshotSource = () => LiveSessionSnapshot;
@@ -47,6 +50,7 @@ export class ClipPipeline {
   private readonly render: ClipPipelineOptions["render"];
   private readonly now: () => number;
   private readonly onEvent: (event: PipelineEvent) => void;
+  private readonly abandonDependents?: (job: ClipJob) => void;
   private backend: RenderBackend;
   private speechMode: SpeechMode;
 
@@ -58,7 +62,8 @@ export class ClipPipeline {
     frameUrl: "",
     state: null as unknown as LiveState,
   };
-  // Frame the currently displayed clip left the viewer on; only chained clips move it.
+  // Frame the currently PLAYING clip left the viewer on; set only by onClipStarted (a clip that
+  // was merely pulled to preload must never move this).
   private displayAnchorFrameUrl = "";
 
   private idleReady: ClipResult[] = [];
@@ -79,6 +84,7 @@ export class ClipPipeline {
     this.render = options.render;
     this.now = options.now;
     this.onEvent = options.onEvent;
+    this.abandonDependents = options.abandonDependents;
     this.backend = options.backend ?? "turbo";
     this.speechMode = options.speechMode ?? "text";
   }
@@ -173,7 +179,6 @@ export class ClipPipeline {
     const chained = this.chainedReady[0];
     if (chained) {
       this.chainedReady.shift();
-      this.displayAnchorFrameUrl = chained.seedFrameUrl;
       this.firstChainClipPlayed = true;
       this.fillIdleStockpile();
       return chained;
@@ -221,6 +226,24 @@ export class ClipPipeline {
   // Nothing is currently being served (used to gate viewer-request eligibility in roomSim).
   isChainIdle(): boolean {
     return !this.chainActive();
+  }
+
+  // A chain job is in flight, or a tail is holding clips not yet played/promoted; used to keep
+  // background timers (rest/checkIn) from firing mid-request.
+  isChainActive(): boolean {
+    return this.chainActive();
+  }
+
+  // The frame the current chain step is (or would be) seeded from; used to assert the anchor
+  // didn't move when a chain job fails and is abandoned.
+  getCurrentAnchorFrameUrl(): string {
+    return (this.chainTail ?? this.anchor).frameUrl;
+  }
+
+  // Called once the player confirms a pulled clip is actually on screen; a clip merely pulled to
+  // preload must never move this (that was the bug: preloading silently advanced the anchor).
+  onClipStarted(seedFrameUrl: string): void {
+    this.displayAnchorFrameUrl = seedFrameUrl;
   }
 
   private tryAdvanceChain(): void {
@@ -304,7 +327,7 @@ export class ClipPipeline {
       this.onEvent({ type: "clipDiscarded", result, costUsd: result.costUsd });
     }
     if (error || !result || rejected) {
-      if (attempt < 1) {
+      if (attempt < LIVE_TUNABLES.CHAIN_MAX_ATTEMPTS - 1) {
         this.chainInflight = { job };
         this.submitChainJob(job, attempt + 1);
         return;
@@ -315,10 +338,12 @@ export class ClipPipeline {
           ? error.message
           : String(error);
       this.onEvent({ type: "error", job, message });
-      // Abandon the rest of this chain (anchor stays put); drain any already-queued follow-on
-      // jobs so a later poll doesn't run them from a seed that never rendered.
-      this.drainDirectorQueue();
+      // The failed clip never resolved, so it never touched chainTail/anchor: both are still
+      // exactly where the last successful step (if any) left them.
+      this.abandonDependents?.(job);
       this.fillIdleStockpile();
+      // An unrelated request queued behind the failed one starts now, not on the next tick.
+      this.tryAdvanceChain();
       return;
     }
 
@@ -329,17 +354,6 @@ export class ClipPipeline {
     this.onEvent({ type: "clipReady", result, lane: "chained" });
     this.announceIfRecovered();
     this.tryAdvanceChain();
-  }
-
-  private drainDirectorQueue(): void {
-    const getNextJob = this.getNextJob;
-    if (!getNextJob) {
-      return;
-    }
-    // getNextJob() is a no-op once the queue reports idle, so this terminates.
-    while (getNextJob().kind !== "idle") {
-      // discard: queued against a chain step that failed and was abandoned
-    }
   }
 
   // ---- Idle lane ----
