@@ -60,8 +60,8 @@ export class ClipPipeline {
 
   private idleReady: ClipResult[] = [];
   private idleInflightCount = 0;
-  // Reference backend has no end-frame control, so its "idle" clips return loops: false; once seen, idle degrades to one-in-flight.
-  private referenceMode = false;
+  // Non-looping idle clips drift their own end frame, so match for playback by the anchor they were rendered FROM.
+  private idleAnchorByClipId = new Map<string, string>();
 
   private chainInflight: { job: ClipJob } | null = null;
   // Seed for the next chain job once the current one resolves; null = chain caught up with anchor.
@@ -117,11 +117,9 @@ export class ClipPipeline {
     this.anchor = { frameUrl: snapshot.seedFrameUrl, state: snapshot.state };
     this.displayAnchorFrameUrl = snapshot.seedFrameUrl;
     this.submitChainJob(initialJob, 0);
-    if (this.backend === "turbo") {
-      // The greeting loops on the reference frame on turbo, so idles from the same anchor render alongside it.
-      while (this.idleInflightCount < this.effectiveIdleMaxInflight()) {
-        this.submitIdleJob(this.anchor, 0);
-      }
+    // Idle fillers render alongside the greeting on either backend, so one is ready the moment it ends.
+    while (this.idleInflightCount < LIVE_TUNABLES.IDLE_MAX_INFLIGHT) {
+      this.submitIdleJob(this.anchor, 0);
     }
   }
 
@@ -175,7 +173,8 @@ export class ClipPipeline {
       return chained;
     }
     const idleIndex = this.idleReady.findIndex(
-      (clip) => clip.seedFrameUrl === this.displayAnchorFrameUrl,
+      (clip) =>
+        this.idleAnchorByClipId.get(clip.clipId) === this.displayAnchorFrameUrl,
     );
     if (idleIndex !== -1) {
       const [clip] = this.idleReady.splice(idleIndex, 1);
@@ -189,7 +188,9 @@ export class ClipPipeline {
     return (
       this.chainedReady.length > 0 ||
       this.idleReady.some(
-        (clip) => clip.seedFrameUrl === this.displayAnchorFrameUrl,
+        (clip) =>
+          this.idleAnchorByClipId.get(clip.clipId) ===
+          this.displayAnchorFrameUrl,
       )
     );
   }
@@ -322,24 +323,17 @@ export class ClipPipeline {
 
   // ---- Idle lane ----
 
-  private effectiveIdleBufferTarget(): number {
-    return this.referenceMode ? 1 : LIVE_TUNABLES.IDLE_BUFFER_TARGET;
-  }
-
-  private effectiveIdleMaxInflight(): number {
-    return this.referenceMode ? 1 : LIVE_TUNABLES.IDLE_MAX_INFLIGHT;
-  }
-
-  // Stale idle clips from a superseded anchor may still be sitting in idleReady (kept playable
-  // until the display catches up), so buffer-target occupancy only counts current-anchor stock.
+  // Only current-anchor stock counts toward the buffer target; stale ones stay playable until consumed.
   private currentAnchorIdleReadyCount(): number {
     return this.idleReady.filter(
-      (clip) => clip.seedFrameUrl === this.anchor.frameUrl,
+      (clip) =>
+        this.idleAnchorByClipId.get(clip.clipId) === this.anchor.frameUrl,
     ).length;
   }
 
+  // Runs even while the chain lane is busy: idle filler is what covers a chain render's latency.
   private fillIdleStockpile(): void {
-    if (this.disposed || this.chainActive()) {
+    if (this.disposed) {
       return;
     }
     const snapshot = this.getSnapshot;
@@ -348,9 +342,8 @@ export class ClipPipeline {
     }
     while (
       this.currentAnchorIdleReadyCount() + this.idleInflightCount <
-        this.effectiveIdleBufferTarget() &&
-      this.idleInflightCount < this.effectiveIdleMaxInflight() &&
-      !this.chainActive()
+        LIVE_TUNABLES.IDLE_BUFFER_TARGET &&
+      this.idleInflightCount < LIVE_TUNABLES.IDLE_MAX_INFLIGHT
     ) {
       this.submitIdleJob(this.anchor, 0);
     }
@@ -402,7 +395,7 @@ export class ClipPipeline {
       return;
     }
 
-    if (result.seedFrameUrl !== this.anchor.frameUrl) {
+    if (anchorAtSubmit.frameUrl !== this.anchor.frameUrl) {
       // Anchor moved on while this idle render was in flight; log the cost and drop it.
       this.onEvent({
         type: "clipDiscarded",
@@ -413,22 +406,12 @@ export class ClipPipeline {
       return;
     }
 
-    if (!result.loops) {
-      this.handleNonLoopingIdleResult(result);
-      return;
-    }
-
+    // Non-looping (reference backend) filler is one-shot and never becomes canon (director.clipCompleted
+    // drops idle results), so it's safe to play even though its own end frame has drifted.
+    this.idleAnchorByClipId.set(result.clipId, anchorAtSubmit.frameUrl);
     this.idleReady.push(result);
     this.onEvent({ type: "clipReady", result, lane: "idle" });
     this.announceIfRecovered();
-    this.fillIdleStockpile();
-  }
-
-  // Reference backend can't anchor-loop idle, so its "idle" render drifts the frame/state. Filler
-  // must never progress the scene, so drop it rather than promoting it to a chain hop.
-  private handleNonLoopingIdleResult(result: ClipResult): void {
-    this.referenceMode = true;
-    this.onEvent({ type: "clipDiscarded", result, costUsd: result.costUsd });
     this.fillIdleStockpile();
   }
 }

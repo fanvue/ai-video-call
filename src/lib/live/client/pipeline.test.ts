@@ -427,11 +427,10 @@ describe("ClipPipeline", () => {
     expect(queue.next()).toEqual({ kind: "idle" });
   });
 
-  it("degrades idle rendering to one-in-flight once a result reports loops: false", async () => {
+  it("keeps a reference-backend (loops: false) idle result as playable filler instead of discarding it", async () => {
     const events: PipelineEvent[] = [];
     let concurrentIdle = 0;
-    let resolvedIdleCount = 0;
-    let maxConcurrentAfterFirstResolution = 0;
+    let maxConcurrentIdle = 0;
     const queue = makeJobQueue();
     const pipeline = trackedPipeline({
       now: nowFn,
@@ -443,28 +442,65 @@ describe("ClipPipeline", () => {
         }
         concurrentIdle += 1;
         return delayed(() => {
+          maxConcurrentIdle = Math.max(maxConcurrentIdle, concurrentIdle);
           concurrentIdle -= 1;
-          resolvedIdleCount += 1;
-          if (resolvedIdleCount > 1) {
-            maxConcurrentAfterFirstResolution = Math.max(
-              maxConcurrentAfterFirstResolution,
-              concurrentIdle + 1,
-            );
-          }
-          return makeResult("idle", req.session.seedFrameUrl, {
-            loops: false,
-          });
+          // Reference backend can't loop: its end frame drifts from whatever it was seeded with.
+          return makeResult("idle", freshFrame(), { loops: false });
         });
       },
     });
 
     pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
-    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting -> anchor; reference-mode idles start
-    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS * 4);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting -> anchor A1, initial idles (seeded from ANCHOR_0) go stale
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // replacement idles resolve against A1
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // stockpile stays topped up at full concurrency
 
-    expect(resolvedIdleCount).toBeGreaterThan(2);
-    expect(maxConcurrentAfterFirstResolution).toBe(1);
-    expect(events.some((e) => e.type === "anchorChanged")).toBe(true);
+    expect(maxConcurrentIdle).toBe(LIVE_TUNABLES.IDLE_MAX_INFLIGHT);
+    expect(pipeline.getBufferStats().idleReady).toBe(
+      LIVE_TUNABLES.IDLE_BUFFER_TARGET,
+    );
+
+    pipeline.nextClip(); // consume the greeting first
+    const played = pipeline.nextClip();
+    expect(played?.jobKind).toBe("idle");
+    expect(played?.loops).toBe(false);
+  });
+
+  it("keeps refilling the idle stockpile while a chain job (e.g. a fan request) is rendering", async () => {
+    const queue = makeJobQueue();
+    const idleRequests: ClipRequest[] = [];
+    const replyDeferred = defer<ClipResult>();
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        if (req.job.kind === "idle") {
+          idleRequests.push(req);
+          return delayed(() => chainAdvancingResult(req));
+        }
+        return replyDeferred.promise;
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting -> anchor A1
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // initial idle buffer fills against A1
+
+    const idleRequestsBeforeReply = idleRequests.length;
+    pipeline.nextClip(); // consume the greeting
+    pipeline.nextClip(); // consume one idle, leaving room in the buffer target
+
+    queue.push(REPLY_JOB);
+    pipeline.onRequestEnqueued(); // chain lane is now busy rendering the reply (still pending)
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+
+    // Idle refill must not stop just because the chain lane is busy — that's exactly what covers
+    // the reply's render latency.
+    expect(idleRequests.length).toBeGreaterThan(idleRequestsBeforeReply);
+    expect(pipeline.getBufferStats().idleReady).toBeGreaterThan(0);
+
+    replyDeferred.resolve(makeResult("reply", freshFrame()));
+    await vi.advanceTimersByTimeAsync(0);
   });
 
   it("discards a late result after dispose", async () => {
