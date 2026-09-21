@@ -235,28 +235,26 @@ describe("generateClip: chained jobs", () => {
     expect(result.seedFrameUrl).toBe("https://example.com/repaired.jpg");
   });
 
-  it("runs the periodic identity correction on turbo when due and nothing was repaired", async () => {
+  it("never runs blind periodic identity correction on either backend, even at a long elapsed time — only issue-scoped repairFrame can touch the seed", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
-    correctFrameIdentityDrift.mockResolvedValue(
-      "https://example.com/corrected.jpg",
-    );
     const req = clipRequest({
       job: { kind: "settle" },
-      session: session({ elapsedSec: 40 }),
+      session: session({ elapsedSec: 400 }),
     });
 
     const result = await generateClip(req);
 
-    expect(correctFrameIdentityDrift).toHaveBeenCalled();
-    expect(result.seedFrameUrl).toBe("https://example.com/corrected.jpg");
+    expect(guardFrame).toHaveBeenCalled();
+    expect(correctFrameIdentityDrift).not.toHaveBeenCalled();
+    expect(result.seedFrameUrl).toBe("https://example.com/extracted.jpg");
   });
 
-  it("never runs the periodic identity correction on the reference backend, even when due and unrepaired", async () => {
+  it("never runs blind periodic identity correction on the reference backend either", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: false, render });
     const req = clipRequest({
       job: { kind: "settle" },
       backend: "reference",
-      session: session({ elapsedSec: 40 }),
+      session: session({ elapsedSec: 400 }),
     });
 
     const result = await generateClip(req);

@@ -1,31 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { extractLastFrameUrl } from "@/lib/fal/extractLastFrame";
-import { correctFrameIdentityDrift } from "@/lib/fal/requestFrameIdentityCorrection";
-import {
-  LIVE_TUNABLES,
-  type ClipRequest,
-  type ClipResult,
-  type FrameGuardReport,
-} from "../contract";
+import type { ClipRequest, ClipResult, FrameGuardReport } from "../contract";
 import { guardFrame, repairFrame } from "./frameGuard";
 import { planClip, typingLeadSecFor } from "./planClip";
 import { renderBackendFor } from "./renderClip";
 import { writeCheckIn, writeReply } from "./writeReply";
-
-// Periodic re-grounding against the untouched upload, not every clip — cheaper, and keeps the
-// correction call off the critical path most turns.
-const dueForCorrection = (elapsedSec: number, durationSec: number): boolean =>
-  Math.floor(elapsedSec / LIVE_TUNABLES.IDENTITY_ANCHOR_EVERY_SEC) <
-  Math.floor(
-    (elapsedSec + durationSec) / LIVE_TUNABLES.IDENTITY_ANCHOR_EVERY_SEC,
-  );
 
 // Hard per-step budgets on the chained critical path. A step that blows its budget degrades
 // (keeps the best frame it has so far) instead of stalling the whole clip.
 const FRAME_BUDGET_MS = 15_000;
 const GUARD_BUDGET_MS = 8_000;
 const REPAIR_BUDGET_MS = 15_000;
-const IDENTITY_BUDGET_MS = 15_000;
 
 class StepTimeoutError extends Error {}
 
@@ -172,30 +157,6 @@ export const generateClip = async (
         }
       }
       repairMs = Date.now() - repairStarted;
-
-      // Blind periodic correction is the main path by which the upload photo's wardrobe/pose leaks back into a live seed on the reference backend; issue-scoped repairFrame above is kept as the sole correction there.
-      if (
-        !repaired &&
-        backend === "turbo" &&
-        dueForCorrection(session.elapsedSec, plan.durationSec)
-      ) {
-        try {
-          seedFrameUrl = await withTimeout(
-            correctFrameIdentityDrift({
-              anchorImageUrl: session.anchorFrameUrl,
-              frameUrl: seedFrameUrl,
-              timeoutMs: IDENTITY_BUDGET_MS,
-            }),
-            IDENTITY_BUDGET_MS,
-            "correctFrameIdentityDrift",
-          );
-        } catch (error) {
-          console.warn(
-            "generateClip: periodic identity anchor correction failed or timed out, keeping drifted frame",
-            error,
-          );
-        }
-      }
     }
   }
 

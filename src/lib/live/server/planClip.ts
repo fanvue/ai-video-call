@@ -305,6 +305,13 @@ const RE_TWERK =
 const RE_COME_CLOSER =
   /\b(come closer|move closer|get closer|closer to (the )?camera)\b/i;
 const RE_BACK_UP = /\b(back up|move back|step back|further away|get back)\b/i;
+const RE_SPIN =
+  /\b(spins? around|do a spin|full (turn|spin|circle|360)|360)\b/i;
+
+// Broad verb gate for a request with no dedicated beat below: only accepts it as a physical
+// action if it plainly reads as one, so idle chit-chat still falls through to fallbackBeats.
+const RE_GENERIC_ACTION =
+  /\b(show|do|try|give|move|walk|stand|pose|face|look|point|lift|raise|lower|open|close|hold|grab|pull|push|rotate|flex|stretch|arch|squat|jump|hop|shake|wiggle|roll|flip)\b/i;
 
 const RE_POSE: Partial<Record<Pose, RegExp>> = {
   standing: /\b(stand up|get up|on your feet)\b/i,
@@ -889,6 +896,44 @@ const smallTalkBeats = (
   ];
 };
 
+const spinBeats = (
+  text: string,
+  wardrobe: Wardrobe,
+  body: Body,
+): Beat[] | null => {
+  if (!RE_SPIN.test(text)) return null;
+  return [
+    {
+      physical:
+        "She does one full 360-degree turn in place, arms relaxed at her sides, then settles back " +
+        "into the exact pose and framing she started in. The fixed webcam never moves.",
+      nextWardrobe: wardrobe,
+      nextBody: body,
+      durationSec: ACTION_BEAT_SEC,
+    },
+  ];
+};
+
+// Last resort before the static fallback: an unrecognized but plainly physical request (no beat
+// above matched it) gets played through almost verbatim instead of being silently dropped.
+const genericActionBeats = (
+  text: string,
+  wardrobe: Wardrobe,
+  body: Body,
+): Beat[] | null => {
+  if (!RE_GENERIC_ACTION.test(text)) return null;
+  return [
+    {
+      physical:
+        `She does exactly this, one clear continuous action, and holds the result: "${text.trim()}". ` +
+        "The fixed webcam does not move; she stays fully in frame throughout.",
+      nextWardrobe: wardrobe,
+      nextBody: body,
+      durationSec: ACTION_BEAT_SEC,
+    },
+  ];
+};
+
 const fallbackBeats = (wardrobe: Wardrobe, body: Body): Beat[] => [
   {
     physical:
@@ -958,6 +1003,7 @@ const matchBeats = (
   crawlBeats(text, wardrobe, body) ??
   spreadLegsBeats(text, wardrobe, body) ??
   twerkBeats(text, wardrobe, body) ??
+  spinBeats(text, wardrobe, body) ??
   comeCloserBeats(text, wardrobe, body) ??
   backUpBeats(text, wardrobe, body) ??
   poseBeats(text, wardrobe, body) ??
@@ -967,6 +1013,7 @@ const matchBeats = (
   drinkBeats(text, wardrobe, body) ??
   tipBeats(text, wardrobe, body) ??
   smallTalkBeats(text, wardrobe, body) ??
+  genericActionBeats(text, wardrobe, body) ??
   null;
 
 // --- Negation ----------------------------------------------------------------

@@ -235,11 +235,12 @@ export type ClipResult = z.infer<typeof clipResultSchema>;
 // Tunables shared by both halves
 
 export const LIVE_TUNABLES = {
-  MIN_CLIP_SEC: 10,
+  MIN_CLIP_SEC: 8,
   MAX_CLIP_SEC: 15,
   IDLE_CLIP_SEC: 10,
-  // Chained action clips must outlast the render of the next one (~13s incl. frame extraction).
-  ACTION_CLIP_SEC: 15,
+  // Shorter action beats render faster (render time scales with duration) and give the model less
+  // time to drift, so a request is visibly enacted sooner. Matches the pandora AI-video spike's beat length.
+  ACTION_CLIP_SEC: 8,
   // Idle loops to keep rendered ahead, and how many idle renders may run at once.
   IDLE_BUFFER_TARGET: 2,
   IDLE_MAX_INFLIGHT: 2,
@@ -250,6 +251,5 @@ export const LIVE_TUNABLES = {
   ABANDON_INFLIGHT_MS: 3_000,
   REDRESS_AFTER_IDLE_MS: 120_000,
   CHECK_IN_AFTER_IDLE_MS: 90_000,
-  IDENTITY_ANCHOR_EVERY_SEC: 45,
   TRANSCRIPT_WINDOW: 40,
 } as const;
