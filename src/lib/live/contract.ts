@@ -253,4 +253,6 @@ export const LIVE_TUNABLES = {
   REDRESS_AFTER_IDLE_MS: 120_000,
   CHECK_IN_AFTER_IDLE_MS: 90_000,
   TRANSCRIPT_WINDOW: 40,
+  // Spend cap: every session auto-ends here regardless of activity.
+  MAX_SESSION_MS: 180_000,
 } as const;

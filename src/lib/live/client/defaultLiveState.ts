@@ -15,6 +15,9 @@ const SURROUNDINGS_BY_SCENE: Record<SceneId, string> = {
 export const defaultLiveState = (
   sceneId: SceneId,
   wardrobe: Wardrobe,
+  // Vision-captured real background from the reference photo; the preset is a fallback only, since
+  // it otherwise contradicts what the first clip actually shows and the room visibly jumps on clip 2.
+  capturedSurroundings?: string,
 ): LiveState => {
   const baseBody = {
     pose: "sitting" as const,
@@ -29,6 +32,7 @@ export const defaultLiveState = (
     body: baseBody,
     baselineBody: baseBody,
     world: "Settling in, webcam just turned on.",
-    surroundings: SURROUNDINGS_BY_SCENE[sceneId],
+    surroundings:
+      capturedSurroundings?.trim() || SURROUNDINGS_BY_SCENE[sceneId],
   };
 };

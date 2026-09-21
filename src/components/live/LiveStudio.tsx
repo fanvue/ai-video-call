@@ -258,6 +258,26 @@ export const LiveStudio = () => {
 
   return (
     <div className="relative mx-auto flex h-dvh w-full max-w-md flex-col overflow-hidden bg-black">
+      {debugMode ? (
+        // Sits in the unused viewport margin beside the mobile-width player on desktop; hidden below lg.
+        <div className="fixed right-4 top-20 z-40 hidden w-52 flex-col gap-1 rounded-xl border border-white/15 bg-black/70 p-3 font-mono text-[11px] text-white/80 lg:flex">
+          <p className="text-white">
+            Total cost: ${session.costTotal.toFixed(3)}
+          </p>
+          <p>
+            Idle ready {session.bufferDepth.idleReady} / inflight{" "}
+            {session.bufferDepth.idleInflight}
+          </p>
+          <p>Chained ready {session.bufferDepth.chainedReady}</p>
+          <p>Buffered {session.bufferDepth.bufferedSec.toFixed(1)}s</p>
+          {session.lastTimings ? (
+            <p>
+              Last {session.lastTimings.jobKind}: {session.lastTimings.renderMs}
+              ms / ${session.lastTimings.costUsd.toFixed(3)}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
       <div className="relative min-h-0 flex-1 bg-black">
         <video
           ref={bindVideoA}

@@ -17,23 +17,26 @@ import {
   RoomSim,
   type RoomChatMessage,
 } from "@/lib/live/client/roomSim";
-import type {
-  ClipJobKind,
-  ClipRequest,
-  ClipResult,
-  InputChannel,
-  LiveState,
-  RenderBackend,
-  SceneId,
-  SpeechMode,
-  TranscriptEntry,
-  Wardrobe,
+import {
+  LIVE_TUNABLES,
+  type ClipJobKind,
+  type ClipRequest,
+  type ClipResult,
+  type InputChannel,
+  type LiveState,
+  type RenderBackend,
+  type SceneId,
+  type SpeechMode,
+  type TranscriptEntry,
+  type Wardrobe,
 } from "@/lib/live/contract";
 
 export type ReferenceUploadResult = {
   anchorFrameUrl: string;
   wardrobe: Wardrobe;
   lookLock: string;
+  // Actual room visible in the photo, captured by vision; undefined falls back to the sceneId preset.
+  surroundings?: string;
   captured: boolean;
 };
 
@@ -141,6 +144,9 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   const currentActRef = useRef<QueueStripEntry | null>(null);
   const pendingTipCentsRef = useRef<number | undefined>(undefined);
   const errorTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const typingDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Indirection so the tick interval (created in `start`) always calls the current `end`, defined later.
+  const endRef = useRef<() => void>(() => {});
   // Maps a rendered clip's id to what it was, so the player's onClipStarted (id only) can look
   // up job kind / reply for chat-sync and the connecting -> live transition.
   const clipMetaRef = useRef<Map<string, ClipResult>>(new Map());
@@ -350,6 +356,10 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       if (event.type === "error") {
         setError(event.message);
         setTypingCreator(false);
+        if (typingDelayRef.current) {
+          clearTimeout(typingDelayRef.current);
+          typingDelayRef.current = null;
+        }
         refreshBufferDepth();
         if (errorTimeoutRef.current) {
           clearTimeout(errorTimeoutRef.current);
@@ -371,9 +381,15 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
             .transcript.find((entry) => entry.id === job.requestId);
           pendingTipCentsRef.current = requestEntry?.tipCents;
         }
-        // Instant cue the moment a request starts rendering, not ~20-30s later once the clip lands.
+        // She notices the message and starts typing ~3s later, not instantly and not ~20-30s later once the clip lands.
         if (job.kind === "reply" || job.kind === "checkIn") {
-          setTypingCreator(true);
+          if (typingDelayRef.current) {
+            clearTimeout(typingDelayRef.current);
+          }
+          typingDelayRef.current = setTimeout(() => {
+            typingDelayRef.current = null;
+            setTypingCreator(true);
+          }, 3000);
         }
         refreshQueueStrip();
         return;
@@ -494,7 +510,11 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         sceneId,
         reference.lookLock,
       );
-      const initialLiveState = defaultLiveState(sceneId, reference.wardrobe);
+      const initialLiveState = defaultLiveState(
+        sceneId,
+        reference.wardrobe,
+        reference.surroundings,
+      );
       const director = new LiveDirector({
         creator,
         anchorFrameUrl: reference.anchorFrameUrl,
@@ -537,7 +557,16 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         clearInterval(tickIntervalRef.current);
       }
       tickIntervalRef.current = setInterval(() => {
-        directorRef.current?.tick(Date.now());
+        const currentDirector = directorRef.current;
+        if (
+          currentDirector &&
+          Date.now() - currentDirector.getState().startedAt >=
+            LIVE_TUNABLES.MAX_SESSION_MS
+        ) {
+          endRef.current();
+          return;
+        }
+        currentDirector?.tick(Date.now());
         pipelineRef.current?.pollChain();
         tickRoom();
       }, 1000);
@@ -597,6 +626,10 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     roomRef.current = null;
     setStatus("ended");
   }, [clearPendingReveal, player]);
+
+  useEffect(() => {
+    endRef.current = end;
+  }, [end]);
 
   useEffect(() => {
     const goOffline = () => setOffline(true);

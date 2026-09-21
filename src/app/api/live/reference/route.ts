@@ -23,15 +23,18 @@ const DEFAULT_WARDROBE: Wardrobe = {
 };
 
 const CAPTURE_PROMPT =
-  "Look at this reference photo of an adult woman. Describe her current outfit for a video generation " +
-  'prompt library. Return ONLY JSON: {"top":{"on":bool,"description":"..."},"bottom":{"on":bool,"description":"..."},' +
-  '"bra":{"on":bool,"description":"..."},"panties":{"on":bool,"description":"..."},"lookLock":"..."}. ' +
+  "Look at this reference photo of an adult woman. Describe her current outfit and her surroundings for a " +
+  'video generation prompt library. Return ONLY JSON: {"top":{"on":bool,"description":"..."},' +
+  '"bottom":{"on":bool,"description":"..."},"bra":{"on":bool,"description":"..."},' +
+  '"panties":{"on":bool,"description":"..."},"lookLock":"...","surroundings":"..."}. ' +
   "top/bottom are outer garments only (shirt, dress, pants, skirt) — a bra or panties never counts as a top or " +
   "bottom. If she is in lingerie only, with no separate outer garment visible over the bra or panties, set " +
   "top.on and bottom.on to false. Set on:true for a garment only if you can actually see it worn in the photo; " +
   "never guess a garment is on because a woman would typically be wearing one. Each description is a short exact " +
   "phrase (color, fabric, style) of that garment as it is visible now, or a generic phrase if it is off. lookLock " +
-  "describes hair, skin tone, and build only — never a real person's identity.";
+  "describes hair, skin tone, and build only — never a real person's identity. surroundings is a short factual " +
+  "description of the actual room and camera setup visible in the background of THIS photo (furniture, lighting, " +
+  "wall, any webcam/desk framing) — never an invented or generic room, only what is actually visible.";
 
 type WardrobeCapture = {
   top?: { on?: boolean; description?: string };
@@ -39,6 +42,7 @@ type WardrobeCapture = {
   bra?: { on?: boolean; description?: string };
   panties?: { on?: boolean; description?: string };
   lookLock?: string;
+  surroundings?: string;
 };
 
 const parseCapture = (raw: string): WardrobeCapture | null => {
@@ -120,6 +124,7 @@ export async function POST(request: Request) {
     wardrobe: toWardrobe(capture),
     lookLock:
       capture?.lookLock?.slice(0, 600) || "an adult woman with a natural build",
+    surroundings: capture?.surroundings?.slice(0, 400) || undefined,
     captured,
   });
 }

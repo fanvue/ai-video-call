@@ -108,9 +108,17 @@ const wardrobeLockLine = (wardrobe: Wardrobe): string => {
     (id) =>
       `${GARMENT_LABEL[id]} (${wardrobe[id].description}) ${wardrobe[id].on ? "ON" : "OFF"}`,
   );
+  const off = GARMENT_ORDER.filter((id) => !wardrobe[id].on);
+  // Stated per-garment, not just "no clothing change": a garment already off is the model's own
+  // safety-tuned bias to redress, and it does this even mid-clip on an otherwise static hold.
+  const regrowthGuard =
+    off.length > 0
+      ? ` Her ${off.map((id) => GARMENT_LABEL[id]).join(" and ")} stay${off.length === 1 ? "s" : ""} off for every single frame of this clip, start to finish, even briefly — nothing regrows there.`
+      : "";
   return (
     `WARDROBE LOCK, right now: ${parts.join("; ")}. Change only what this clip's instruction ` +
-    "explicitly names — if nothing below names a garment, none moves. Default is no clothing change."
+    "explicitly names — if nothing below names a garment, none moves. Default is no clothing change." +
+    regrowthGuard
   );
 };
 
