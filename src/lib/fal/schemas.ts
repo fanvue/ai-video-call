@@ -61,17 +61,7 @@ export const h3MaxReferenceVideoRequestSchema = z.object({
 // Same video-file-object shape as h3-max-turbo/image-to-video per the fal docs.
 export const h3MaxReferenceVideoResultSchema = h3MaxVideoResultPayloadSchema;
 
-// fal-ai/face-swap — replaces flux-pro/kontext/max/multi, which "combined" both input images and regenerated the whole scene/pose instead of leaving base_image_url alone; face-swap has no prompt and no second-image scene to bleed in, just a face-region transplant onto the base image.
-export const identityCorrectionRequestSchema = z.object({
-  base_image_url: z.url(),
-  swap_image_url: z.url(),
-});
-
-export const identityCorrectionResultSchema = z.object({
-  image: z.object({ url: z.url() }),
-});
-
-// fal-ai/clarity-upscaler — best-effort quality pass chained after identity correction; high resemblance + low creativity biases it toward sharpening over hallucinating new detail.
+// fal-ai/clarity-upscaler — best-effort quality pass on the seed frame; high resemblance + low creativity biases it toward sharpening over hallucinating new detail.
 export const frameUpscaleRequestSchema = z.object({
   image_url: z.url(),
   prompt: z.string(),

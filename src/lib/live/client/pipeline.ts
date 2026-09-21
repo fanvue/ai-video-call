@@ -33,9 +33,6 @@ export type ClipPipelineOptions = {
   // Called with a chain job that failed past retry, so the caller (director) can drop only that
   // request's own queued follow-ups instead of the whole queue.
   abandonDependents?: (job: ClipJob) => void;
-  // Polled once per chain job submission (not idle, which never becomes canon); true at most once
-  // per REFERENCE_REFRESH_INTERVAL_MS. See director.consumeReferenceRefreshDue.
-  needsIdentityRefresh?: () => boolean;
   // Called after a chain clip already resolved (never gates clipReady/playback) to sharpen the
   // seed it left behind before the NEXT chain job renders from it. See upscaleChainTailInBackground.
   upscaleSeed?: (
@@ -61,7 +58,6 @@ export class ClipPipeline {
   private readonly now: () => number;
   private readonly onEvent: (event: PipelineEvent) => void;
   private readonly abandonDependents?: (job: ClipJob) => void;
-  private readonly needsIdentityRefresh?: () => boolean;
   private readonly upscaleSeed?: ClipPipelineOptions["upscaleSeed"];
   private backend: RenderBackend;
   private speechMode: SpeechMode;
@@ -103,7 +99,6 @@ export class ClipPipeline {
     this.now = options.now;
     this.onEvent = options.onEvent;
     this.abandonDependents = options.abandonDependents;
-    this.needsIdentityRefresh = options.needsIdentityRefresh;
     this.upscaleSeed = options.upscaleSeed;
     this.backend = options.backend ?? "turbo";
     this.speechMode = options.speechMode ?? "text";
@@ -327,10 +322,6 @@ export class ClipPipeline {
       return;
     }
     const seed = this.chainTail ?? this.anchor;
-    // Only checked on the first attempt: a retry of the same job must not re-consume the flag and
-    // silently skip a correction it already claimed.
-    const needsIdentityRefresh =
-      attempt === 0 && (this.needsIdentityRefresh?.() ?? false);
     const request: ClipRequest = {
       session: {
         ...snapshot(),
@@ -340,7 +331,6 @@ export class ClipPipeline {
       job,
       backend: this.backend,
       speechMode: this.speechMode,
-      needsIdentityRefresh,
     };
     this.chainInflight = { job };
     if (attempt === 0) {
@@ -476,7 +466,6 @@ export class ClipPipeline {
       // Idle is never committed as canon or reused as a seed, so always use the faster turbo backend.
       backend: "turbo",
       speechMode: this.speechMode,
-      needsIdentityRefresh: false,
     };
     this.idleInflightCount += 1;
     this.render(request).then(

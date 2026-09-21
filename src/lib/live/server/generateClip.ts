@@ -13,7 +13,6 @@ import {
   type ObservedState,
   type Pose,
 } from "../contract";
-import { correctIdentity } from "./correctIdentity";
 import { guardFrame } from "./frameGuard";
 import { planClip, typingLeadSecFor } from "./planClip";
 import { reconcilePose, reconcileWardrobe } from "./reconcileState";
@@ -251,7 +250,7 @@ const evaluateFrameChecks = ({
 export const generateClip = async (
   request: ClipRequest,
 ): Promise<ClipResult> => {
-  const { session, job, backend, speechMode, needsIdentityRefresh } = request;
+  const { session, job, backend, speechMode } = request;
 
   const planStarted = Date.now();
   const plan = planClip({ session, job, speechMode, backend });
@@ -265,24 +264,10 @@ export const generateClip = async (
   // Explicit act with no wardrobe change of its own (useProp, twerk, ...) — checked like a hold clip but fails open on an unchecked frame; see evaluateFrameChecks.
   const isExplicitNonWardrobe = plan.wardrobeIntent === null && plan.explicit;
 
-  // A still-image edit nudges identity back toward the anchor BEFORE rendering, piggybacked onto whichever job is next (see correctIdentity.ts) so there's no dedicated, jump-cut clip. Fails open to the uncorrected seed.
-  let renderSeedFrameUrl = session.seedFrameUrl;
-  let identityCorrectionCostUsd = 0;
-  if (needsIdentityRefresh) {
-    const corrected = await correctIdentity(
-      session.seedFrameUrl,
-      session.anchorFrameUrl,
-    );
-    if (corrected) {
-      renderSeedFrameUrl = corrected.correctedFrameUrl;
-      identityCorrectionCostUsd = corrected.costUsd;
-    }
-  }
-
   const renderStarted = Date.now();
   const renderPromise = videoBackend.render({
     prompt: plan.prompt,
-    seedFrameUrl: renderSeedFrameUrl,
+    seedFrameUrl: session.seedFrameUrl,
     durationSec: plan.durationSec,
     endFrameUrl: isAnchoredLoop ? session.seedFrameUrl : undefined,
     identityReferenceUrl: session.anchorFrameUrl,
@@ -568,6 +553,6 @@ export const generateClip = async (
     verdict,
     rejectReason,
     timings: { planMs, renderMs, frameMs, guardMs, repairMs: 0, verifyMs },
-    costUsd: rendered.costUsd + identityCorrectionCostUsd,
+    costUsd: rendered.costUsd,
   };
 };

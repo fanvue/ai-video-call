@@ -229,8 +229,6 @@ export const clipRequestSchema = z.object({
   job: clipJobSchema,
   backend: renderBackendSchema.default("turbo"),
   speechMode: speechModeSchema.default("text"),
-  // Set on whichever chain job (reply/beat/checkIn/greeting) is next due, regardless of job.kind — piggybacks the identity-correction pass (see correctIdentity.ts) onto that clip's own render instead of a dedicated clip, so there's no visible jump cut.
-  needsIdentityRefresh: z.boolean().default(false),
 });
 export type ClipRequest = z.infer<typeof clipRequestSchema>;
 
@@ -307,9 +305,9 @@ export const LIVE_TUNABLES = {
   // Must stay above IDLE_CLIP_SEC: planReply tells a hold-only beat from a real action by comparing
   // durationSec against IDLE_CLIP_SEC, and both are already at the fal floor.
   ACTION_CLIP_SEC: 11,
-  // Idle loops to keep rendered ahead, and how many idle renders may run at once.
-  IDLE_BUFFER_TARGET: 2,
-  IDLE_MAX_INFLIGHT: 2,
+  // A chain reply always preempts idle the instant it's ready, so 1 idle is enough buffer.
+  IDLE_BUFFER_TARGET: 1,
+  IDLE_MAX_INFLIGHT: 1,
   // A chain job (reply/beat) gets 3 attempts total; idle stays at 2 (1 retry).
   CHAIN_MAX_ATTEMPTS: 3,
   // Clips to have ready before the stream is shown as live.
@@ -321,8 +319,6 @@ export const LIVE_TUNABLES = {
   CHECK_IN_AFTER_IDLE_MS: 90_000,
   // Below this gap since the last activity, a reply is treated as part of a fast back-and-forth and skips the typing lead-in; at or above it, she was genuinely idling and opens on typing.
   TYPING_LEAD_AFTER_IDLE_MS: 8_000,
-  // How often to run an identity-correction pass, wall-clock, regardless of activity — piggybacked onto whichever chain job is next (see needsIdentityRefresh), never its own clip.
-  REFERENCE_REFRESH_INTERVAL_MS: 30_000,
   // How often the seed a chain job leaves behind gets upscaled in the background (see upscaleChainTailInBackground). Per-clip was too frequent: it competed with actual render calls for fal capacity and slowed clip turnaround.
   UPSCALE_INTERVAL_MS: 60_000,
   TRANSCRIPT_WINDOW: 40,

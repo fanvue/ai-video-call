@@ -10,11 +10,6 @@ vi.mock("./renderClip", () => ({
   renderBackendFor: () => ({ render, supportsEndFrame: true }),
 }));
 
-const correctIdentity = vi.fn();
-vi.mock("./correctIdentity", () => ({
-  correctIdentity: (...args: unknown[]) => correctIdentity(...args),
-}));
-
 const extractLastFrameUrl = vi.fn();
 const extractMidFrameUrl = vi.fn();
 vi.mock("@/lib/fal/extractLastFrame", () => ({
@@ -75,20 +70,15 @@ const session: LiveSessionSnapshot = {
   transcript: [],
 };
 
-const request = (
-  job: ClipRequest["job"],
-  needsIdentityRefresh = false,
-): ClipRequest => ({
+const request = (job: ClipRequest["job"]): ClipRequest => ({
   session,
   job,
   backend: "turbo",
   speechMode: "text",
-  needsIdentityRefresh,
 });
 
 beforeEach(() => {
   render.mockReset();
-  correctIdentity.mockReset();
   extractLastFrameUrl.mockReset();
   extractMidFrameUrl.mockReset();
   guardFrame.mockReset();
@@ -96,7 +86,6 @@ beforeEach(() => {
     videoUrl: "https://example.com/clip.mp4",
     costUsd: 0.275,
   });
-  correctIdentity.mockResolvedValue(null);
   extractLastFrameUrl.mockResolvedValue("https://example.com/last.jpg");
 });
 
@@ -146,32 +135,5 @@ describe("generateClip with the vision guard off (default)", () => {
     expect(result.verdict).toBe("rejected");
     expect(result.rejectReason).toMatch(/extraction failed/);
     expect(result.seedFrameUrl).toBe(session.seedFrameUrl);
-  });
-
-  it("needsIdentityRefresh: runs identity correction first, then renders from the current frame when correction is unavailable", async () => {
-    await generateClip(request({ kind: "checkIn", channel: "chat" }, true));
-    expect(correctIdentity).toHaveBeenCalledWith(
-      session.seedFrameUrl,
-      session.anchorFrameUrl,
-    );
-    expect(render).toHaveBeenCalledWith(
-      expect.objectContaining({ seedFrameUrl: session.seedFrameUrl }),
-    );
-  });
-
-  it("needsIdentityRefresh: renders from the corrected frame when identity correction succeeds", async () => {
-    correctIdentity.mockResolvedValue({
-      correctedFrameUrl: "https://example.com/corrected.jpg",
-      costUsd: 0.04,
-    });
-    const result = await generateClip(
-      request({ kind: "checkIn", channel: "chat" }, true),
-    );
-    expect(render).toHaveBeenCalledWith(
-      expect.objectContaining({
-        seedFrameUrl: "https://example.com/corrected.jpg",
-      }),
-    );
-    expect(result.costUsd).toBeCloseTo(0.275 + 0.04);
   });
 });

@@ -567,26 +567,6 @@ describe("LiveDirector", () => {
     expect(director.getState().jobQueue).toEqual([{ kind: "beat", beat }]);
   });
 
-  it("consumeReferenceRefreshDue fires once the refresh interval has elapsed", () => {
-    const director = makeDirector(dressedState, 0);
-    expect(director.consumeReferenceRefreshDue(30_000)).toBe(true);
-  });
-
-  it("consumeReferenceRefreshDue does not fire before the interval has elapsed", () => {
-    const director = makeDirector(dressedState, 0);
-    expect(director.consumeReferenceRefreshDue(29_000)).toBe(false);
-  });
-
-  it("consumeReferenceRefreshDue fires regardless of busy/queue state, and does not re-fire until the next interval", () => {
-    const director = makeDirector(dressedState, 0);
-    director.nextJob();
-    director.tick(60_000, { busy: true });
-    // Unconditional of activity: the caller (pipeline) is responsible for piggybacking it onto the
-    // next chain job rather than tick()'s busy/queue-gated scheduling.
-    expect(director.consumeReferenceRefreshDue(60_000)).toBe(true);
-    expect(director.consumeReferenceRefreshDue(60_500)).toBe(false);
-  });
-
   it("marks a fan reply as precededByIdle once the gap since the last activity clears the threshold", () => {
     const director = makeDirector(dressedState, 0);
     director.nextJob();

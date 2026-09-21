@@ -39,8 +39,6 @@ export type DirectorState = {
   // The last job handed out by nextJob(), so clipCompleted can inspect a beat's own intent/attempt
   // without changing its signature (idle jobs are synthesized and never recorded here).
   lastDispatchedJob: ClipJob | null;
-  // Last time a referenceRefresh job was scheduled; ticks past REFERENCE_REFRESH_INTERVAL_MS.
-  lastReferenceRefreshAtMs: number;
 };
 
 export type DirectorInit = {
@@ -87,7 +85,6 @@ export class LiveDirector {
       checkedInSinceLastRequest: false,
       restScheduledSinceLastRequest: false,
       lastDispatchedJob: null,
-      lastReferenceRefreshAtMs: init.now,
     };
   }
 
@@ -338,18 +335,6 @@ export class LiveDirector {
       checkedInSinceLastRequest: checkedIn,
       restScheduledSinceLastRequest: restScheduled,
     };
-  }
-
-  // Wall-clock only, independent of tick()'s busy/queue gating — attached to the pipeline's next chain job instead of a dedicated clip, so there's no jump cut.
-  consumeReferenceRefreshDue(now: number): boolean {
-    if (
-      now - this.state.lastReferenceRefreshAtMs <
-      LIVE_TUNABLES.REFERENCE_REFRESH_INTERVAL_MS
-    ) {
-      return false;
-    }
-    this.state = { ...this.state, lastReferenceRefreshAtMs: now };
-    return true;
   }
 
   // Idle jobs are never stored in the queue; synthesize one on demand when nothing is planned. A
