@@ -349,6 +349,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       }
       if (event.type === "error") {
         setError(event.message);
+        setTypingCreator(false);
         refreshBufferDepth();
         if (errorTimeoutRef.current) {
           clearTimeout(errorTimeoutRef.current);
@@ -369,6 +370,10 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
             .getState()
             .transcript.find((entry) => entry.id === job.requestId);
           pendingTipCentsRef.current = requestEntry?.tipCents;
+        }
+        // Instant cue the moment a request starts rendering, not ~20-30s later once the clip lands.
+        if (job.kind === "reply" || job.kind === "checkIn") {
+          setTypingCreator(true);
         }
         refreshQueueStrip();
         return;

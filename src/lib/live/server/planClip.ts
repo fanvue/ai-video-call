@@ -51,11 +51,12 @@ const ANATOMY_LOCK =
   "ANATOMY LOCK: exactly one adult woman — one head, two arms, two hands, ten fingers, two legs, two feet. " +
   "Never extra limbs, fused limbs, a second body, or floating parts.";
 
-// Nothing else states a garment count, so a removal beat alone invites a hallucinated second one underneath.
+// Stated as a structural fact, not an action, and without naming any removal verb: H3 Max invents a
+// wardrobe beat from removal words alone, including during idle holds that must not touch clothing at all.
 const WARDROBE_COUNT_LOCK =
-  "GARMENT COUNT LOCK: she owns exactly one of each garment named in the WARDROBE LOCK below — one top, " +
-  "one bottom, one bra, one pair of panties. Never a second one underneath, beside, or in place of it; " +
-  "when a garment comes off, only bare skin is under it, nothing layered.";
+  "GARMENT COUNT LOCK: she has exactly one of each garment named in the WARDROBE LOCK below — one top, " +
+  "one bottom, one bra, one pair of panties — never a second one of any of them, on or off, layered or " +
+  "not, at any time.";
 
 const PHYSICS_LOCK =
   "PHYSICS: fabric has real weight, one garment moves at a time, hands do one thing at a time, she shifts " +
@@ -1258,6 +1259,7 @@ const planIdle = (session: LiveSessionSnapshot): ClipPlan => {
     `FORBIDDEN this clip: no change of pose category (if she is ${nextBody.pose} now, she never sits, stands, ` +
       "kneels, or lies down — she stays exactly that way start to finish), no clothing change, no new prop, " +
       "no sexual act starting or continuing, no leaving frame.",
+    "Her hands stay exactly where the first frame shows them — never onto her own clothes, never onto a new object.",
     pauseLine,
     "The clip must END in the same pose, framing, expression baseline, and hand position it started in — " +
       "treat any motion as a small excursion that always returns to the exact start.",

@@ -361,7 +361,8 @@ export class ClipPipeline {
         state: anchorAtSubmit.state,
       },
       job: { kind: "idle" },
-      backend: this.backend,
+      // Idle is never committed as canon or reused as a seed, so always use the faster turbo backend.
+      backend: "turbo",
       speechMode: this.speechMode,
     };
     this.idleInflightCount += 1;
