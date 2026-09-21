@@ -69,6 +69,8 @@ export class ClipPipeline {
   private chainedReady: ClipResult[] = [];
 
   private bufferIsEmpty = false;
+  // Blocks idle from jumping ahead of the still-in-flight greeting, which shares its initial anchor.
+  private firstChainClipPlayed = false;
 
   constructor(options: ClipPipelineOptions) {
     this.render = options.render;
@@ -169,8 +171,12 @@ export class ClipPipeline {
     if (chained) {
       this.chainedReady.shift();
       this.displayAnchorFrameUrl = chained.seedFrameUrl;
+      this.firstChainClipPlayed = true;
       this.fillIdleStockpile();
       return chained;
+    }
+    if (!this.firstChainClipPlayed) {
+      return null;
     }
     const idleIndex = this.idleReady.findIndex(
       (clip) =>
@@ -187,11 +193,12 @@ export class ClipPipeline {
   private hasPlayable(): boolean {
     return (
       this.chainedReady.length > 0 ||
-      this.idleReady.some(
-        (clip) =>
-          this.idleAnchorByClipId.get(clip.clipId) ===
-          this.displayAnchorFrameUrl,
-      )
+      (this.firstChainClipPlayed &&
+        this.idleReady.some(
+          (clip) =>
+            this.idleAnchorByClipId.get(clip.clipId) ===
+            this.displayAnchorFrameUrl,
+        ))
     );
   }
 

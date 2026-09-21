@@ -185,6 +185,38 @@ describe("ClipPipeline", () => {
     expect(requests.length).toBe(1 + LIVE_TUNABLES.IDLE_BUFFER_TARGET);
   });
 
+  it("never plays an idle filler before the greeting, even if the idle render finishes first", async () => {
+    const greetingDeferred = defer<ClipResult>();
+    const queue = makeJobQueue();
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        if (req.job.kind === "greeting") {
+          return greetingDeferred.promise;
+        }
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // idle fillers resolve; greeting still pending
+
+    expect(pipeline.getBufferStats().idleReady).toBeGreaterThan(0);
+    expect(pipeline.nextClip()).toBeNull();
+
+    greetingDeferred.resolve(
+      chainAdvancingResult({
+        job: { kind: "greeting" },
+        session: snapshot,
+      } as ClipRequest),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    const first = pipeline.nextClip();
+    expect(first?.jobKind).toBe("greeting");
+  });
+
   it("submits a reply immediately without waiting for in-flight idles", async () => {
     const requests: ClipRequest[] = [];
     const queue = makeJobQueue();
@@ -476,6 +508,9 @@ describe("ClipPipeline", () => {
       render: async (req) => {
         if (req.job.kind === "idle") {
           idleRequests.push(req);
+          return delayed(() => chainAdvancingResult(req));
+        }
+        if (req.job.kind === "greeting") {
           return delayed(() => chainAdvancingResult(req));
         }
         return replyDeferred.promise;
