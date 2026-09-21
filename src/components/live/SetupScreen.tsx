@@ -145,10 +145,13 @@ export const SetupScreen = ({ busy, error, onSubmit }: SetupScreenProps) => {
                 [
                   { value: "turbo", label: "Turbo" },
                   { value: "reference", label: "Reference (recommended)" },
-                  { value: "director", label: "Director (live stream, alpha)" },
+                  {
+                    value: "director",
+                    label: "Director (SFW only, live stream, alpha)",
+                  },
                   {
                     value: "lucy",
-                    label: "Lucy (identity lock over Turbo, alpha)",
+                    label: "Lucy (SFW only, identity lock over Turbo, alpha)",
                   },
                 ] as const
               ).map((option) => (
@@ -170,7 +173,14 @@ export const SetupScreen = ({ busy, error, onSubmit }: SetupScreenProps) => {
             {backend === "lucy" ? (
               <p className="text-xs text-[var(--muted)]">
                 Turbo clips restyled live onto the reference photo; strongest
-                face consistency, adds $0.02/s.
+                face consistency, adds $0.02/s. Decart closes the stream on
+                explicit content.
+              </p>
+            ) : null}
+            {backend === "director" ? (
+              <p className="text-xs text-[var(--muted)]">
+                fal&apos;s content policy rejects explicit requests; they show
+                as failed asks.
               </p>
             ) : null}
           </div>
