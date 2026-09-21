@@ -44,8 +44,10 @@ export const TopBar = ({
     <div className="flex items-start justify-between gap-2 p-3">
       <div className="flex min-w-0 flex-col gap-1">
         <div className="flex items-center gap-2">
-          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[var(--accent)] text-sm font-bold text-[var(--accent-contrast)]">
-            {initial}
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[var(--accent)] p-[2px] text-sm font-bold text-[var(--accent-contrast)] ring-2 ring-[#ffd21a]/80">
+            <span className="grid h-full w-full place-items-center rounded-full bg-[var(--accent)]">
+              {initial}
+            </span>
           </span>
           <span className="truncate text-sm font-semibold text-white">
             {displayName}
@@ -88,6 +90,13 @@ export const TopBar = ({
           </div>
         ) : null}
 
+        {!privateMode && topFan ? (
+          <span className="flex w-fit items-center gap-1 rounded-full bg-white/10 px-2 py-0.5 text-[11px] font-medium text-white/90 backdrop-blur-md">
+            👑 {topFan.handle}{" "}
+            <span className="text-[#ffd21a]">🪙{topFan.coins}</span>
+          </span>
+        ) : null}
+
         {nowPlayingLabel ? (
           <p className="truncate text-[11px] text-white/60">
             {nowPlayingLabel}
@@ -114,11 +123,6 @@ export const TopBar = ({
             Tip
           </button>
         </div>
-        {topFan ? (
-          <span className="whitespace-nowrap rounded-full border border-[var(--accent)]/40 bg-white/10 px-2.5 py-1 text-[11px] font-medium text-white backdrop-blur-md">
-            👑 {topFan.handle} {topFan.coins}
-          </span>
-        ) : null}
       </div>
     </div>
   );

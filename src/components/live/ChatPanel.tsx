@@ -80,6 +80,26 @@ const buildFeed = (
   return [...fromTranscript, ...fromRoom].sort((a, b) => a.atMs - b.atMs);
 };
 
+// Rotating palette for viewer handles, picked by a stable hash so each handle keeps one color for
+// the whole session (a real chat client's usual trick to make a crowd feel distinct).
+const HANDLE_COLORS = [
+  "text-[#7dd3fc]",
+  "text-[#fca5a5]",
+  "text-[#86efac]",
+  "text-[#fcd34d]",
+  "text-[#c4b5fd]",
+  "text-[#f9a8d4]",
+];
+const handleColor = (handle: string): string => {
+  let hash = 0;
+  for (let i = 0; i < handle.length; i += 1) {
+    hash = (hash * 31 + handle.charCodeAt(i)) | 0;
+  }
+  return (
+    HANDLE_COLORS[Math.abs(hash) % HANDLE_COLORS.length] ?? HANDLE_COLORS[0]
+  );
+};
+
 const typingLabel = (displayName: string, device: TypingDevice): string => {
   if (device === "phone") {
     return `${displayName} is typing on her phone…`;
@@ -178,7 +198,9 @@ export const ChatPanel = ({
           if (item.kind === "chatter") {
             return (
               <li key={item.id} className="truncate text-[13px]">
-                <span className="mr-1.5 font-semibold text-white/60">
+                <span
+                  className={`mr-1.5 font-semibold ${handleColor(item.handle ?? "?")}`}
+                >
                   {item.handle}
                 </span>
                 <span className="text-white/80">{item.text}</span>
@@ -217,7 +239,9 @@ export const ChatPanel = ({
           }
           return (
             <li key={item.id} className="truncate text-[13px]">
-              <span className="mr-1.5 font-semibold text-white/60">
+              <span
+                className={`mr-1.5 font-semibold ${handleColor(item.handle ?? "?")}`}
+              >
                 {item.handle}
               </span>
               <span className="text-white/80">{item.text}</span>
