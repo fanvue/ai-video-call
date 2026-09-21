@@ -272,6 +272,22 @@ const GARMENT_PATTERN: Record<GarmentId, RegExp> = {
   panties: /\b(panties|thong|underwear|knickers)\b/i,
 };
 
+// Binds the garment noun to a removal verb in one phrase, unlike matching each independently anywhere.
+const offPatternFor = (nouns: string): RegExp =>
+  new RegExp(
+    `\\b(?:take|pull|slide|rip)\\s+(?:your |the |ur )?(?:${nouns})(?:\\s+(?:off|down))?\\b|` +
+      `\\b(?:${nouns})\\s+off\\b|\\bremove\\s+(?:your |the |ur )?(?:${nouns})\\b|` +
+      `\\b(?:take|pull|slide|rip)\\s+(?:off|down)\\s+(?:your |the |ur )?(?:${nouns})\\b`,
+    "i",
+  );
+
+const GARMENT_OFF_PATTERN: Record<GarmentId, RegExp> = {
+  top: offPatternFor("top|shirt|tee|blouse|tank"),
+  bottom: offPatternFor("bottoms?|pants|shorts|skirt|trousers"),
+  bra: offPatternFor("bra"),
+  panties: offPatternFor("panties|thong|underwear|knickers"),
+};
+
 // A dress or one-piece is captured as the top garment; "dressed"/"dress up" are redress verbs, not this.
 const RE_ONE_PIECE =
   /\b(dress|one[- ]piece|romper|jumpsuit|lingerie|outfit)\b/i;
@@ -455,10 +471,12 @@ const stripGarmentBeats = (
   wardrobe: Wardrobe,
   body: Body,
 ): Beat[] | null => {
-  if (!RE_OFF_VERB.test(text)) return null;
   const target =
-    GARMENT_ORDER.find((id) => GARMENT_PATTERN[id].test(text)) ??
-    (RE_ONE_PIECE.test(text) || RE_GENERIC_OFF.test(text) ? "top" : undefined);
+    GARMENT_ORDER.find((id) => GARMENT_OFF_PATTERN[id].test(text)) ??
+    (RE_GENERIC_OFF.test(text) ||
+    (RE_ONE_PIECE.test(text) && RE_OFF_VERB.test(text))
+      ? "top"
+      : undefined);
   if (!target) return null;
   if (!isOn(wardrobe, target)) {
     return [
@@ -942,7 +960,8 @@ const genericActionBeats = (
     {
       physical:
         `She does exactly this, one clear continuous action, and holds the result: "${text.trim()}". ` +
-        "The fixed webcam does not move; she stays fully in frame throughout.",
+        "The fixed webcam does not move; she stays fully in frame throughout. This request is not " +
+        "about clothing — no garment is added, removed, or shifted while she does it.",
       nextWardrobe: wardrobe,
       nextBody: body,
       durationSec: ACTION_BEAT_SEC,

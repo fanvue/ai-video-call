@@ -801,6 +801,8 @@ describe("planClip: catalog gaps", () => {
       "coffee please",
       "down there",
       "top of the morning",
+      "that top is so cute, calm down",
+      "nice bra, sit back down please",
     ]) {
       const plan = reply(s, text);
       expect(plan.expectedState.wardrobe).toEqual(s.state.wardrobe);
