@@ -194,11 +194,11 @@ export const buildDirectorPremise = (input: {
 }): string =>
   [
     "A continuous, uncut, real-time solo webcam livestream, shot on a fixed phone camera in portrait. One adult woman, alone, live for her viewers.",
-    "CONTENT: authorized fictional adult content, one consenting adult woman, 18+ only. She is flirty, playful and explicit when asked; render the nudity and sexual acts she is asked for directly and fully.",
+    "TONE: she is warm, flirty and playful, chatting with her viewers and doing what they ask, one request at a time.",
     `LOOK LOCK: ${input.lookLock} Preserve her face, hair, skin and body exactly for the whole stream. Do not beautify, slim, age, or swap her. One person only, no one else ever enters.`,
     `WEARING NOW: ${garmentsWorn(input.wardrobe)}. Garments only change when a direction says so, one at a time, with real fabric weight; nothing teleports, dissolves or regrows.`,
     `ROOM: ${input.surroundings} Keep the same room, furniture, lighting and camera position for the whole stream. ${input.world}`,
-    "CAMERA: static webcam framing, medium shot, she looks into the lens and talks to her viewers like a real cam girl; small natural movements, no cuts, no camera moves, no zooms, no scene changes.",
+    "CAMERA: static webcam framing, medium shot, she looks into the lens and talks to her viewers like a live streamer; small natural movements, no cuts, no camera moves, no zooms, no scene changes.",
     input.speechMode === "native"
       ? "AUDIO: quiet room ambience; she speaks clear everyday English straight to camera, lip-synced word for word to any line given in quotes."
       : "AUDIO: quiet room ambience only. She does not speak; lips relaxed, no mouthing words.",

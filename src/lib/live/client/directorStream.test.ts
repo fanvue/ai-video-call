@@ -169,6 +169,8 @@ describe("DirectorSession.open", () => {
     expect(prompt).toContain("fairy lights");
     expect(prompt).toContain("She does not speak");
     expect(prompt).toContain("webcam livestream");
+    // fal's content_policy rejected an opening premise that declared sexual content up front; asks are judged per steering prompt instead.
+    expect(prompt).not.toMatch(/sexual|nudity|explicit/i);
   });
 
   it("rejects open() as soon as the server answers configure with an error, naming the reason", async () => {
