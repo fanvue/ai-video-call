@@ -252,6 +252,17 @@ const buildPrompt = (params: {
 
 // --- Wardrobe helpers -------------------------------------------------------
 
+// Whether this beat's own target is sexual/nudity-changing, the signal for CONTENT_LOCK gating.
+const isExplicitAct = (
+  prevWardrobe: Wardrobe,
+  nextWardrobe: Wardrobe,
+  nextBody: Body,
+): boolean =>
+  GARMENT_ORDER.some((id) => prevWardrobe[id].on !== nextWardrobe[id].on) ||
+  nextBody.contact === "self" ||
+  nextBody.prop === "vibrator" ||
+  nextBody.prop === "dildo";
+
 const isOn = (wardrobe: Wardrobe, id: GarmentId): boolean => wardrobe[id].on;
 
 const removeGarment = (wardrobe: Wardrobe, id: GarmentId): Wardrobe =>
@@ -1455,6 +1466,11 @@ const planReply = (
     action: `${primaryPhysical} ${END_STILL_LOCK}`,
     nextWardrobe: primaryNextWardrobe,
     nextBody: primaryNextBody,
+    holdOnly: !isExplicitAct(
+      state.wardrobe,
+      primaryNextWardrobe,
+      primaryNextBody,
+    ),
     lockBodyOverride,
   });
 
@@ -1495,6 +1511,7 @@ const planBeat = (
     action: `${job.beat.physical} ${END_STILL_LOCK}`,
     nextWardrobe,
     nextBody,
+    holdOnly: !isExplicitAct(state.wardrobe, nextWardrobe, nextBody),
   });
   return {
     prompt,
@@ -1542,6 +1559,7 @@ const planSettle = (session: LiveSessionSnapshot): ClipPlan => {
     action: `${action} ${END_STILL_LOCK}`,
     nextWardrobe: state.wardrobe,
     nextBody,
+    holdOnly: true,
   });
   return {
     prompt,
@@ -1572,6 +1590,7 @@ const planRedress = (
     action: `${action} ${END_STILL_LOCK}`,
     nextWardrobe,
     nextBody: state.body,
+    holdOnly: true,
   });
   return {
     prompt,

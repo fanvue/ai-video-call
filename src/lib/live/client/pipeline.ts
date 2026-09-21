@@ -262,7 +262,9 @@ export class ClipPipeline {
         state: seed.state,
       },
       job,
-      backend: this.backend,
+      // Greeting becomes the anchor every idle filler loops on; it must render on the same
+      // anchored-loop backend idle always uses, or clip 1 visibly doesn't match clip 2+.
+      backend: job.kind === "greeting" ? "turbo" : this.backend,
       speechMode: this.speechMode,
     };
     this.chainInflight = { job };

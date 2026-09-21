@@ -226,6 +226,14 @@ describe("planClip: reply intent catalog", () => {
     expect(plan.expectedState.wardrobe.panties.on).toBe(true);
   });
 
+  it("invites nudity/sex content only on a beat that actually removes clothing", () => {
+    const s = session();
+    const stripPlan = reply(s, "take your bottoms off");
+    expect(stripPlan.prompt).toMatch(/render them directly and fully/i);
+    const talkPlan = reply(s, "what's your favorite color");
+    expect(talkPlan.prompt).not.toMatch(/render them directly and fully/i);
+  });
+
   it("treats a dress as the top garment so 'take off your dress' undresses her", () => {
     const s = session({
       state: state({
