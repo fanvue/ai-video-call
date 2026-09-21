@@ -251,7 +251,7 @@ const evaluateFrameChecks = ({
 export const generateClip = async (
   request: ClipRequest,
 ): Promise<ClipResult> => {
-  const { session, job, backend, speechMode } = request;
+  const { session, job, backend, speechMode, needsIdentityRefresh } = request;
 
   const planStarted = Date.now();
   const plan = planClip({ session, job, speechMode, backend });
@@ -265,10 +265,10 @@ export const generateClip = async (
   // Explicit act with no wardrobe change of its own (useProp, twerk, ...) — checked like a hold clip but fails open on an unchecked frame; see evaluateFrameChecks.
   const isExplicitNonWardrobe = plan.wardrobeIntent === null && plan.explicit;
 
-  // referenceRefresh: a still-image edit nudges identity back toward the anchor BEFORE rendering, so the img2vid chain gets a periodically de-drifted seed instead of the anchor photo itself (which would reset pose/scene — see correctIdentity.ts). Fails open to the uncorrected seed.
+  // A still-image edit nudges identity back toward the anchor BEFORE rendering, piggybacked onto whichever job is next (see correctIdentity.ts) so there's no dedicated, jump-cut clip. Fails open to the uncorrected seed.
   let renderSeedFrameUrl = session.seedFrameUrl;
   let identityCorrectionCostUsd = 0;
-  if (job.kind === "referenceRefresh") {
+  if (needsIdentityRefresh) {
     const corrected = await correctIdentity(
       session.seedFrameUrl,
       session.anchorFrameUrl,

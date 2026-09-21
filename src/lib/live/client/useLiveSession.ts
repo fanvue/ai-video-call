@@ -706,6 +706,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         abandonDependents: (job) => {
           directorRef.current?.abandonRequest(requestIdForJob(job));
         },
+        needsIdentityRefresh: () =>
+          directorRef.current?.consumeReferenceRefreshDue(Date.now()) ?? false,
       });
       pipelineRef.current = pipeline;
 

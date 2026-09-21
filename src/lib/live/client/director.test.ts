@@ -285,10 +285,8 @@ describe("LiveDirector", () => {
     const director = makeDirector(dressedState, 0);
     director.nextJob();
     director.tick(90_000, { busy: false });
-    // Also picks up the reference-refresh interval (60s), which fires independently of checkIn/rest.
     expect(director.getState().jobQueue).toEqual([
       { kind: "checkIn", channel: "chat" },
-      { kind: "referenceRefresh" },
     ]);
   });
 
@@ -394,11 +392,8 @@ describe("LiveDirector", () => {
     director.fanRequest({ text: "hi", channel: "chat" }, 91_000);
     director.nextJob(); // consumes the reply
     director.tick(91_500, { busy: false });
-    // Rest/checkIn timers reset on the request, but the reference-refresh already queued at 90s
-    // (interval-based, independent of fan activity) is still pending — not re-triggered.
-    expect(director.getState().jobQueue).toEqual([
-      { kind: "referenceRefresh" },
-    ]);
+    // Rest/checkIn timers reset on the request; reference-refresh is no longer tick()-scheduled at all.
+    expect(director.getState().jobQueue).toEqual([]);
   });
 
   it("runs three fan requests that arrive during one render in FIFO order", () => {
@@ -572,27 +567,24 @@ describe("LiveDirector", () => {
     expect(director.getState().jobQueue).toEqual([{ kind: "beat", beat }]);
   });
 
-  it("schedules a referenceRefresh once idle for at least the refresh interval", () => {
+  it("consumeReferenceRefreshDue fires once the refresh interval has elapsed", () => {
     const director = makeDirector(dressedState, 0);
-    director.nextJob();
-    director.tick(30_000, { busy: false });
-    expect(director.getState().jobQueue).toEqual([
-      { kind: "referenceRefresh" },
-    ]);
+    expect(director.consumeReferenceRefreshDue(30_000)).toBe(true);
   });
 
-  it("does not schedule a referenceRefresh before the interval has elapsed", () => {
+  it("consumeReferenceRefreshDue does not fire before the interval has elapsed", () => {
     const director = makeDirector(dressedState, 0);
-    director.nextJob();
-    director.tick(29_000, { busy: false });
-    expect(director.getState().jobQueue).toEqual([]);
+    expect(director.consumeReferenceRefreshDue(29_000)).toBe(false);
   });
 
-  it("does not schedule a referenceRefresh while busy or mid-queue (only fires when genuinely idle)", () => {
+  it("consumeReferenceRefreshDue fires regardless of busy/queue state, and does not re-fire until the next interval", () => {
     const director = makeDirector(dressedState, 0);
     director.nextJob();
     director.tick(60_000, { busy: true });
-    expect(director.getState().jobQueue).toEqual([]);
+    // Unconditional of activity: the caller (pipeline) is responsible for piggybacking it onto the
+    // next chain job rather than tick()'s busy/queue-gated scheduling.
+    expect(director.consumeReferenceRefreshDue(60_000)).toBe(true);
+    expect(director.consumeReferenceRefreshDue(60_500)).toBe(false);
   });
 
   it("marks a fan reply as precededByIdle once the gap since the last activity clears the threshold", () => {

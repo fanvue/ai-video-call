@@ -828,37 +828,3 @@ describe("planClip: typing lead-in only after a genuine idle stretch", () => {
     expect(plan.prompt).not.toMatch(/types a quick reply/i);
   });
 });
-
-describe("planClip: referenceRefresh", () => {
-  it("holds the current wardrobe/pose still, seeded conceptually from the anchor, with no wardrobe change", () => {
-    const s = session();
-    const plan = planClip({
-      session: s,
-      job: { kind: "referenceRefresh" },
-      speechMode: "text",
-    });
-    expect(plan.expectedState.wardrobe).toEqual(s.state.wardrobe);
-    expect(plan.expectedState.body).toEqual(s.state.body);
-    expect(plan.wardrobeIntent).toBeNull();
-    expect(plan.needsReplyText).toBe(false);
-    expect(plan.durationSec).toBe(LIVE_TUNABLES.IDLE_CLIP_SEC);
-  });
-
-  it("only carries the CONTINUITY_LOCK clause when the session backend is itself 'reference' — it no longer forces the reference backend", () => {
-    const turboPlan = planClip({
-      session: session(),
-      job: { kind: "referenceRefresh" },
-      speechMode: "text",
-      backend: "turbo",
-    });
-    expect(turboPlan.prompt).not.toMatch(/CONTINUITY/);
-
-    const referencePlan = planClip({
-      session: session(),
-      job: { kind: "referenceRefresh" },
-      speechMode: "text",
-      backend: "reference",
-    });
-    expect(referencePlan.prompt).toMatch(/CONTINUITY/);
-  });
-});

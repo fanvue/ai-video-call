@@ -102,6 +102,7 @@ const clipRequest = (overrides: Partial<ClipRequest> = {}): ClipRequest => ({
   job: { kind: "idle" },
   backend: "turbo",
   speechMode: "text",
+  needsIdentityRefresh: false,
   ...overrides,
 });
 
@@ -225,8 +226,8 @@ describe("generateClip: idle", () => {
   });
 });
 
-describe("generateClip: referenceRefresh", () => {
-  it("runs an identity correction against the anchor first, then renders from the corrected frame through the session's normal backend", async () => {
+describe("generateClip: needsIdentityRefresh", () => {
+  it("runs an identity correction against the anchor first, then renders from the corrected frame, piggybacked onto whatever job it is", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
     correctIdentity.mockResolvedValue({
       correctedFrameUrl: "https://example.com/corrected.jpg",
@@ -237,7 +238,10 @@ describe("generateClip: referenceRefresh", () => {
       issues: [],
       observed: { wardrobe: {} },
     });
-    const req = clipRequest({ job: { kind: "referenceRefresh" } });
+    const req = clipRequest({
+      job: { kind: "checkIn", channel: "chat" },
+      needsIdentityRefresh: true,
+    });
 
     const result = await generateClip(req);
 
@@ -250,7 +254,7 @@ describe("generateClip: referenceRefresh", () => {
         seedFrameUrl: "https://example.com/corrected.jpg",
       }),
     );
-    expect(result.loops).toBe(false);
+    expect(result.jobKind).toBe("checkIn");
     expect(result.verdict).toBe("approved");
     expect(result.costUsd).toBeCloseTo(0.25 + 0.04);
   });
@@ -263,7 +267,10 @@ describe("generateClip: referenceRefresh", () => {
       issues: [],
       observed: { wardrobe: {} },
     });
-    const req = clipRequest({ job: { kind: "referenceRefresh" } });
+    const req = clipRequest({
+      job: { kind: "checkIn", channel: "chat" },
+      needsIdentityRefresh: true,
+    });
 
     const result = await generateClip(req);
 
@@ -274,22 +281,21 @@ describe("generateClip: referenceRefresh", () => {
     expect(result.costUsd).toBeCloseTo(0.25);
   });
 
-  it("uses the session's own configured backend, not a forced reference backend", async () => {
+  it("never runs when the flag is unset, regardless of job kind", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
-    correctIdentity.mockResolvedValue(null);
     guardFrame.mockResolvedValue({
       checked: true,
       issues: [],
       observed: { wardrobe: {} },
     });
     const req = clipRequest({
-      job: { kind: "referenceRefresh" },
-      backend: "turbo",
+      job: { kind: "checkIn", channel: "chat" },
+      needsIdentityRefresh: false,
     });
 
     await generateClip(req);
 
-    expect(renderBackendFor).toHaveBeenCalledWith("turbo");
+    expect(correctIdentity).not.toHaveBeenCalled();
   });
 });
 

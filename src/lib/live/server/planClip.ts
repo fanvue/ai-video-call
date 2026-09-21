@@ -1497,36 +1497,6 @@ const planIdle = (session: LiveSessionSnapshot): ClipPlan => {
   };
 };
 
-// Same static-hold contract as planIdle; generateClip.ts seeds this one from an identity-corrected still (see correctIdentity.ts) instead of the raw drifting frame.
-const planReferenceRefresh = (session: LiveSessionSnapshot): ClipPlan => {
-  const { state, creator } = session;
-  const action =
-    `She holds ${describeState(state.wardrobe, state.body)}, still, breathing, eyes on the lens — ` +
-    "no change of pose, clothing, or props for the entire clip.";
-  const durationSec = LIVE_TUNABLES.IDLE_CLIP_SEC;
-  const prompt = buildPrompt({
-    state,
-    speechMode: "text",
-    creator,
-    action,
-    nextWardrobe: state.wardrobe,
-    nextBody: state.body,
-    explicit: false,
-    durationSec,
-  });
-  return {
-    prompt,
-    durationSec,
-    expectedState: state,
-    followUps: [],
-    replyDraft: null,
-    needsReplyText: false,
-    fixedReplyText: null,
-    wardrobeIntent: null,
-    explicit: false,
-  };
-};
-
 const planCheckIn = (
   session: LiveSessionSnapshot,
   job: Extract<ClipJob, { kind: "checkIn" }>,
@@ -1729,8 +1699,6 @@ export const planClip = ({
         return planReply(session, job, speechMode);
       case "beat":
         return planBeat(session, job);
-      case "referenceRefresh":
-        return planReferenceRefresh(session);
     }
   })();
   // Greeting has no "earlier moment" yet (the reference image IS its starting frame).

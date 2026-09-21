@@ -332,24 +332,24 @@ export class LiveDirector {
       checkedIn = true;
     }
 
-    // Only fires during a genuinely idle stretch (this whole method returns early otherwise), so
-    // the re-anchor is never visible as a cut mid-conversation.
-    let lastReferenceRefreshAtMs = this.state.lastReferenceRefreshAtMs;
-    if (
-      now - lastReferenceRefreshAtMs >=
-      LIVE_TUNABLES.REFERENCE_REFRESH_INTERVAL_MS
-    ) {
-      queue.push({ kind: "referenceRefresh" });
-      lastReferenceRefreshAtMs = now;
-    }
-
     this.state = {
       ...this.state,
       jobQueue: queue,
       checkedInSinceLastRequest: checkedIn,
       restScheduledSinceLastRequest: restScheduled,
-      lastReferenceRefreshAtMs,
     };
+  }
+
+  // Wall-clock only, independent of tick()'s busy/queue gating — attached to the pipeline's next chain job instead of a dedicated clip, so there's no jump cut.
+  consumeReferenceRefreshDue(now: number): boolean {
+    if (
+      now - this.state.lastReferenceRefreshAtMs <
+      LIVE_TUNABLES.REFERENCE_REFRESH_INTERVAL_MS
+    ) {
+      return false;
+    }
+    this.state = { ...this.state, lastReferenceRefreshAtMs: now };
+    return true;
   }
 
   // Idle jobs are never stored in the queue; synthesize one on demand when nothing is planned. A
