@@ -56,7 +56,9 @@ const ANATOMY_LOCK =
 const WARDROBE_COUNT_LOCK =
   "GARMENT COUNT LOCK: she has exactly one of each garment named in the WARDROBE LOCK below — one top, " +
   "one bottom, one bra, one pair of panties — never a second one of any of them, on or off, layered or " +
-  "not, at any time.";
+  "not, at any time. These four are the only clothing that exists: never invent a robe, jacket, towel, " +
+  "sheet, blanket, or any other garment or covering not named in the WARDROBE LOCK, even to cover bare " +
+  "skin — bare skin the lock shows as off stays visibly bare, nothing substitutes for it.";
 
 const PHYSICS_LOCK =
   "PHYSICS: fabric has real weight, one garment moves at a time, hands do one thing at a time, she shifts " +
@@ -75,11 +77,12 @@ const CONTENT_LOCK_PERMISSIVE =
 
 // A hold needs no adult-content authorization; naming "adult content, 18+" (the prior wording) primed the model toward its own bias of building the scene toward nudity.
 const CONTENT_LOCK_HOLD =
-  "CONTENT: an ordinary, non-sexual moment on a livestream, fully clothed exactly as described below. " +
-  "This clip does not progress toward nudity or a sexual scene — it is a plain hold, exactly as " +
-  "instructed below, and it ends in the same state it started in. Do not add nudity, undressing, or " +
-  "any sexual content; none of that is being requested in this clip. Nothing sexual or " +
-  "nudity-changing happens in this clip.";
+  "CONTENT: an ordinary, non-sexual moment on a livestream, wearing exactly and only what the WARDROBE " +
+  "LOCK below states, no more covered and no less — it is not necessarily fully clothed, lingerie is a " +
+  "normal everyday state here, not progress toward nudity. This clip does not progress toward nudity or " +
+  "a sexual scene — it is a plain hold, exactly as instructed below, and it ends in the same state it " +
+  "started in. Do not add nudity, undressing, redressing, or any sexual content; none of that is being " +
+  "requested in this clip. Nothing sexual or nudity-changing happens in this clip.";
 
 // Reference-to-video has no starting-frame param, only an identity reference, so it tends to reset pose/wardrobe to the reference image without this.
 const CONTINUITY_LOCK =

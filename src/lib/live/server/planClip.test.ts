@@ -92,6 +92,21 @@ describe("planClip: greeting", () => {
     );
   });
 
+  it("does not claim she's fully clothed on a hold when she's actually in lingerie", () => {
+    const lingerie = wardrobe({
+      top: { on: false, description: "top" },
+      bottom: { on: false, description: "bottoms" },
+    });
+    const s = session({ state: state({ wardrobe: lingerie }) });
+    const plan = planClip({
+      session: s,
+      job: { kind: "greeting" },
+      speechMode: "text",
+    });
+    expect(plan.prompt).not.toMatch(/fully clothed exactly as described/i);
+    expect(plan.prompt).toMatch(/lingerie is a normal everyday state/i);
+  });
+
   it("describes the wardrobe explicitly instead of pointing at the seed frame when the reference photo has no visible body", () => {
     const s = session({
       seedFrameUrl: "https://example.com/anchor.jpg",
