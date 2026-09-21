@@ -180,7 +180,7 @@ describe("generateClip: chained jobs", () => {
       job: {
         kind: "reply",
         requestId: "r1",
-        text: "wave at me",
+        text: "take off your top",
         channel: "voice",
         from: "fan",
       },
@@ -198,21 +198,20 @@ describe("generateClip: chained jobs", () => {
     expect(result.loops).toBe(false);
   });
 
-  it("a beat job (mid-chain) repairs flagged drift too, so it never carries a wrong wardrobe into the next queued beat's seed", async () => {
+  it("a beat job (mid-chain) guards but skips repair even when flagged, so the next queued beat isn't held up by it", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
     guardFrame.mockResolvedValue({
       checked: true,
       issues: ["top should be on but frame shows it off"],
     });
-    repairFrame.mockResolvedValue("https://example.com/repaired.jpg");
     const req = clipRequest({
       job: {
         kind: "beat",
         beat: {
           id: "b1",
-          physical: "she waves",
+          physical: "she stands up",
           durationSec: 15,
-          nextState: { wardrobe: wardrobe(), body: body() },
+          nextState: { wardrobe: wardrobe(), body: body({ pose: "standing" }) },
         },
       },
     });
@@ -221,10 +220,67 @@ describe("generateClip: chained jobs", () => {
 
     expect(extractLastFrameUrl).toHaveBeenCalled();
     expect(guardFrame).toHaveBeenCalled();
-    expect(repairFrame).toHaveBeenCalled();
+    expect(repairFrame).not.toHaveBeenCalled();
     expect(result.guard.checked).toBe(true);
-    expect(result.guard.repaired).toBe(true);
-    expect(result.seedFrameUrl).toBe("https://example.com/repaired.jpg");
+    expect(result.guard.issues).toEqual([
+      "top should be on but frame shows it off",
+    ]);
+    expect(result.seedFrameUrl).toBe("https://example.com/extracted.jpg");
+  });
+
+  it("a beat job whose plan is a no-op hold pins the end frame to the seed and skips extract/guard/repair entirely", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    const req = clipRequest({
+      job: {
+        kind: "beat",
+        beat: {
+          id: "b1",
+          physical: "she chats, nothing changes",
+          durationSec: 15,
+          nextState: { wardrobe: wardrobe(), body: body() },
+        },
+      },
+    });
+
+    const result = await generateClip(req);
+
+    expect(render).toHaveBeenCalledWith(
+      expect.objectContaining({
+        seedFrameUrl: req.session.seedFrameUrl,
+        endFrameUrl: req.session.seedFrameUrl,
+      }),
+    );
+    expect(extractLastFrameUrl).not.toHaveBeenCalled();
+    expect(guardFrame).not.toHaveBeenCalled();
+    expect(repairFrame).not.toHaveBeenCalled();
+    expect(result.loops).toBe(false);
+    expect(result.seedFrameUrl).toBe(req.session.seedFrameUrl);
+    expect(result.timings.frameMs).toBe(0);
+    expect(result.timings.guardMs).toBe(0);
+    expect(result.timings.repairMs).toBe(0);
+  });
+
+  it("a reply job whose plan changes state (not a no-op) still renders without an end frame and goes through extract/guard", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    writeReply.mockResolvedValue({ text: "mmm okay", nextWorld: "w" });
+    const req = clipRequest({
+      job: {
+        kind: "reply",
+        requestId: "r1",
+        text: "take off your top",
+        channel: "voice",
+        from: "fan",
+      },
+    });
+
+    const result = await generateClip(req);
+
+    expect(render).toHaveBeenCalledWith(
+      expect.objectContaining({ endFrameUrl: undefined }),
+    );
+    expect(extractLastFrameUrl).toHaveBeenCalled();
+    expect(guardFrame).toHaveBeenCalled();
+    expect(result.loops).toBe(false);
   });
 
   it("a settle job (ends the chain) runs the guard", async () => {

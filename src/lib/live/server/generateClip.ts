@@ -44,13 +44,21 @@ export const generateClip = async (
   const videoBackend = renderBackendFor(backend);
   // Only idle loops on the anchor now; greeting chains forward from a real frame like every other job.
   const isAnchoredLoop = job.kind === "idle" && videoBackend.supportsEndFrame;
+  // Repair only fixes the seed for the NEXT render, not this clip's already-baked-in video, so skip it mid-chain to save latency.
+  const isIntermediateBeat = job.kind === "reply" || job.kind === "beat";
+  // A mid-chain hold whose committed state matches the seed exactly: pin the render's end frame too
+  // (zero latency cost, unlike frame repair) so it can't drift. It still plays once and advances,
+  // so result.loops stays false -- only isAnchoredLoop sets that.
+  const isPinnedHold =
+    isIntermediateBeat && plan.noStateChange && videoBackend.supportsEndFrame;
 
   const renderStarted = Date.now();
   const renderPromise = videoBackend.render({
     prompt: plan.prompt,
     seedFrameUrl: session.seedFrameUrl,
     durationSec: plan.durationSec,
-    endFrameUrl: isAnchoredLoop ? session.seedFrameUrl : undefined,
+    endFrameUrl:
+      isAnchoredLoop || isPinnedHold ? session.seedFrameUrl : undefined,
   });
 
   const replyTextPromise: Promise<{ text: string; nextWorld: string } | null> =
@@ -92,8 +100,8 @@ export const generateClip = async (
     issues: [],
   };
 
-  if (isAnchoredLoop) {
-    // Loops start and end on the same anchor frame by construction — nothing to extract or guard.
+  if (isAnchoredLoop || isPinnedHold) {
+    // Pinned to the seed frame by construction (loop anchor or a verified no-op hold) — nothing to extract or guard.
     seedFrameUrl = session.seedFrameUrl;
   } else if (job.kind === "idle") {
     // Idle's result frame is matched for playback by the anchor it was rendered FROM, never reused
@@ -133,8 +141,11 @@ export const generateClip = async (
     guardMs = Date.now() - guardStarted;
 
     const repairStarted = Date.now();
-    // Repair on every flagged clip now, mid-chain included — an unrepaired seed carried drift into every clip after it.
-    if (guardOutcome.checked && guardOutcome.issues.length > 0) {
+    if (
+      !isIntermediateBeat &&
+      guardOutcome.checked &&
+      guardOutcome.issues.length > 0
+    ) {
       try {
         seedFrameUrl = await withTimeout(
           repairFrame({

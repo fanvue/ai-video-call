@@ -24,6 +24,8 @@ export type ClipPlan = {
   needsReplyText: boolean;
   // Text to use verbatim without calling the reply LLM (greeting only).
   fixedReplyText: string | null;
+  // True when the wardrobe/body end state equals the start state; lets generateClip pin the render's end frame to the seed, a zero-latency anti-drift guarantee.
+  noStateChange: boolean;
 };
 
 // Timing rule: chained action beats run the full ACTION_CLIP_SEC; explicit no-ops stay IDLE_CLIP_SEC.
@@ -264,6 +266,21 @@ const isExplicitAct = (
   nextBody.contact === "self" ||
   nextBody.prop === "vibrator" ||
   nextBody.prop === "dildo";
+
+// A genuinely unchanged hold: safe to pin the render's end frame to the seed frame.
+const isNoStateChange = (
+  prevWardrobe: Wardrobe,
+  prevBody: Body,
+  nextWardrobe: Wardrobe,
+  nextBody: Body,
+): boolean =>
+  GARMENT_ORDER.every((id) => prevWardrobe[id].on === nextWardrobe[id].on) &&
+  prevBody.pose === nextBody.pose &&
+  prevBody.facing === nextBody.facing &&
+  prevBody.hands === nextBody.hands &&
+  prevBody.contact === nextBody.contact &&
+  prevBody.prop === nextBody.prop &&
+  prevBody.framing === nextBody.framing;
 
 const isOn = (wardrobe: Wardrobe, id: GarmentId): boolean => wardrobe[id].on;
 
@@ -1360,6 +1377,7 @@ const planGreeting = (
     },
     needsReplyText: false,
     fixedReplyText: GREETING_LINE,
+    noStateChange: false,
   };
 };
 
@@ -1412,6 +1430,7 @@ const planIdle = (session: LiveSessionSnapshot): ClipPlan => {
     replyDraft: null,
     needsReplyText: false,
     fixedReplyText: null,
+    noStateChange: true,
   };
 };
 
@@ -1441,6 +1460,7 @@ const planCheckIn = (
     replyDraft: { channel: job.channel, typingLeadSec: 0 },
     needsReplyText: true,
     fixedReplyText: null,
+    noStateChange: false,
   };
 };
 
@@ -1558,6 +1578,12 @@ const planReply = (
     replyDraft: { channel: job.channel, typingLeadSec },
     needsReplyText: true,
     fixedReplyText: null,
+    noStateChange: isNoStateChange(
+      state.wardrobe,
+      state.body,
+      primaryNextWardrobe,
+      primaryNextBody,
+    ),
   };
 };
 
@@ -1592,6 +1618,12 @@ const planBeat = (
     replyDraft: null,
     needsReplyText: false,
     fixedReplyText: null,
+    noStateChange: isNoStateChange(
+      state.wardrobe,
+      state.body,
+      nextWardrobe,
+      nextBody,
+    ),
   };
 };
 
@@ -1640,6 +1672,7 @@ const planSettle = (session: LiveSessionSnapshot): ClipPlan => {
     replyDraft: null,
     needsReplyText: false,
     fixedReplyText: null,
+    noStateChange: false,
   };
 };
 
@@ -1671,6 +1704,7 @@ const planRedress = (
     replyDraft: null,
     needsReplyText: false,
     fixedReplyText: null,
+    noStateChange: false,
   };
 };
 
