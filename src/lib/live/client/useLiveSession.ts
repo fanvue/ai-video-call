@@ -695,16 +695,37 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   const attachLucyStream = useCallback(() => {
     const el = videoARef.current;
     const stream = lucyMediaStreamRef.current;
-    if (!el || !stream) return;
+    if (!el || !stream) {
+      console.info(
+        `lucy attach: skipped (element=${Boolean(el)} stream=${Boolean(stream)})`,
+      );
+      return;
+    }
+    // The player is not driving the visible pair here, so nothing else guarantees A is the one on top.
+    el.style.opacity = "1";
+    if (videoBRef.current) {
+      videoBRef.current.style.opacity = "0";
+    }
     if (el.srcObject !== stream) {
       el.srcObject = stream;
+      el.addEventListener(
+        "loadedmetadata",
+        () =>
+          console.info(
+            `lucy attach: metadata ${el.videoWidth}x${el.videoHeight}`,
+          ),
+        { once: true },
+      );
     }
     el.muted = !lucySoundOnRef.current;
-    el.play().catch(() => {
-      el.muted = true;
-      setNeedsTap(true);
-      el.play().catch(() => {});
-    });
+    el.play()
+      .then(() => console.info("lucy attach: playing"))
+      .catch((error) => {
+        console.info(`lucy attach: play blocked (${String(error)})`);
+        el.muted = true;
+        setNeedsTap(true);
+        el.play().catch(() => {});
+      });
   }, []);
 
   const attachVideoElements = useCallback(() => {
@@ -762,6 +783,9 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
+    let drawnFrames = 0;
+    const startedAt = Date.now();
+    let warnedNoFrames = false;
     const draw = () => {
       const active =
         player.getActiveSlot() === "a"
@@ -776,6 +800,21 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
           canvas.height = active.videoHeight;
         }
         ctx.drawImage(active, 0, 0, canvas.width, canvas.height);
+        drawnFrames += 1;
+        if (drawnFrames === 1) {
+          console.info(
+            `lucy driving: first frame ${canvas.width}x${canvas.height} paused=${active.paused} readyState=${active.readyState}`,
+          );
+        }
+      } else if (
+        !warnedNoFrames &&
+        Date.now() - startedAt > 15_000 &&
+        drawnFrames === 0
+      ) {
+        warnedNoFrames = true;
+        console.warn(
+          `lucy driving: no frames after 15s (slot=${player.getActiveSlot()} src=${Boolean(active?.currentSrc)} readyState=${active?.readyState ?? "none"} error=${active?.error?.message ?? "none"})`,
+        );
       }
       lucyRafRef.current = requestAnimationFrame(draw);
     };
@@ -1047,6 +1086,20 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
             }
           },
           onMedia: (stream) => {
+            for (const track of stream.getTracks()) {
+              // A remote track that stays muted means Lucy connected but is not sending frames.
+              console.info(
+                `lucy media: ${track.kind} readyState=${track.readyState} muted=${track.muted}`,
+              );
+              track.addEventListener("unmute", () =>
+                console.info(
+                  `lucy media: ${track.kind} unmuted, frames flowing`,
+                ),
+              );
+              track.addEventListener("mute", () =>
+                console.info(`lucy media: ${track.kind} muted, frames stopped`),
+              );
+            }
             lucyMediaStreamRef.current = stream;
             attachLucyStream();
           },

@@ -498,6 +498,7 @@ export class DirectorSession {
               return;
             }
             if (parsed.success && parsed.data.type === "prompt_rejected") {
+              this.deps.onDiagnostic?.(`opening prompt rejected: ${raw}`);
               failOpen(
                 `Director rejected the opening prompt: ${parsed.data.reason ?? parsed.data.error ?? "unknown reason"}`,
               );
