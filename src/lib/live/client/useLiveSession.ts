@@ -37,6 +37,8 @@ export type ReferenceUploadResult = {
   lookLock: string;
   // Actual room visible in the photo, captured by vision; undefined falls back to the sceneId preset.
   surroundings?: string;
+  // Actual crop of the photo, captured by vision; undefined falls back to a "medium" guess.
+  framing?: "wider" | "medium" | "torso";
   captured: boolean;
 };
 
@@ -514,6 +516,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         sceneId,
         reference.wardrobe,
         reference.surroundings,
+        reference.framing,
       );
       const director = new LiveDirector({
         creator,

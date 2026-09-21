@@ -1,5 +1,5 @@
 // body/world/surroundings have no server source (see docs/CONTRACT_CHANGES_CLIENT.md); client seeds defaults.
-import type { LiveState, SceneId, Wardrobe } from "@/lib/live/contract";
+import type { Body, LiveState, SceneId, Wardrobe } from "@/lib/live/contract";
 
 const SURROUNDINGS_BY_SCENE: Record<SceneId, string> = {
   bedroom:
@@ -18,6 +18,9 @@ export const defaultLiveState = (
   // Vision-captured real background from the reference photo; the preset is a fallback only, since
   // it otherwise contradicts what the first clip actually shows and the room visibly jumps on clip 2.
   capturedSurroundings?: string,
+  // Vision-captured actual crop of the photo; asserting "medium" over a real close-up photo is the
+  // same kind of contradiction — the anchored first clip is forced to end on pixels the text denies.
+  capturedFraming?: Body["framing"],
 ): LiveState => {
   const baseBody = {
     pose: "sitting" as const,
@@ -25,7 +28,7 @@ export const defaultLiveState = (
     hands: "free" as const,
     contact: "none" as const,
     prop: "none" as const,
-    framing: "medium" as const,
+    framing: capturedFraming ?? ("medium" as const),
   };
   return {
     wardrobe,

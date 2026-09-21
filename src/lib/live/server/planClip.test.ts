@@ -76,7 +76,43 @@ describe("planClip: greeting", () => {
   });
 });
 
+describe("planClip: greeting", () => {
+  it("does not invite nudity/sex on a hold, and skips CONTINUITY_LOCK even on reference backend", () => {
+    const s = session();
+    const plan = planClip({
+      session: s,
+      job: { kind: "greeting" },
+      speechMode: "text",
+      backend: "reference",
+    });
+    expect(plan.prompt).not.toMatch(/render them directly and fully/i);
+    expect(plan.prompt).not.toMatch(
+      /is only a face\/identity likeness reference/i,
+    );
+  });
+});
+
 describe("planClip: idle", () => {
+  it("does not invite nudity/sex on a hold", () => {
+    const s = session();
+    const plan = planClip({
+      session: s,
+      job: { kind: "idle" },
+      speechMode: "text",
+    });
+    expect(plan.prompt).not.toMatch(/render them directly and fully/i);
+  });
+
+  it("locks garments that are currently on to stay on, not just garments that are off", () => {
+    const s = session();
+    const plan = planClip({
+      session: s,
+      job: { kind: "idle" },
+      speechMode: "text",
+    });
+    expect(plan.prompt).toMatch(/stay on for every single frame/i);
+  });
+
   it("never advances a self-touch act, it pauses the hand instead", () => {
     const s = session({
       state: state({ body: body({ hands: "onBody", contact: "self" }) }),
