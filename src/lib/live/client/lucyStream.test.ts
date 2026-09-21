@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  LUCY_MAX_REOPENS,
   LucySession,
+  shouldReopenLucy,
   type LucyOpenInput,
   type LucyRealtimeHandle,
   type LucyRealtimeState,
@@ -186,5 +188,39 @@ describe("LucySession.close", () => {
 
     expect(onEnded).toHaveBeenCalledTimes(1);
     expect(onEnded).toHaveBeenCalledWith("streamClosed");
+  });
+
+  it("logs how long the stream was live when the server closes it", async () => {
+    let nowMs = 0;
+    const onDiagnostic = vi.fn();
+    const { deps, captured } = makeDeps({ now: () => nowMs, onDiagnostic });
+    const session = new LucySession(deps);
+    const openPromise = session.open(baseInput());
+    const onState = requireCaptured(captured).options.onState as (
+      state: LucyRealtimeState,
+    ) => void;
+    onState("live");
+    await openPromise;
+
+    nowMs = 61_000;
+    onState("closed");
+
+    expect(onDiagnostic).toHaveBeenCalledWith(
+      "server closed the stream after 61s live",
+    );
+  });
+});
+
+describe("shouldReopenLucy", () => {
+  it("reopens only after a clean server close, never after a failure or our own stop", () => {
+    expect(shouldReopenLucy("streamClosed", 0)).toBe(true);
+    expect(shouldReopenLucy("error", 0)).toBe(false);
+    expect(shouldReopenLucy("stopped", 0)).toBe(false);
+    expect(shouldReopenLucy("maxDuration", 0)).toBe(false);
+  });
+
+  it("stops reopening once the cap is reached", () => {
+    expect(shouldReopenLucy("streamClosed", LUCY_MAX_REOPENS - 1)).toBe(true);
+    expect(shouldReopenLucy("streamClosed", LUCY_MAX_REOPENS)).toBe(false);
   });
 });

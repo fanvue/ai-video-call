@@ -101,6 +101,14 @@ export type LucyMetrics = {
 export type LucyEndReason =
   "maxDuration" | "error" | "stopped" | "streamClosed";
 
+// Decart's own SDK reconnects after any close that is not a policy termination (close code 1008) and never after one. The fal SDK surfaces a policy close as "failed" (our "error") and a clean gateway close as "closed" (our "streamClosed"), so only the latter is ever reopened; the cap bounds the extra per-session billing.
+export const LUCY_MAX_REOPENS = 5;
+
+export const shouldReopenLucy = (
+  reason: LucyEndReason,
+  reopensSoFar: number,
+): boolean => reason === "streamClosed" && reopensSoFar < LUCY_MAX_REOPENS;
+
 export type LucySessionDeps = {
   fetchToken: () => Promise<string>;
   openRealtime: (options: OpenLucyRealtimeOptions) => LucyRealtimeHandle;
@@ -164,6 +172,14 @@ export class LucySession {
           if (state === "failed" || state === "closed") {
             // Reachable both before and after open() settles: a live stream can still die later,
             // and endSession/onEnded must fire either way — only the promise settlement is gated.
+            if (state === "closed" && this.liveSinceMs !== null) {
+              const liveSec = Math.round(
+                (this.deps.now() - this.liveSinceMs) / 1000,
+              );
+              this.deps.onDiagnostic?.(
+                `server closed the stream after ${liveSec}s live`,
+              );
+            }
             this.endSession(state === "failed" ? "error" : "streamClosed");
             settle(() => reject(new Error(`lucy stream ${state}`)));
           }

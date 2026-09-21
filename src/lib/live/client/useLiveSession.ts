@@ -16,8 +16,10 @@ import {
   buildLucyPrompt,
   fetchAsDataUri,
   LUCY_INPUT,
+  LUCY_MAX_REOPENS,
   LucySession,
   openRealtimeWithFalLucy,
+  shouldReopenLucy,
   type LucyMetrics,
   type LucyRealtimeState,
 } from "@/lib/live/client/lucyStream";
@@ -1089,62 +1091,89 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         lucySoundOnRef.current = true;
         lucyStreamCostBaseRef.current = 0;
 
-        const lucySession = new LucySession({
-          fetchToken: deps.fetchLucyToken,
-          openRealtime: openRealtimeWithFalLucy,
-          now: () => Date.now(),
-          onStreamState: (state) => {
-            setLucyStreamState(state);
-            if (state === "live") {
-              setConnectStage("primingBuffer");
-              setStatus((current) =>
-                current === "connecting" ? "live" : current,
-              );
-            }
-          },
-          onMedia: (stream) => {
-            for (const track of stream.getTracks()) {
-              // A remote track that stays muted means Lucy connected but is not sending frames.
-              console.info(
-                `lucy media: ${track.kind} readyState=${track.readyState} muted=${track.muted}`,
-              );
-              track.addEventListener("unmute", () =>
+        const lucyInput = {
+          referenceImageUrl: await fetchAsDataUri(reference.anchorFrameUrl),
+          prompt: buildLucyPrompt(creator.lookLock),
+          drivingStream,
+        };
+        let lucyReopens = 0;
+
+        // fal's gateway closes the idle signalling socket cleanly about a minute in (we send no controls after negotiation) and the SDK ends the WebRTC session with it. Reopen the same way Decart's own SDK reconnects; the cost readout keeps counting across sessions via lucyStreamCostBaseRef.
+        const openLucy = (): LucySession => {
+          const lucySession = new LucySession({
+            fetchToken: deps.fetchLucyToken,
+            openRealtime: openRealtimeWithFalLucy,
+            now: () => Date.now(),
+            onStreamState: (state) => {
+              setLucyStreamState(state);
+              if (state === "live") {
+                setConnectStage("primingBuffer");
+                setStatus((current) =>
+                  current === "connecting" ? "live" : current,
+                );
+              }
+            },
+            onMedia: (stream) => {
+              for (const track of stream.getTracks()) {
+                // A remote track that stays muted means Lucy connected but is not sending frames.
                 console.info(
-                  `lucy media: ${track.kind} unmuted, frames flowing`,
-                ),
+                  `lucy media: ${track.kind} readyState=${track.readyState} muted=${track.muted}`,
+                );
+                track.addEventListener("unmute", () =>
+                  console.info(
+                    `lucy media: ${track.kind} unmuted, frames flowing`,
+                  ),
+                );
+                track.addEventListener("mute", () =>
+                  console.info(
+                    `lucy media: ${track.kind} muted, frames stopped`,
+                  ),
+                );
+              }
+              lucyMediaStreamRef.current = stream;
+              attachLucyStream();
+            },
+            onDiagnostic: (line) => console.info(`lucy transport: ${line}`),
+            onError: (message) => {
+              setError(message);
+              if (errorTimeoutRef.current) {
+                clearTimeout(errorTimeoutRef.current);
+              }
+              errorTimeoutRef.current = setTimeout(() => setError(null), 6000);
+            },
+            onEnded: (reason) => {
+              if (reason === "stopped") return;
+              if (
+                lucySessionRef.current === lucySession &&
+                shouldReopenLucy(reason, lucyReopens)
+              ) {
+                lucyReopens += 1;
+                console.info(
+                  `lucy reopen: attempt ${lucyReopens}/${LUCY_MAX_REOPENS} after ${reason}`,
+                );
+                lucyStreamCostBaseRef.current = 0;
+                setLucyStreamState("opening");
+                const next = openLucy();
+                lucySessionRef.current = next;
+                // Failures inside open() already flow through this session's onError/onEnded.
+                next.open(lucyInput).catch(() => undefined);
+                return;
+              }
+              setEndReason(
+                reason === "maxDuration" ? "maxDuration" : "streamEnded",
               );
-              track.addEventListener("mute", () =>
-                console.info(`lucy media: ${track.kind} muted, frames stopped`),
-              );
-            }
-            lucyMediaStreamRef.current = stream;
-            attachLucyStream();
-          },
-          onDiagnostic: (line) => console.info(`lucy transport: ${line}`),
-          onError: (message) => {
-            setError(message);
-            if (errorTimeoutRef.current) {
-              clearTimeout(errorTimeoutRef.current);
-            }
-            errorTimeoutRef.current = setTimeout(() => setError(null), 6000);
-          },
-          onEnded: (reason) => {
-            if (reason === "stopped") return;
-            setEndReason(
-              reason === "maxDuration" ? "maxDuration" : "streamEnded",
-            );
-            setStatus("ended");
-          },
-        });
+              setStatus("ended");
+            },
+          });
+          return lucySession;
+        };
+
+        const lucySession = openLucy();
         lucySessionRef.current = lucySession;
 
         // Driving frames must already be flowing when Lucy negotiates, so the turbo pipeline starts first.
         startPipeline();
-        await lucySession.open({
-          referenceImageUrl: await fetchAsDataUri(reference.anchorFrameUrl),
-          prompt: buildLucyPrompt(creator.lookLock),
-          drivingStream,
-        });
+        await lucySession.open(lucyInput);
       } else {
         startPipeline();
       }
