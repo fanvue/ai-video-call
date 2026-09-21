@@ -6,10 +6,13 @@ import {
 } from "../contract";
 
 const render = vi.fn();
-const referenceRender = vi.fn();
 vi.mock("./renderClip", () => ({
   renderBackendFor: () => ({ render, supportsEndFrame: true }),
-  referenceBackend: { render: referenceRender, supportsEndFrame: false },
+}));
+
+const correctIdentity = vi.fn();
+vi.mock("./correctIdentity", () => ({
+  correctIdentity: (...args: unknown[]) => correctIdentity(...args),
 }));
 
 const extractLastFrameUrl = vi.fn();
@@ -81,7 +84,7 @@ const request = (job: ClipRequest["job"]): ClipRequest => ({
 
 beforeEach(() => {
   render.mockReset();
-  referenceRender.mockReset();
+  correctIdentity.mockReset();
   extractLastFrameUrl.mockReset();
   extractMidFrameUrl.mockReset();
   guardFrame.mockReset();
@@ -89,10 +92,7 @@ beforeEach(() => {
     videoUrl: "https://example.com/clip.mp4",
     costUsd: 0.275,
   });
-  referenceRender.mockResolvedValue({
-    videoUrl: "https://example.com/refresh.mp4",
-    costUsd: 0.275,
-  });
+  correctIdentity.mockResolvedValue(null);
   extractLastFrameUrl.mockResolvedValue("https://example.com/last.jpg");
 });
 
@@ -144,11 +144,28 @@ describe("generateClip with the vision guard off (default)", () => {
     expect(result.seedFrameUrl).toBe(session.seedFrameUrl);
   });
 
-  it("referenceRefresh: renders via the reference backend seeded from the CURRENT frame, never the anchor photo", async () => {
+  it("referenceRefresh: runs identity correction first, then renders from the current frame when correction is unavailable", async () => {
     await generateClip(request({ kind: "referenceRefresh" }));
-    expect(referenceRender).toHaveBeenCalledWith(
+    expect(correctIdentity).toHaveBeenCalledWith(
+      session.seedFrameUrl,
+      session.anchorFrameUrl,
+    );
+    expect(render).toHaveBeenCalledWith(
       expect.objectContaining({ seedFrameUrl: session.seedFrameUrl }),
     );
-    expect(render).not.toHaveBeenCalled();
+  });
+
+  it("referenceRefresh: renders from the corrected frame when identity correction succeeds", async () => {
+    correctIdentity.mockResolvedValue({
+      correctedFrameUrl: "https://example.com/corrected.jpg",
+      costUsd: 0.04,
+    });
+    const result = await generateClip(request({ kind: "referenceRefresh" }));
+    expect(render).toHaveBeenCalledWith(
+      expect.objectContaining({
+        seedFrameUrl: "https://example.com/corrected.jpg",
+      }),
+    );
+    expect(result.costUsd).toBeCloseTo(0.275 + 0.04);
   });
 });

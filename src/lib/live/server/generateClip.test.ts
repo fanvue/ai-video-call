@@ -19,10 +19,13 @@ vi.mock("../contract", async (importOriginal) => {
 
 const render = vi.fn();
 const renderBackendFor = vi.fn();
-const referenceRender = vi.fn();
 vi.mock("./renderClip", () => ({
   renderBackendFor: (...args: unknown[]) => renderBackendFor(...args),
-  referenceBackend: { render: referenceRender, supportsEndFrame: false },
+}));
+
+const correctIdentity = vi.fn();
+vi.mock("./correctIdentity", () => ({
+  correctIdentity: (...args: unknown[]) => correctIdentity(...args),
 }));
 
 const extractLastFrameUrl = vi.fn();
@@ -117,7 +120,7 @@ const guardByFrame = (
 beforeEach(() => {
   render.mockReset();
   renderBackendFor.mockReset();
-  referenceRender.mockReset();
+  correctIdentity.mockReset();
   extractLastFrameUrl.mockReset();
   extractMidFrameUrl.mockReset();
   guardFrame.mockReset();
@@ -128,10 +131,7 @@ beforeEach(() => {
     videoUrl: "https://example.com/out.mp4",
     costUsd: 0.25,
   });
-  referenceRender.mockResolvedValue({
-    videoUrl: "https://example.com/refresh.mp4",
-    costUsd: 0.25,
-  });
+  correctIdentity.mockResolvedValue(null);
   guardFrame.mockResolvedValue({ checked: false, issues: [], observed: null });
   extractLastFrameUrl.mockResolvedValue(LAST_URL);
   extractMidFrameUrl.mockResolvedValue(MID_URL);
@@ -226,8 +226,12 @@ describe("generateClip: idle", () => {
 });
 
 describe("generateClip: referenceRefresh", () => {
-  it("renders via the reference backend, seeded from the CURRENT frame — never the anchor photo, which would reset her pose/scene", async () => {
+  it("runs an identity correction against the anchor first, then renders from the corrected frame through the session's normal backend", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    correctIdentity.mockResolvedValue({
+      correctedFrameUrl: "https://example.com/corrected.jpg",
+      costUsd: 0.04,
+    });
     guardFrame.mockResolvedValue({
       checked: true,
       issues: [],
@@ -237,16 +241,42 @@ describe("generateClip: referenceRefresh", () => {
 
     const result = await generateClip(req);
 
-    expect(referenceRender).toHaveBeenCalledWith(
-      expect.objectContaining({ seedFrameUrl: req.session.seedFrameUrl }),
+    expect(correctIdentity).toHaveBeenCalledWith(
+      req.session.seedFrameUrl,
+      req.session.anchorFrameUrl,
     );
-    expect(render).not.toHaveBeenCalled();
+    expect(render).toHaveBeenCalledWith(
+      expect.objectContaining({
+        seedFrameUrl: "https://example.com/corrected.jpg",
+      }),
+    );
     expect(result.loops).toBe(false);
     expect(result.verdict).toBe("approved");
+    expect(result.costUsd).toBeCloseTo(0.25 + 0.04);
   });
 
-  it("uses the reference backend regardless of the session's own configured backend", async () => {
+  it("falls back to the uncorrected current frame when identity correction fails", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    correctIdentity.mockResolvedValue(null);
+    guardFrame.mockResolvedValue({
+      checked: true,
+      issues: [],
+      observed: { wardrobe: {} },
+    });
+    const req = clipRequest({ job: { kind: "referenceRefresh" } });
+
+    const result = await generateClip(req);
+
+    expect(render).toHaveBeenCalledWith(
+      expect.objectContaining({ seedFrameUrl: req.session.seedFrameUrl }),
+    );
+    expect(result.verdict).toBe("approved");
+    expect(result.costUsd).toBeCloseTo(0.25);
+  });
+
+  it("uses the session's own configured backend, not a forced reference backend", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    correctIdentity.mockResolvedValue(null);
     guardFrame.mockResolvedValue({
       checked: true,
       issues: [],
@@ -259,8 +289,7 @@ describe("generateClip: referenceRefresh", () => {
 
     await generateClip(req);
 
-    expect(referenceRender).toHaveBeenCalled();
-    expect(renderBackendFor).not.toHaveBeenCalled();
+    expect(renderBackendFor).toHaveBeenCalledWith("turbo");
   });
 });
 

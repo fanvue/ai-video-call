@@ -13,10 +13,11 @@ import {
   type ObservedState,
   type Pose,
 } from "../contract";
+import { correctIdentity } from "./correctIdentity";
 import { guardFrame } from "./frameGuard";
 import { planClip, typingLeadSecFor } from "./planClip";
 import { reconcilePose, reconcileWardrobe } from "./reconcileState";
-import { referenceBackend, renderBackendFor } from "./renderClip";
+import { renderBackendFor } from "./renderClip";
 import { writeCheckIn, writeReply } from "./writeReply";
 
 const ANATOMY_ISSUE_RE = /extra person|extra or malformed limbs/;
@@ -256,11 +257,7 @@ export const generateClip = async (
   const plan = planClip({ session, job, speechMode, backend });
   const planMs = Date.now() - planStarted;
 
-  // referenceRefresh renders through the identity-conditioned model (breaks the img2vid chain's compounding artifacts) but must seed from the CURRENT frame, never the anchor photo — reference_image_urls dominates pose/scene/wardrobe, so anchoring live snaps her back to the anchor's original pose/background (see renderClip.ts's nudity-regression note for the same failure mode).
-  const isReferenceRefresh = job.kind === "referenceRefresh";
-  const videoBackend = isReferenceRefresh
-    ? referenceBackend
-    : renderBackendFor(backend);
+  const videoBackend = renderBackendFor(backend);
   // Only idle loops on the anchor; every other job chains forward from a real generated frame, single-image-seed style — pinning a hold's end frame to the seed never stopped it from drifting mid-clip, it only masked the seam for the next clip.
   const isAnchoredLoop = job.kind === "idle" && videoBackend.supportsEndFrame;
   // Hold clip (idle/greeting/checkIn/non-wardrobe act/hold/pose transition) — must be verified before it can play; see checkFrame below.
@@ -268,10 +265,24 @@ export const generateClip = async (
   // Explicit act with no wardrobe change of its own (useProp, twerk, ...) — checked like a hold clip but fails open on an unchecked frame; see evaluateFrameChecks.
   const isExplicitNonWardrobe = plan.wardrobeIntent === null && plan.explicit;
 
+  // referenceRefresh: a still-image edit nudges identity back toward the anchor BEFORE rendering, so the img2vid chain gets a periodically de-drifted seed instead of the anchor photo itself (which would reset pose/scene — see correctIdentity.ts). Fails open to the uncorrected seed.
+  let renderSeedFrameUrl = session.seedFrameUrl;
+  let identityCorrectionCostUsd = 0;
+  if (job.kind === "referenceRefresh") {
+    const corrected = await correctIdentity(
+      session.seedFrameUrl,
+      session.anchorFrameUrl,
+    );
+    if (corrected) {
+      renderSeedFrameUrl = corrected.correctedFrameUrl;
+      identityCorrectionCostUsd = corrected.costUsd;
+    }
+  }
+
   const renderStarted = Date.now();
   const renderPromise = videoBackend.render({
     prompt: plan.prompt,
-    seedFrameUrl: session.seedFrameUrl,
+    seedFrameUrl: renderSeedFrameUrl,
     durationSec: plan.durationSec,
     endFrameUrl: isAnchoredLoop ? session.seedFrameUrl : undefined,
   });
@@ -556,6 +567,6 @@ export const generateClip = async (
     verdict,
     rejectReason,
     timings: { planMs, renderMs, frameMs, guardMs, repairMs: 0, verifyMs },
-    costUsd: rendered.costUsd,
+    costUsd: rendered.costUsd + identityCorrectionCostUsd,
   };
 };

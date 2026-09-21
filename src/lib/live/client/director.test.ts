@@ -575,7 +575,7 @@ describe("LiveDirector", () => {
   it("schedules a referenceRefresh once idle for at least the refresh interval", () => {
     const director = makeDirector(dressedState, 0);
     director.nextJob();
-    director.tick(60_000, { busy: false });
+    director.tick(30_000, { busy: false });
     expect(director.getState().jobQueue).toEqual([
       { kind: "referenceRefresh" },
     ]);
@@ -584,7 +584,7 @@ describe("LiveDirector", () => {
   it("does not schedule a referenceRefresh before the interval has elapsed", () => {
     const director = makeDirector(dressedState, 0);
     director.nextJob();
-    director.tick(59_000, { busy: false });
+    director.tick(29_000, { busy: false });
     expect(director.getState().jobQueue).toEqual([]);
   });
 

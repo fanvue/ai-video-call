@@ -1497,7 +1497,7 @@ const planIdle = (session: LiveSessionSnapshot): ClipPlan => {
   };
 };
 
-// Same static-hold contract as planIdle, but generateClip.ts renders it through the identity-conditioned (photo-to-video) backend seeded from the CURRENT frame, to reset compounding img2vid artifacts without resetting pose/scene.
+// Same static-hold contract as planIdle; generateClip.ts seeds this one from an identity-corrected still (see correctIdentity.ts) instead of the raw drifting frame.
 const planReferenceRefresh = (session: LiveSessionSnapshot): ClipPlan => {
   const { state, creator } = session;
   const action =
@@ -1733,9 +1733,8 @@ export const planClip = ({
         return planReferenceRefresh(session);
     }
   })();
-  // Greeting has no "earlier moment" yet (the reference image IS its starting frame); referenceRefresh always renders through the identity-conditioned model regardless of `backend` (see generateClip.ts), so it always needs the lock.
-  return (backend === "reference" && job.kind !== "greeting") ||
-    job.kind === "referenceRefresh"
+  // Greeting has no "earlier moment" yet (the reference image IS its starting frame).
+  return backend === "reference" && job.kind !== "greeting"
     ? { ...plan, prompt: `${CONTINUITY_LOCK} ${plan.prompt}` }
     : plan;
 };

@@ -180,7 +180,7 @@ export type PlannedBeat = z.infer<typeof plannedBeatSchema>;
 export const clipJobSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("greeting") }),
   z.object({ kind: z.literal("idle") }),
-  // Periodic fresh photo-to-video render, seeded from the current frame, to stop the img2vid chain's artifact compounding — never seeded from the original anchor photo, which would reset pose/scene.
+  // Periodic identity-correction pass (see correctIdentity.ts) before the next render, to counter both identity drift and img2vid artifact compounding without resetting pose/scene.
   z.object({ kind: z.literal("referenceRefresh") }),
   z.object({ kind: z.literal("checkIn"), channel: inputChannelSchema }),
   z.object({
@@ -328,8 +328,8 @@ export const LIVE_TUNABLES = {
   CHECK_IN_AFTER_IDLE_MS: 90_000,
   // Below this gap since the last activity, a reply is treated as part of a fast back-and-forth and skips the typing lead-in; at or above it, she was genuinely idling and opens on typing.
   TYPING_LEAD_AFTER_IDLE_MS: 8_000,
-  // How often, during a genuinely idle stretch, to break the img2vid chain with a fresh photo-to-video render of the current frame (never the original anchor).
-  REFERENCE_REFRESH_INTERVAL_MS: 60_000,
+  // How often, during a genuinely idle stretch, to run an identity-correction pass against the anchor photo before the next render.
+  REFERENCE_REFRESH_INTERVAL_MS: 30_000,
   TRANSCRIPT_WINDOW: 40,
   // Spend cap: every session auto-ends here regardless of activity.
   MAX_SESSION_MS: 180_000,

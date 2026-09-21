@@ -844,13 +844,21 @@ describe("planClip: referenceRefresh", () => {
     expect(plan.durationSec).toBe(LIVE_TUNABLES.IDLE_CLIP_SEC);
   });
 
-  it("always carries the CONTINUITY_LOCK clause, even on the turbo backend", () => {
-    const plan = planClip({
+  it("only carries the CONTINUITY_LOCK clause when the session backend is itself 'reference' — it no longer forces the reference backend", () => {
+    const turboPlan = planClip({
       session: session(),
       job: { kind: "referenceRefresh" },
       speechMode: "text",
       backend: "turbo",
     });
-    expect(plan.prompt).toMatch(/CONTINUITY/);
+    expect(turboPlan.prompt).not.toMatch(/CONTINUITY/);
+
+    const referencePlan = planClip({
+      session: session(),
+      job: { kind: "referenceRefresh" },
+      speechMode: "text",
+      backend: "reference",
+    });
+    expect(referencePlan.prompt).toMatch(/CONTINUITY/);
   });
 });
