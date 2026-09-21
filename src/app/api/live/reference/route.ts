@@ -5,14 +5,18 @@ import { getCurrentUser } from "@/lib/fanvue";
 import { createGroqVisionCompletion } from "@/lib/groq";
 import type { Wardrobe } from "@/lib/live/contract";
 
+export const maxDuration = 60;
+
 const bodySchema = z.object({
   imageBase64: z.string().min(1),
   contentType: z.union([z.literal("image/jpeg"), z.literal("image/png")]),
 });
 
+// Falls back only when vision capture fails outright. Assumes lingerie rather than full outerwear —
+// claiming an outer garment that isn't in the photo is the failure mode that actually got reported.
 const DEFAULT_WARDROBE: Wardrobe = {
-  top: { on: true, description: "top" },
-  bottom: { on: true, description: "bottoms" },
+  top: { on: false, description: "top" },
+  bottom: { on: false, description: "bottoms" },
   bra: { on: true, description: "bra" },
   panties: { on: true, description: "panties" },
   removedOrder: [],
@@ -22,8 +26,12 @@ const CAPTURE_PROMPT =
   "Look at this reference photo of an adult woman. Describe her current outfit for a video generation " +
   'prompt library. Return ONLY JSON: {"top":{"on":bool,"description":"..."},"bottom":{"on":bool,"description":"..."},' +
   '"bra":{"on":bool,"description":"..."},"panties":{"on":bool,"description":"..."},"lookLock":"..."}. ' +
-  "Each description is a short exact phrase (color, fabric, style) of that garment as it is visible now, or a generic " +
-  "phrase if it is not visible. lookLock describes hair, skin tone, and build only — never a real person's identity.";
+  "top/bottom are outer garments only (shirt, dress, pants, skirt) — a bra or panties never counts as a top or " +
+  "bottom. If she is in lingerie only, with no separate outer garment visible over the bra or panties, set " +
+  "top.on and bottom.on to false. Set on:true for a garment only if you can actually see it worn in the photo; " +
+  "never guess a garment is on because a woman would typically be wearing one. Each description is a short exact " +
+  "phrase (color, fabric, style) of that garment as it is visible now, or a generic phrase if it is off. lookLock " +
+  "describes hair, skin tone, and build only — never a real person's identity.";
 
 type WardrobeCapture = {
   top?: { on?: boolean; description?: string };
@@ -45,8 +53,13 @@ const parseCapture = (raw: string): WardrobeCapture | null => {
 
 const toWardrobe = (capture: WardrobeCapture | null): Wardrobe => {
   if (!capture) return DEFAULT_WARDROBE;
-  const garment = (id: keyof WardrobeCapture, fallback: string) => ({
-    on: (capture[id] as { on?: boolean } | undefined)?.on ?? true,
+  // Never guess an outer garment is on when the model omits `on` — that's the misreported-lingerie bug.
+  const garment = (
+    id: keyof WardrobeCapture,
+    fallback: string,
+    defaultOn: boolean,
+  ) => ({
+    on: (capture[id] as { on?: boolean } | undefined)?.on ?? defaultOn,
     description:
       (capture[id] as { description?: string } | undefined)?.description?.slice(
         0,
@@ -54,10 +67,10 @@ const toWardrobe = (capture: WardrobeCapture | null): Wardrobe => {
       ) || fallback,
   });
   return {
-    top: garment("top", "top"),
-    bottom: garment("bottom", "bottoms"),
-    bra: garment("bra", "bra"),
-    panties: garment("panties", "panties"),
+    top: garment("top", "top", false),
+    bottom: garment("bottom", "bottoms", false),
+    bra: garment("bra", "bra", true),
+    panties: garment("panties", "panties", true),
     removedOrder: [],
   };
 };

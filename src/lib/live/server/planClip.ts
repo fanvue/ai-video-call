@@ -123,6 +123,11 @@ const PROP_LABEL: Record<Prop, string> = {
   phone: "her phone",
 };
 
+// state.surroundings was threaded through every clip's state but never read into the prompt, so the room drifted.
+const sceneLockLine = (surroundings: string): string =>
+  `SCENE LOCK: ${surroundings} This is the room for the entire call — never a different room, never a ` +
+  "different camera setup.";
+
 const propLockLine = (prop: Prop): string =>
   prop === "none"
     ? "PROP LOCK: her hands are empty. Nothing appears unless fetched on camera this clip."
@@ -191,6 +196,7 @@ const composeLocks = (
     ANATOMY_LOCK,
     WARDROBE_COUNT_LOCK,
     lookLockLine(lookLock),
+    sceneLockLine(state.surroundings),
     wardrobeLockLine(state.wardrobe),
     propLockLine(lockBody.prop),
     bodyLockLine(lockBody),

@@ -3,6 +3,9 @@ import { getCurrentUser } from "@/lib/fanvue";
 import { clipRequestSchema, clipResultSchema } from "@/lib/live/contract";
 import { generateClip } from "@/lib/live/server/generateClip";
 
+// Without this, Vercel's platform default kills the function mid-render, reading as a freeze.
+export const maxDuration = 300;
+
 export async function POST(request: Request) {
   const user = await getCurrentUser();
   if (!user) {
