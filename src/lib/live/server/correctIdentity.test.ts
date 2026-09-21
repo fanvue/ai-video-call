@@ -41,7 +41,7 @@ beforeEach(() => {
 describe("correctIdentity", () => {
   it("returns the upscaled, identity-corrected frame and sums both costs when both calls succeed", async () => {
     pollIdentityCorrectionUntilComplete.mockResolvedValue({
-      images: [{ url: "https://example.com/edited.jpg" }],
+      image: { url: "https://example.com/edited.jpg" },
     });
     pollFrameUpscaleUntilComplete.mockResolvedValue({
       image: { url: "https://example.com/upscaled.jpg" },
@@ -49,12 +49,10 @@ describe("correctIdentity", () => {
 
     const result = await correctIdentity(currentFrameUrl, anchorFrameUrl);
 
-    expect(submitIdentityCorrection).toHaveBeenCalledWith(
-      expect.objectContaining({
-        image_urls: [currentFrameUrl, anchorFrameUrl],
-        safety_tolerance: "6",
-      }),
-    );
+    expect(submitIdentityCorrection).toHaveBeenCalledWith({
+      base_image_url: currentFrameUrl,
+      swap_image_url: anchorFrameUrl,
+    });
     expect(submitFrameUpscale).toHaveBeenCalledWith(
       expect.objectContaining({ image_url: "https://example.com/edited.jpg" }),
     );
@@ -66,7 +64,7 @@ describe("correctIdentity", () => {
 
   it("falls back to the edited frame, without the upscale cost, when upscaling fails", async () => {
     pollIdentityCorrectionUntilComplete.mockResolvedValue({
-      images: [{ url: "https://example.com/edited.jpg" }],
+      image: { url: "https://example.com/edited.jpg" },
     });
     pollFrameUpscaleUntilComplete.mockRejectedValue(new Error("upscale down"));
 

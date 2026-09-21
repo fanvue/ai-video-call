@@ -9,15 +9,12 @@ import {
   identityCorrectionResultSchema,
 } from "./schemas";
 
-const IDENTITY_CORRECTION_MODEL_PATH = "fal-ai/flux-pro/kontext/max/multi";
+const IDENTITY_CORRECTION_MODEL_PATH = "fal-ai/face-swap";
 
 export const submitIdentityCorrection = async (
   payload: z.infer<typeof identityCorrectionRequestSchema>,
 ) => {
-  const body = identityCorrectionRequestSchema.parse({
-    ...payload,
-    safety_tolerance: "6",
-  });
+  const body = identityCorrectionRequestSchema.parse(payload);
   return falService.post<FalQueueSubmitResponse>(
     `/${IDENTITY_CORRECTION_MODEL_PATH}`,
     body,

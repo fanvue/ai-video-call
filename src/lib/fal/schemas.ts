@@ -61,26 +61,14 @@ export const h3MaxReferenceVideoRequestSchema = z.object({
 // Same video-file-object shape as h3-max-turbo/image-to-video per the fal docs.
 export const h3MaxReferenceVideoResultSchema = h3MaxVideoResultPayloadSchema;
 
-// fal-ai/flux-pro/kontext/max/multi — replaces nano-banana-2/edit, which 422s on any nude frame via a non-disableable content policy; safety_tolerance is this model's own documented permissive setting (same role as h3-max's enable_safety_checker).
+// fal-ai/face-swap — replaces flux-pro/kontext/max/multi, which "combined" both input images and regenerated the whole scene/pose instead of leaving base_image_url alone; face-swap has no prompt and no second-image scene to bleed in, just a face-region transplant onto the base image.
 export const identityCorrectionRequestSchema = z.object({
-  prompt: z.string(),
-  image_urls: z.array(z.url()).length(2),
-  num_images: z.literal(1).default(1),
-  output_format: z.literal("jpeg").default("jpeg"),
-  safety_tolerance: z
-    .union([
-      z.literal("1"),
-      z.literal("2"),
-      z.literal("3"),
-      z.literal("4"),
-      z.literal("5"),
-      z.literal("6"),
-    ])
-    .default("6"),
+  base_image_url: z.url(),
+  swap_image_url: z.url(),
 });
 
 export const identityCorrectionResultSchema = z.object({
-  images: z.array(z.object({ url: z.url() })).min(1),
+  image: z.object({ url: z.url() }),
 });
 
 // fal-ai/clarity-upscaler — best-effort quality pass chained after identity correction; high resemblance + low creativity biases it toward sharpening over hallucinating new detail.

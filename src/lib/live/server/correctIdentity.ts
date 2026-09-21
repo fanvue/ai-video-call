@@ -14,13 +14,6 @@ const UPSCALE_BUDGET_MS = 15_000;
 const IDENTITY_CORRECTION_COST_USD = 0.06;
 const FRAME_UPSCALE_COST_USD = 0.03;
 
-// Image-edit (not video-generation) nudging only identity, with pose/scene explicitly locked — avoids the pose/scene reset that feeding the anchor into video generation causes (see renderClip.ts's regression note).
-const IDENTITY_CORRECTION_PROMPT =
-  "The first image is the current frame; the second image is a face/body identity reference from earlier " +
-  "in the same session. Correct only the first image's facial features, hair colour, skin tone, and build " +
-  "to match the second image's identity. Keep the first image's pose, framing, expression, clothing, " +
-  "props, and background exactly as they are — change nothing else.";
-
 const FRAME_UPSCALE_PROMPT =
   "Restore sharpness and fine detail lost to video compression. Do not alter pose, framing, expression, clothing, or background.";
 
@@ -29,23 +22,21 @@ export type IdentityCorrectionResult = {
   costUsd: number;
 };
 
+// No prompt: face-swap only replaces the face region, so there's no text channel for it to reinterpret the scene through.
 const runIdentityEdit = async (
   currentFrameUrl: string,
   anchorFrameUrl: string,
 ): Promise<string | null> => {
   const submitted = await submitIdentityCorrection({
-    prompt: IDENTITY_CORRECTION_PROMPT,
-    image_urls: [currentFrameUrl, anchorFrameUrl],
-    num_images: 1,
-    output_format: "jpeg",
-    safety_tolerance: "6",
+    base_image_url: currentFrameUrl,
+    swap_image_url: anchorFrameUrl,
   });
   const result = await pollIdentityCorrectionUntilComplete({
     statusUrl: submitted.status_url,
     responseUrl: submitted.response_url,
     timeoutMs: CORRECTION_BUDGET_MS,
   });
-  return result.images[0]?.url ?? null;
+  return result.image.url;
 };
 
 // Best-effort: an upscale failure or timeout just keeps the identity-corrected frame as-is.
