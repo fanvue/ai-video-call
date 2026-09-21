@@ -42,23 +42,17 @@ export const generateClip = async (
   const planMs = Date.now() - planStarted;
 
   const videoBackend = renderBackendFor(backend);
-  // Only idle loops on the anchor now; greeting chains forward from a real frame like every other job.
+  // Only idle loops on the anchor; every other job chains forward from a real generated frame, single-image-seed style — pinning a hold's end frame to the seed never stopped it from drifting mid-clip, it only masked the seam for the next clip.
   const isAnchoredLoop = job.kind === "idle" && videoBackend.supportsEndFrame;
   // Repair only fixes the seed for the NEXT render, not this clip's already-baked-in video, so skip it mid-chain to save latency.
   const isIntermediateBeat = job.kind === "reply" || job.kind === "beat";
-  // A mid-chain hold whose committed state matches the seed exactly: pin the render's end frame too
-  // (zero latency cost, unlike frame repair) so it can't drift. It still plays once and advances,
-  // so result.loops stays false -- only isAnchoredLoop sets that.
-  const isPinnedHold =
-    isIntermediateBeat && plan.noStateChange && videoBackend.supportsEndFrame;
 
   const renderStarted = Date.now();
   const renderPromise = videoBackend.render({
     prompt: plan.prompt,
     seedFrameUrl: session.seedFrameUrl,
     durationSec: plan.durationSec,
-    endFrameUrl:
-      isAnchoredLoop || isPinnedHold ? session.seedFrameUrl : undefined,
+    endFrameUrl: isAnchoredLoop ? session.seedFrameUrl : undefined,
   });
 
   const replyTextPromise: Promise<{ text: string; nextWorld: string } | null> =
@@ -100,8 +94,8 @@ export const generateClip = async (
     issues: [],
   };
 
-  if (isAnchoredLoop || isPinnedHold) {
-    // Pinned to the seed frame by construction (loop anchor or a verified no-op hold) — nothing to extract or guard.
+  if (isAnchoredLoop) {
+    // Loops start and end on the same anchor frame by construction — nothing to extract or guard.
     seedFrameUrl = session.seedFrameUrl;
   } else if (job.kind === "idle") {
     // Idle's result frame is matched for playback by the anchor it was rendered FROM, never reused

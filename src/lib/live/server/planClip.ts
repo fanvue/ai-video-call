@@ -24,8 +24,6 @@ export type ClipPlan = {
   needsReplyText: boolean;
   // Text to use verbatim without calling the reply LLM (greeting only).
   fixedReplyText: string | null;
-  // True when the wardrobe/body end state equals the start state; lets generateClip pin the render's end frame to the seed, a zero-latency anti-drift guarantee.
-  noStateChange: boolean;
 };
 
 // Timing rule: chained action beats run the full ACTION_CLIP_SEC; explicit no-ops stay IDLE_CLIP_SEC.
@@ -122,14 +120,15 @@ const wardrobeLockLine = (wardrobe: Wardrobe): string => {
   );
   const off = GARMENT_ORDER.filter((id) => !wardrobe[id].on);
   const on = GARMENT_ORDER.filter((id) => wardrobe[id].on);
-  // Per garment, both directions: the model's own bias redresses AND undresses mid-clip regardless.
+  // Copy-from-pixels framing, not a state description: describing "stays on" lets the model redraw
+  // its own version of the garment; telling it to copy the seed frame's actual pixels does not.
   const offGuard =
     off.length > 0
       ? ` Her ${off.map((id) => GARMENT_LABEL[id]).join(" and ")} stay${off.length === 1 ? "s" : ""} off for every single frame of this clip, start to finish, even briefly — nothing regrows there.`
       : "";
   const onGuard =
     on.length > 0
-      ? ` Her ${on.map((id) => GARMENT_LABEL[id]).join(" and ")} stay${on.length === 1 ? "s" : ""} on for every single frame of this clip, start to finish, even briefly — nothing comes off there unless named below.`
+      ? ` Copy her ${on.map((id) => GARMENT_LABEL[id]).join(" and ")} pixel-for-pixel from the seed frame — same color, fabric, and fit — for every single frame of this clip, start to finish, even briefly. Do not redraw ${on.length === 1 ? "it" : "them"} from memory of an earlier or later moment; nothing comes off there unless named below.`
       : "";
   return (
     `WARDROBE LOCK, right now: ${parts.join("; ")}. Change only what this clip's instruction ` +
@@ -151,13 +150,14 @@ const wardrobeReinforcementLine = (
   const parts = unchanged.map((id) => {
     const garment = nextWardrobe[id];
     return garment.on
-      ? `her ${GARMENT_LABEL[id]} (${garment.description}) stays on and fully visible`
+      ? `copy her ${GARMENT_LABEL[id]} (${garment.description}) pixel-for-pixel from the seed frame`
       : `her ${GARMENT_LABEL[id]} stays off and does not reappear`;
   });
   return (
-    `WARDROBE REMINDER for the action below: ${parts.join("; ")} — true for every single frame of ` +
-    "it, including mid-motion, mid-turn, or when her back or side is briefly toward the camera, not " +
-    "just the start and end. Only a garment this clip's own instruction names comes off or on."
+    `WARDROBE FREEZE for the action below: ${parts.join("; ")} — copied exactly, not redrawn from ` +
+    "memory of an earlier or later moment, for every single frame of it, including mid-motion, " +
+    "mid-turn, or when her back or side is briefly toward the camera, not just the start and end. " +
+    "Only a garment this clip's own instruction names comes off or on."
   );
 };
 
@@ -296,21 +296,6 @@ const isExplicitAct = (
   nextBody.contact === "self" ||
   nextBody.prop === "vibrator" ||
   nextBody.prop === "dildo";
-
-// A genuinely unchanged hold: safe to pin the render's end frame to the seed frame.
-const isNoStateChange = (
-  prevWardrobe: Wardrobe,
-  prevBody: Body,
-  nextWardrobe: Wardrobe,
-  nextBody: Body,
-): boolean =>
-  GARMENT_ORDER.every((id) => prevWardrobe[id].on === nextWardrobe[id].on) &&
-  prevBody.pose === nextBody.pose &&
-  prevBody.facing === nextBody.facing &&
-  prevBody.hands === nextBody.hands &&
-  prevBody.contact === nextBody.contact &&
-  prevBody.prop === nextBody.prop &&
-  prevBody.framing === nextBody.framing;
 
 const isOn = (wardrobe: Wardrobe, id: GarmentId): boolean => wardrobe[id].on;
 
@@ -1411,7 +1396,6 @@ const planGreeting = (
     },
     needsReplyText: false,
     fixedReplyText: GREETING_LINE,
-    noStateChange: false,
   };
 };
 
@@ -1464,7 +1448,6 @@ const planIdle = (session: LiveSessionSnapshot): ClipPlan => {
     replyDraft: null,
     needsReplyText: false,
     fixedReplyText: null,
-    noStateChange: true,
   };
 };
 
@@ -1494,7 +1477,6 @@ const planCheckIn = (
     replyDraft: { channel: job.channel, typingLeadSec: 0 },
     needsReplyText: true,
     fixedReplyText: null,
-    noStateChange: false,
   };
 };
 
@@ -1612,12 +1594,6 @@ const planReply = (
     replyDraft: { channel: job.channel, typingLeadSec },
     needsReplyText: true,
     fixedReplyText: null,
-    noStateChange: isNoStateChange(
-      state.wardrobe,
-      state.body,
-      primaryNextWardrobe,
-      primaryNextBody,
-    ),
   };
 };
 
@@ -1652,12 +1628,6 @@ const planBeat = (
     replyDraft: null,
     needsReplyText: false,
     fixedReplyText: null,
-    noStateChange: isNoStateChange(
-      state.wardrobe,
-      state.body,
-      nextWardrobe,
-      nextBody,
-    ),
   };
 };
 
@@ -1706,7 +1676,6 @@ const planSettle = (session: LiveSessionSnapshot): ClipPlan => {
     replyDraft: null,
     needsReplyText: false,
     fixedReplyText: null,
-    noStateChange: false,
   };
 };
 
@@ -1738,7 +1707,6 @@ const planRedress = (
     replyDraft: null,
     needsReplyText: false,
     fixedReplyText: null,
-    noStateChange: false,
   };
 };
 

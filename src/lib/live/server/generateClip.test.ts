@@ -228,7 +228,7 @@ describe("generateClip: chained jobs", () => {
     expect(result.seedFrameUrl).toBe("https://example.com/extracted.jpg");
   });
 
-  it("a beat job whose plan is a no-op hold pins the end frame to the seed and skips extract/guard/repair entirely", async () => {
+  it("a beat job whose plan is a no-op hold still renders without an end frame and goes through extract/guard — pinning never stopped mid-clip drift, only the prompt itself can", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
     const req = clipRequest({
       job: {
@@ -245,19 +245,12 @@ describe("generateClip: chained jobs", () => {
     const result = await generateClip(req);
 
     expect(render).toHaveBeenCalledWith(
-      expect.objectContaining({
-        seedFrameUrl: req.session.seedFrameUrl,
-        endFrameUrl: req.session.seedFrameUrl,
-      }),
+      expect.objectContaining({ endFrameUrl: undefined }),
     );
-    expect(extractLastFrameUrl).not.toHaveBeenCalled();
-    expect(guardFrame).not.toHaveBeenCalled();
+    expect(extractLastFrameUrl).toHaveBeenCalled();
+    expect(guardFrame).toHaveBeenCalled();
     expect(repairFrame).not.toHaveBeenCalled();
     expect(result.loops).toBe(false);
-    expect(result.seedFrameUrl).toBe(req.session.seedFrameUrl);
-    expect(result.timings.frameMs).toBe(0);
-    expect(result.timings.guardMs).toBe(0);
-    expect(result.timings.repairMs).toBe(0);
   });
 
   it("a reply job whose plan changes state (not a no-op) still renders without an end frame and goes through extract/guard", async () => {
