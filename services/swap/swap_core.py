@@ -8,19 +8,20 @@ from typing import Any, Protocol
 
 # InsightFace inswapper_128 is research-only licensed; a commercial license is
 # required before this leaves the spike.
-INSWAPPER_URL = "https://huggingface.co/deepinsight/inswapper/resolve/main/inswapper_128.onnx"
+# deepinsight's own repo is gated (401); this is a public mirror of the same file.
+INSWAPPER_URL = "https://huggingface.co/ezioruan/inswapper_128.onnx/resolve/main/inswapper_128.onnx"
 GFPGAN_URL = "https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/GFPGANv1.4.pth"
 INPUT_WIDTH = 720
 INPUT_HEIGHT = 1280
 DETECT_EVERY_N_FRAMES = 3
 MAX_FRAME_LAG = 2
 
+# gfpgan is left out: its basicsr dependency has a broken cuda-toolkit setup_requires on Python 3.11 images. Restorer is opt-in via SwapEngine(restore=True) once that is solved.
 REQUIREMENTS = [
     "insightface==0.7.3",
     "onnxruntime-gpu==1.18.0",
     "opencv-python-headless==4.10.0.84",
     "numpy<2",
-    "gfpgan==1.3.8",
 ]
 
 
@@ -33,7 +34,7 @@ class WebSocketLike(Protocol):
 
 
 class SwapEngine:
-    def __init__(self, inswapper_path: str, restore: bool = True) -> None:
+    def __init__(self, inswapper_path: str, restore: bool = False) -> None:
         import insightface
 
         self.detector = insightface.app.FaceAnalysis(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import modal
 
-from swap_core import GFPGAN_URL, INSWAPPER_URL, REQUIREMENTS, SwapEngine, serve_ws
+from swap_core import INSWAPPER_URL, REQUIREMENTS, SwapEngine, serve_ws
 
 app = modal.App("ai-video-swap")
 
@@ -15,7 +15,6 @@ image = (
     .run_commands(
         "mkdir -p /models",
         f"wget -q -O /models/inswapper_128.onnx {INSWAPPER_URL}",
-        f"wget -q -O /models/GFPGANv1.4.pth {GFPGAN_URL}",
     )
     .add_local_python_source("swap_core")
 )
