@@ -315,6 +315,11 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       return null;
     }
     const result = pipeline.nextClip();
+    if (modeRef.current === "lucy") {
+      console.info(
+        `lucy pipeline: nextClip -> ${result ? `${result.jobKind} ${result.clipId}` : "none"}`,
+      );
+    }
     if (!result) {
       return null;
     }
@@ -659,6 +664,11 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         );
       }
       pipelineRef.current?.pollChain();
+      if (modeRef.current === "lucy") {
+        console.info(
+          `lucy pipeline: clipReady ${result.jobKind} lane=${event.lane} playerStatus=${player.getStatus()} hiddenA=${Boolean(lucyHiddenARef.current)}`,
+        );
+      }
       player.checkForClip();
       refreshBufferDepth();
       refreshQueueStrip();
