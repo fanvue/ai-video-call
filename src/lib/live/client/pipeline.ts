@@ -404,7 +404,8 @@ export class ClipPipeline {
 
     if (error || !result) {
       if (attempt < 1) {
-        this.idleInflightCount += 1;
+        // submitIdleJob does the increment; don't double-count here, or a retried idle
+        // permanently leaks one inflight slot and the stockpile eventually stalls (a freeze).
         this.submitIdleJob(anchorAtSubmit, attempt + 1);
         return;
       }

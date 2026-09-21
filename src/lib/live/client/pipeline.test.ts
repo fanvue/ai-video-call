@@ -410,12 +410,83 @@ describe("ClipPipeline", () => {
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // idle attempt 1s fail, retry
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // idle attempt 2s fail, report + drop
 
-    // IDLE_BUFFER_TARGET concurrent idle slots, each retried once before being dropped.
-    expect(attempts).toBe(2 * LIVE_TUNABLES.IDLE_BUFFER_TARGET);
+    // Counter isn't leaked, so fillIdleStockpile keeps refilling the dropped slots too.
+    expect(attempts).toBeGreaterThanOrEqual(
+      2 * LIVE_TUNABLES.IDLE_BUFFER_TARGET,
+    );
     expect(events.filter((e) => e.type === "error")).toHaveLength(
       LIVE_TUNABLES.IDLE_BUFFER_TARGET,
     );
     expect(pipeline.getBufferStats().idleReady).toBe(0);
+    // A leaked counter would leave this stuck at 0 forever; the fixed version keeps retrying.
+    expect(pipeline.getBufferStats().idleInflight).toBeGreaterThan(0);
+  });
+
+  it("does not leak the idle inflight counter across a retried failure", async () => {
+    const queue = makeJobQueue();
+    // Only the first two idle submissions ever fail (one retry each); everything after succeeds.
+    let idleCallCount = 0;
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        if (req.job.kind !== "idle") {
+          return delayed(() => chainAdvancingResult(req));
+        }
+        idleCallCount += 1;
+        if (idleCallCount <= 2) {
+          return delayed(() => {
+            throw new Error("render failed");
+          });
+        }
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting resolves, initial idles submitted
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // two idles fail once, retried
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // retries succeed, rest resolve normally
+
+    const stats = pipeline.getBufferStats();
+    expect(stats.idleInflight).toBe(0);
+    expect(stats.idleReady).toBe(LIVE_TUNABLES.IDLE_BUFFER_TARGET);
+  });
+
+  it("keeps replenishing the idle stockpile after repeated idle failures instead of stalling", async () => {
+    const queue = makeJobQueue();
+    let idleCallCount = 0;
+    const failingSlots = LIVE_TUNABLES.IDLE_MAX_INFLIGHT;
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        if (req.job.kind !== "idle") {
+          return delayed(() => chainAdvancingResult(req));
+        }
+        idleCallCount += 1;
+        // Every idle submitted during the initial fill fails both attempts and is dropped.
+        if (idleCallCount <= failingSlots * 2) {
+          return delayed(() => {
+            throw new Error("render failed");
+          });
+        }
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting resolves, initial idles submitted
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // attempt 1s fail, retried
+    // attempt 2s fail and report+drop; a leaked counter would stop fillIdleStockpile here for
+    // good, but the fix means it refills immediately with slots that now succeed.
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+
+    const stats = pipeline.getBufferStats();
+    expect(stats.idleInflight + stats.idleReady).toBeGreaterThan(0);
+    expect(stats.idleInflight).toBeLessThanOrEqual(
+      LIVE_TUNABLES.IDLE_MAX_INFLIGHT,
+    );
   });
 
   it("abandons the rest of a chain on repeated failure, draining stale follow-on jobs", async () => {

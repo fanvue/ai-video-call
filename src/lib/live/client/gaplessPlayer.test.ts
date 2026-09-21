@@ -18,6 +18,9 @@ class FakeVideo {
   currentTime = 0;
   paused = true;
   loadCalls = 0;
+  playCalls = 0;
+  // Override per test: a rejecting or never-resolving play() simulates a stalled incoming slot.
+  playImpl: () => Promise<void> = () => Promise.resolve();
   private listeners = new Map<string, Set<Listener>>();
 
   addEventListener(type: string, listener: Listener): void {
@@ -42,8 +45,10 @@ class FakeVideo {
   }
 
   play(): Promise<void> {
-    this.paused = false;
-    return Promise.resolve();
+    this.playCalls += 1;
+    return this.playImpl().then(() => {
+      this.paused = false;
+    });
   }
 
   pause(): void {
@@ -52,9 +57,18 @@ class FakeVideo {
 
   fireTimeUpdate(currentTime: number): void {
     this.currentTime = currentTime;
-    for (const listener of this.listeners.get("timeupdate") ?? []) {
+    this.fire("timeupdate");
+  }
+
+  // Generic event dispatch: used to simulate loadeddata/canplaythrough/playing from tests.
+  fire(type: string): void {
+    for (const listener of this.listeners.get(type) ?? []) {
       listener({ currentTarget: this });
     }
+  }
+
+  listenerCount(type: string): number {
+    return this.listeners.get(type)?.size ?? 0;
   }
 }
 
@@ -205,5 +219,133 @@ describe("GaplessPlayer", () => {
     await flush();
     expect(getNextClip.mock.calls.length).toBe(pullsBefore);
     expect(player.getStatus()).toBe("holding");
+  });
+
+  it("aborts the swap when the incoming clip never becomes playable, keeping the outgoing one live", async () => {
+    const queue: ClipToPlay[] = [clip("loop1", true)];
+    const { a, b, player } = setup(queue);
+    const returned: string[] = [];
+    const started: string[] = [];
+    player.setClipReturnedHandler((id) => returned.push(id));
+    player.setClipStartedHandler((id) => started.push(id));
+    player.start();
+    await flush();
+    started.length = 0; // drop the initial clip-started call
+
+    b.readyState = 0; // never fires loadeddata/canplaythrough
+    const stalled = clip("stalled");
+    queue.push(stalled);
+    player.checkForClip();
+    await flush();
+    expect(b.src).toBe(stalled.videoUrl);
+
+    vi.advanceTimersByTime(8000); // waitForPlayable's readiness timeout
+    await flush();
+
+    expect(returned).toEqual(["stalled"]);
+    expect(started).toEqual([]);
+    expect(player.getActiveSlot()).toBe("a");
+    expect(a.style.opacity).toBe("1");
+    expect(a.paused).toBe(false);
+  });
+
+  it("drops a clip that fails readiness twice instead of requeueing it forever", async () => {
+    const queue: ClipToPlay[] = [clip("loop1", true)];
+    const { b, player } = setup(queue);
+    const returned: string[] = [];
+    player.setClipReturnedHandler((id) => returned.push(id));
+    player.start();
+    await flush();
+
+    b.readyState = 0;
+    const stalled = clip("stalled");
+    queue.push(stalled);
+    player.checkForClip();
+    await flush();
+    vi.advanceTimersByTime(8000);
+    await flush();
+    expect(returned).toEqual(["stalled"]);
+
+    // The pipeline hands the same clip straight back; it fails again and is now dropped.
+    queue.push(stalled);
+    player.checkForClip();
+    await flush();
+    vi.advanceTimersByTime(8000);
+    await flush();
+    expect(returned).toEqual(["stalled"]);
+    expect(player.getActiveSlot()).toBe("a");
+  });
+
+  it("swaps only after incoming.play() resolves and fires playing, exactly once", async () => {
+    const queue: ClipToPlay[] = [clip("loop1", true)];
+    const { b, player } = setup(queue);
+    const started: string[] = [];
+    player.setClipStartedHandler((id) => started.push(id));
+    player.setInterruptReadyHandler(() => true);
+    player.start();
+    await flush();
+    started.length = 0;
+
+    b.readyState = 0;
+    const incoming = clip("incoming", false, true);
+    queue.push(incoming);
+    player.checkForClip(); // cuts in: preloads "incoming" over the looping "loop1"
+    await flush();
+    expect(b.src).toBe(incoming.videoUrl);
+    expect(player.getActiveSlot()).toBe("a");
+
+    b.fire("loadeddata"); // preload's readiness resolves; performSwap awaits incoming.play()
+    await flush();
+    expect(player.getActiveSlot()).toBe("a"); // play() has no decoded frame yet
+    expect(started).toEqual([]);
+
+    b.fire("playing"); // confirms a decoded frame; swap completes exactly once
+    await flush();
+
+    expect(player.getActiveSlot()).toBe("b");
+    expect(started).toEqual(["incoming"]);
+    expect(b.style.opacity).toBe("1");
+    expect(b.paused).toBe(false);
+  });
+
+  it("ignores a stale canplaythrough from an earlier, superseded preload", async () => {
+    const queue: ClipToPlay[] = [clip("loop1", true)];
+    const { b, player } = setup(queue);
+    const started: string[] = [];
+    player.setClipStartedHandler((id) => started.push(id));
+    player.start();
+    await flush();
+    started.length = 0;
+
+    const preload = (c: ClipToPlay) =>
+      (
+        player as unknown as { preload: (c: ClipToPlay) => Promise<void> }
+      ).preload(c);
+
+    b.readyState = 0;
+    const abandoned = clip("abandoned", false, true);
+    void preload(abandoned); // starts loading, never resolves
+    await flush();
+    expect(b.src).toBe(abandoned.videoUrl);
+
+    // A second preload starts before the first ever resolves, superseding it. "abandoned"'s
+    // waitForPlayable listeners are left dangling on the shared element b.
+    const replacement = clip("replacement", false, true);
+    void preload(replacement);
+    await flush();
+    expect(b.src).toBe(replacement.videoUrl);
+
+    // The abandoned load's canplaythrough arrives late, alongside the current one that is
+    // genuinely waiting on the same shared element.
+    b.fire("canplaythrough");
+    await flush();
+    b.fire("playing"); // confirmPlaying for the (correct) in-flight swap
+    await flush();
+
+    // Only the still-current clip ("replacement") is ever shown or reported started; the stale
+    // continuation for "abandoned" was ignored rather than flipping slots under the wrong id.
+    expect(started).toEqual(["replacement"]);
+    expect(player.getActiveSlot()).toBe("b");
+    expect(b.src).toBe(replacement.videoUrl);
   });
 });

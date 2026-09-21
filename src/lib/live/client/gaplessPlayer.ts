@@ -7,6 +7,11 @@ const CROSSFADE_MS = 180;
 // native-speech playback stays silent through that window then ramps volume up over 280ms.
 const AUDIO_POP_HIDE_MS = 1100;
 const AUDIO_RAMP_MS = 280;
+// How long a preloading element gets before its readiness is treated as a failure, not a stall.
+const LOAD_TIMEOUT_MS = 8000;
+// How long play() gets to actually produce a decoded frame before the swap is aborted.
+const PLAY_CONFIRM_TIMEOUT_MS = 4000;
+const HAVE_CURRENT_DATA = 2;
 
 export type PlayerStatus = "empty" | "playing" | "holding" | "needsTap";
 
@@ -36,21 +41,47 @@ const noopHasInterruptReady = (): boolean => false;
 const noopClipReturned = (): void => {};
 
 // timeupdate fires only ~4Hz, which alone leaves a visible gap before the swap point.
-const waitForPlayable = (el: HTMLVideoElement): Promise<void> =>
+// Resolves false on timeout: a readiness timeout is a failure, not a fallback success.
+const waitForPlayable = (el: HTMLVideoElement): Promise<boolean> =>
   new Promise((resolve) => {
-    if (el.readyState >= 2) {
-      resolve();
+    if (el.readyState >= HAVE_CURRENT_DATA) {
+      resolve(true);
       return;
     }
-    const timer = setTimeout(resolve, 8000);
+    const timer = setTimeout(() => {
+      el.removeEventListener("loadeddata", done);
+      el.removeEventListener("canplaythrough", done);
+      resolve(false);
+    }, LOAD_TIMEOUT_MS);
     const done = () => {
       clearTimeout(timer);
       el.removeEventListener("loadeddata", done);
       el.removeEventListener("canplaythrough", done);
-      resolve();
+      resolve(true);
     };
     el.addEventListener("loadeddata", done, { once: true });
     el.addEventListener("canplaythrough", done, { once: true });
+  });
+
+// Confirms play() actually produced a decoded, visible frame rather than just resolving its
+// promise (browsers can resolve play() before a frame is ready, or stall right after).
+const confirmPlaying = (el: HTMLVideoElement): Promise<boolean> =>
+  new Promise((resolve) => {
+    if (el.readyState >= HAVE_CURRENT_DATA) {
+      resolve(true);
+      return;
+    }
+    const timer = setTimeout(() => {
+      el.removeEventListener("playing", done);
+      resolve(false);
+    }, PLAY_CONFIRM_TIMEOUT_MS);
+    const done = () => {
+      clearTimeout(timer);
+      el.removeEventListener("playing", done);
+      resolve(true);
+    };
+    el.addEventListener("playing", done, { once: true });
+    el.addEventListener("loadeddata", done, { once: true });
   });
 
 export class GaplessPlayer {
@@ -69,6 +100,10 @@ export class GaplessPlayer {
   private userMuted = false;
   private speechMode: SpeechMode = "text";
   private rafId: number | null = null;
+  // Bumped on every new load into a slot; a stale async continuation whose generation no longer
+  // matches was superseded by a later load and must not touch slot state.
+  private swapGeneration = 0;
+  private readonly failedOnce = new Set<string>();
   // Assigned post-render via setters (never passed as constructor closures) so a ref-reading
   // callback is never invoked as part of building this instance during render.
   private onProgress: (currentTimeSec: number, clipId: string) => void =
@@ -220,12 +255,24 @@ export class GaplessPlayer {
     }
     const targetSlot = this.activeSlot === "a" ? "b" : "a";
     this.preloadedClip = clip;
+    const generation = ++this.swapGeneration;
     inactive.src = clip.videoUrl;
     inactive.loop = clip.loops;
     inactive.muted = true;
     inactive.load();
-    await waitForPlayable(inactive);
-    if (this.disposed || this.preloadedClip !== clip) {
+    const playable = await waitForPlayable(inactive);
+    if (
+      this.disposed ||
+      this.preloadedClip !== clip ||
+      generation !== this.swapGeneration
+    ) {
+      // Superseded by a later preload, or disposed mid-wait: ignore this obsolete callback.
+      return;
+    }
+    if (!playable) {
+      // Readiness timeout is a failure, not a fallback success: drop this attempt and let the
+      // pipeline see it come back so it can requeue or discard it.
+      this.failClip(clip);
       return;
     }
     this.preloadedSlot = targetSlot;
@@ -233,8 +280,26 @@ export class GaplessPlayer {
       this.status === "holding" ||
       (clip.interrupts && this.currentClipLoops)
     ) {
-      this.performSwap(clip);
+      void this.performSwap(clip);
     }
+  }
+
+  // A clip that never became playable, or whose play() never produced a frame: tell the pipeline
+  // and go look for something else rather than leaving the player stuck on nothing.
+  // A clip gets one more chance after a readiness failure; a second failure drops it, otherwise a
+  // broken URL would be requeued at the front and retried forever, one load timeout per cycle.
+  private failClip(clip: ClipToPlay): void {
+    if (this.preloadedClip === clip) {
+      this.preloadedClip = null;
+      this.preloadedSlot = null;
+    }
+    if (this.failedOnce.has(clip.id)) {
+      this.failedOnce.delete(clip.id);
+    } else {
+      this.failedOnce.add(clip.id);
+      this.onClipReturned(clip.id);
+    }
+    this.preloadNextIfNeeded();
   }
 
   private async playNow(clip: ClipToPlay): Promise<void> {
@@ -242,11 +307,18 @@ export class GaplessPlayer {
     if (!el) {
       return;
     }
+    const generation = ++this.swapGeneration;
     el.src = clip.videoUrl;
     el.loop = clip.loops;
     el.load();
-    await waitForPlayable(el);
-    if (this.disposed) {
+    const playable = await waitForPlayable(el);
+    if (this.disposed || generation !== this.swapGeneration) {
+      return;
+    }
+    if (!playable) {
+      // Nothing was ever shown, so there's no outgoing element to protect: just ask for another.
+      this.onClipReturned(clip.id);
+      this.start();
       return;
     }
     this.currentClipId = clip.id;
@@ -257,12 +329,22 @@ export class GaplessPlayer {
     this.showSlot(this.activeSlot);
     try {
       await el.play();
-      this.setStatus("playing");
-      this.onClipStarted(clip.id);
-      this.preloadNextIfNeeded();
     } catch {
       this.setStatus("needsTap");
+      return;
     }
+    const confirmed = await confirmPlaying(el);
+    if (this.disposed || generation !== this.swapGeneration) {
+      return;
+    }
+    if (!confirmed) {
+      this.onClipReturned(clip.id);
+      this.start();
+      return;
+    }
+    this.setStatus("playing");
+    this.onClipStarted(clip.id);
+    this.preloadNextIfNeeded();
   }
 
   // User-gesture retry after autoplay was blocked.
@@ -320,18 +402,43 @@ export class GaplessPlayer {
     requestAnimationFrame(ramp);
   }
 
-  private performSwap(clip: ClipToPlay): void {
+  // Swaps only once incoming.play() has resolved and produced a decoded frame; until then the
+  // outgoing element owns visibility, so a stalled/black incoming slot never replaces a live one.
+  private async performSwap(clip: ClipToPlay): Promise<void> {
     const outgoing = this.getActive();
     const incoming = this.getInactive();
     if (!incoming) {
+      return;
+    }
+    // Not bumped here: this swap belongs to the load that already completed in preload(); a
+    // later preload superseding it will bump this and invalidate the check below.
+    const generation = this.swapGeneration;
+    this.applyAudioPolicy(incoming, clip);
+    let confirmed: boolean;
+    try {
+      await incoming.play();
+      confirmed = await confirmPlaying(incoming);
+    } catch {
+      confirmed = false;
+    }
+    if (this.disposed || generation !== this.swapGeneration) {
+      // A newer preload superseded this attempt; that one owns the outcome now.
+      return;
+    }
+    if (!confirmed) {
+      this.failClip(clip);
+      // A non-looping outgoing element that already reached its end falls into the existing hold
+      // behavior; a looping one just keeps looping untouched.
+      if (outgoing && !outgoing.loop) {
+        outgoing.pause();
+        this.setStatus("holding");
+      }
       return;
     }
     this.currentClipId = clip.id;
     this.currentClipLoops = clip.loops;
     this.currentDurationSec = clip.durationSec;
     this.currentTimeSec = 0;
-    this.applyAudioPolicy(incoming, clip);
-    void incoming.play().catch(() => this.setStatus("needsTap"));
     this.activeSlot = this.activeSlot === "a" ? "b" : "a";
     this.showSlot(this.activeSlot);
     this.preloadedSlot = null;
@@ -366,7 +473,7 @@ export class GaplessPlayer {
       return;
     }
     if (this.preloadedClip && this.preloadedSlot) {
-      this.performSwap(this.preloadedClip);
+      void this.performSwap(this.preloadedClip);
       return;
     }
     // A clip is still loading: hold for it rather than pulling (and losing) another from the buffer.
@@ -456,6 +563,8 @@ export class GaplessPlayer {
     this.activeSlot = "a";
     this.showSlot("a");
     this.userMuted = false;
+    // Invalidate any in-flight preload/swap continuation from the previous session.
+    this.swapGeneration += 1;
   }
 
   getActiveSlot(): "a" | "b" {
