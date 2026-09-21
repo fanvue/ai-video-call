@@ -19,8 +19,10 @@ vi.mock("../contract", async (importOriginal) => {
 
 const render = vi.fn();
 const renderBackendFor = vi.fn();
+const referenceRender = vi.fn();
 vi.mock("./renderClip", () => ({
   renderBackendFor: (...args: unknown[]) => renderBackendFor(...args),
+  referenceBackend: { render: referenceRender, supportsEndFrame: false },
 }));
 
 const extractLastFrameUrl = vi.fn();
@@ -115,6 +117,7 @@ const guardByFrame = (
 beforeEach(() => {
   render.mockReset();
   renderBackendFor.mockReset();
+  referenceRender.mockReset();
   extractLastFrameUrl.mockReset();
   extractMidFrameUrl.mockReset();
   guardFrame.mockReset();
@@ -123,6 +126,10 @@ beforeEach(() => {
 
   render.mockResolvedValue({
     videoUrl: "https://example.com/out.mp4",
+    costUsd: 0.25,
+  });
+  referenceRender.mockResolvedValue({
+    videoUrl: "https://example.com/refresh.mp4",
     costUsd: 0.25,
   });
   guardFrame.mockResolvedValue({ checked: false, issues: [], observed: null });
@@ -215,6 +222,45 @@ describe("generateClip: idle", () => {
     expect(result.verdict).toBe("rejected");
     expect(result.rejectReason).toMatch(/extractFrame/);
     expect(guardFrame).not.toHaveBeenCalled();
+  });
+});
+
+describe("generateClip: referenceRefresh", () => {
+  it("renders via the reference backend, seeded from the CURRENT frame — never the anchor photo, which would reset her pose/scene", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    guardFrame.mockResolvedValue({
+      checked: true,
+      issues: [],
+      observed: { wardrobe: {} },
+    });
+    const req = clipRequest({ job: { kind: "referenceRefresh" } });
+
+    const result = await generateClip(req);
+
+    expect(referenceRender).toHaveBeenCalledWith(
+      expect.objectContaining({ seedFrameUrl: req.session.seedFrameUrl }),
+    );
+    expect(render).not.toHaveBeenCalled();
+    expect(result.loops).toBe(false);
+    expect(result.verdict).toBe("approved");
+  });
+
+  it("uses the reference backend regardless of the session's own configured backend", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    guardFrame.mockResolvedValue({
+      checked: true,
+      issues: [],
+      observed: { wardrobe: {} },
+    });
+    const req = clipRequest({
+      job: { kind: "referenceRefresh" },
+      backend: "turbo",
+    });
+
+    await generateClip(req);
+
+    expect(referenceRender).toHaveBeenCalled();
+    expect(renderBackendFor).not.toHaveBeenCalled();
   });
 });
 

@@ -6,8 +6,10 @@ import {
 } from "../contract";
 
 const render = vi.fn();
+const referenceRender = vi.fn();
 vi.mock("./renderClip", () => ({
   renderBackendFor: () => ({ render, supportsEndFrame: true }),
+  referenceBackend: { render: referenceRender, supportsEndFrame: false },
 }));
 
 const extractLastFrameUrl = vi.fn();
@@ -79,11 +81,16 @@ const request = (job: ClipRequest["job"]): ClipRequest => ({
 
 beforeEach(() => {
   render.mockReset();
+  referenceRender.mockReset();
   extractLastFrameUrl.mockReset();
   extractMidFrameUrl.mockReset();
   guardFrame.mockReset();
   render.mockResolvedValue({
     videoUrl: "https://example.com/clip.mp4",
+    costUsd: 0.275,
+  });
+  referenceRender.mockResolvedValue({
+    videoUrl: "https://example.com/refresh.mp4",
     costUsd: 0.275,
   });
   extractLastFrameUrl.mockResolvedValue("https://example.com/last.jpg");
@@ -135,5 +142,13 @@ describe("generateClip with the vision guard off (default)", () => {
     expect(result.verdict).toBe("rejected");
     expect(result.rejectReason).toMatch(/extraction failed/);
     expect(result.seedFrameUrl).toBe(session.seedFrameUrl);
+  });
+
+  it("referenceRefresh: renders via the reference backend seeded from the CURRENT frame, never the anchor photo", async () => {
+    await generateClip(request({ kind: "referenceRefresh" }));
+    expect(referenceRender).toHaveBeenCalledWith(
+      expect.objectContaining({ seedFrameUrl: session.seedFrameUrl }),
+    );
+    expect(render).not.toHaveBeenCalled();
   });
 });

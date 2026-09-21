@@ -1497,7 +1497,7 @@ const planIdle = (session: LiveSessionSnapshot): ClipPlan => {
   };
 };
 
-// Same static-hold contract as planIdle, but generateClip.ts renders it from the untouched anchor photo instead of the drifting last-frame chain.
+// Same static-hold contract as planIdle, but generateClip.ts renders it through the identity-conditioned (photo-to-video) backend seeded from the CURRENT frame, to reset compounding img2vid artifacts without resetting pose/scene.
 const planReferenceRefresh = (session: LiveSessionSnapshot): ClipPlan => {
   const { state, creator } = session;
   const action =

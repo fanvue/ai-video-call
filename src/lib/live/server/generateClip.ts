@@ -256,8 +256,7 @@ export const generateClip = async (
   const plan = planClip({ session, job, speechMode, backend });
   const planMs = Date.now() - planStarted;
 
-  // referenceRefresh always renders through the identity-conditioned model against the untouched
-  // upload, regardless of the session's own backend — that's the whole point of the re-anchor.
+  // referenceRefresh renders through the identity-conditioned model (breaks the img2vid chain's compounding artifacts) but must seed from the CURRENT frame, never the anchor photo — reference_image_urls dominates pose/scene/wardrobe, so anchoring live snaps her back to the anchor's original pose/background (see renderClip.ts's nudity-regression note for the same failure mode).
   const isReferenceRefresh = job.kind === "referenceRefresh";
   const videoBackend = isReferenceRefresh
     ? referenceBackend
@@ -272,9 +271,7 @@ export const generateClip = async (
   const renderStarted = Date.now();
   const renderPromise = videoBackend.render({
     prompt: plan.prompt,
-    seedFrameUrl: isReferenceRefresh
-      ? session.anchorFrameUrl
-      : session.seedFrameUrl,
+    seedFrameUrl: session.seedFrameUrl,
     durationSec: plan.durationSec,
     endFrameUrl: isAnchoredLoop ? session.seedFrameUrl : undefined,
   });
