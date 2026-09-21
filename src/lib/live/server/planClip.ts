@@ -147,17 +147,24 @@ const wardrobeReinforcementLine = (
     (id) => prevWardrobe[id].on === nextWardrobe[id].on,
   );
   if (unchanged.length === 0) return "";
+  const changing = GARMENT_ORDER.length - unchanged.length;
   const parts = unchanged.map((id) => {
     const garment = nextWardrobe[id];
     return garment.on
       ? `copy her ${GARMENT_LABEL[id]} (${garment.description}) pixel-for-pixel from the seed frame`
       : `her ${GARMENT_LABEL[id]} stays off and does not reappear`;
   });
+  // Removing one garment (e.g. a top) sitting next to an untouched one (e.g. a bra) tends to make the
+  // model flicker the untouched one too, since it's redrawing that whole area of the body anyway.
+  const collisionGuard =
+    changing > 0
+      ? " Removing or adding the one garment named below never touches, loosens, or hides any of these — not even for a single frame, even though the action happens right beside them."
+      : "";
   return (
     `WARDROBE FREEZE for the action below: ${parts.join("; ")} — copied exactly, not redrawn from ` +
     "memory of an earlier or later moment, for every single frame of it, including mid-motion, " +
-    "mid-turn, or when her back or side is briefly toward the camera, not just the start and end. " +
-    "Only a garment this clip's own instruction names comes off or on."
+    "mid-turn, or when her back or side is briefly toward the camera, not just the start and end." +
+    collisionGuard
   );
 };
 

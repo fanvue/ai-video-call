@@ -252,6 +252,20 @@ describe("planClip: reply intent catalog", () => {
     expect(reminder).toMatch(/copy her bottoms \(.*\) pixel-for-pixel/i);
   });
 
+  it("removing a top warns the model not to let the adjacent bra flicker, since it's redrawing that area anyway", () => {
+    const s = session();
+    const plan = reply(s, "take your top off");
+    expect(plan.prompt).toMatch(
+      /never touches, loosens, or hides any of these — not even for a single frame, even though the action happens right beside them/i,
+    );
+  });
+
+  it("a pure hold with nothing changing gets no collision-guard sentence, since nothing is being removed to collide with", () => {
+    const s = session();
+    const plan = reply(s, "hey how are you");
+    expect(plan.prompt).not.toMatch(/right beside them/i);
+  });
+
   it("'show me your tits' removes the top and bra across this clip and its follow-up, instead of falling through to a no-clothing-change generic action", () => {
     const s = session();
     const plan = reply(s, "show me your tits");
