@@ -226,6 +226,12 @@ describe("planClip: reply intent catalog", () => {
     expect(plan.expectedState.wardrobe.panties.on).toBe(true);
   });
 
+  it("plays a spin on the bare word 'spin', not just 'spin around' or 'do a spin'", () => {
+    const s = session();
+    const plan = reply(s, "can you spin for me");
+    expect(plan.prompt).toMatch(/360-degree turn/i);
+  });
+
   it("invites nudity/sex content only on a beat that actually removes clothing", () => {
     const s = session();
     const stripPlan = reply(s, "take your bottoms off");

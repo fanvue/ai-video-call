@@ -368,8 +368,9 @@ const RE_TWERK =
 const RE_COME_CLOSER =
   /\b(come closer|move closer|get closer|closer to (the )?camera)\b/i;
 const RE_BACK_UP = /\b(back up|move back|step back|further away|get back)\b/i;
+// Bare "spin"/"spin for me" is the common phrasing, not just "spin around" — match the verb alone.
 const RE_SPIN =
-  /\b(spins? around|do a spin|full (turn|spin|circle|360)|360)\b/i;
+  /\bspins?\b|\bspinning\b|\bdo a spin\b|\bfull (turn|circle|360)\b|\b360\b/i;
 
 // Broad verb gate for a request with no dedicated beat below: only accepts it as a physical
 // action if it plainly reads as one, so idle chit-chat still falls through to fallbackBeats.
