@@ -40,3 +40,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# fal Python CLI venv (services/swap/README.md)
+.venv-fal/
