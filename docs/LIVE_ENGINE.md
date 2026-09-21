@@ -120,6 +120,13 @@ Invariants:
 
 ## Frame guard
 
+> **Off by default** (`LIVE_TUNABLES.VERIFY_FRAMES: false`). In production the Groq vision model
+> was 404ing / refusing, every unchecked frame on a fail-closed path rejected the clip, and each
+> rejection cost a full re-render, so the first clip took 60-90s instead of ~12s. With the guard off
+> a clip is never rejected or reconciled: canon is the plan, and only the last frame is extracted as
+> the next seed (an extraction failure still rejects, because the chain would have no seed). Flip the
+> tunable to `true` to restore everything below once a vision model is validated against real frames.
+
 `guardFrame({ frameUrl, expected, anchorFrameUrl })` sends the vision model two images — the
 session's untouched `anchorFrameUrl` first, the frame under check second — with a prompt asking for
 `{ top, bottom, bra, panties, visibleProps[], pose, extraPeople, extraLimbs, sameWoman }`, validated

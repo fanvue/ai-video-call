@@ -41,7 +41,6 @@ export const createGroqChatCompletion = async ({
 
 // Groq retires vision models without notice (scout 404s in prod); try each in order, remember the first that works.
 export const GROQ_VISION_MODELS = [
-  "meta-llama/llama-4-scout-17b-16e-instruct",
   "meta-llama/llama-4-maverick-17b-128e-instruct",
   "llama-3.2-90b-vision-preview",
   "llama-3.2-11b-vision-preview",

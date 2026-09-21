@@ -293,6 +293,8 @@ export type ClipResult = z.infer<typeof clipResultSchema>;
 // Tunables shared by both halves
 
 export const LIVE_TUNABLES = {
+  // Vision frame guard (garment/colour/identity checks + rejection). Off: clips are never rejected or reconciled; only the seed frame is extracted. Groq vision was refusing/404ing in prod and each rejection cost a full re-render.
+  VERIFY_FRAMES: false,
   // 10s is the fal h3-max floor (docs/LIVE_ENGINE.md); below it the API rejects the render.
   MIN_CLIP_SEC: 10,
   MAX_CLIP_SEC: 15,

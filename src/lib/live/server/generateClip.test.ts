@@ -8,6 +8,15 @@ import type {
   Wardrobe,
 } from "../contract";
 
+// These suites exercise the vision guard, which is off by default (LIVE_TUNABLES.VERIFY_FRAMES); guardOff.test.ts covers the default.
+vi.mock("../contract", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../contract")>();
+  return {
+    ...actual,
+    LIVE_TUNABLES: { ...actual.LIVE_TUNABLES, VERIFY_FRAMES: true },
+  };
+});
+
 const render = vi.fn();
 const renderBackendFor = vi.fn();
 vi.mock("./renderClip", () => ({

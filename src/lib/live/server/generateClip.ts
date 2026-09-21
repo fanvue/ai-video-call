@@ -3,14 +3,15 @@ import {
   extractLastFrameUrl,
   extractMidFrameUrl,
 } from "@/lib/fal/extractLastFrame";
-import type {
-  ClipRequest,
-  ClipResult,
-  FrameGuardReport,
-  GarmentId,
-  LiveState,
-  ObservedState,
-  Pose,
+import {
+  LIVE_TUNABLES,
+  type ClipRequest,
+  type ClipResult,
+  type FrameGuardReport,
+  type GarmentId,
+  type LiveState,
+  type ObservedState,
+  type Pose,
 } from "../contract";
 import { guardFrame } from "./frameGuard";
 import { planClip, typingLeadSecFor } from "./planClip";
@@ -316,7 +317,25 @@ export const generateClip = async (
   let verdict: "approved" | "rejected" = "approved";
   let rejectReason: string | null = null;
 
-  if (job.kind === "idle") {
+  if (!LIVE_TUNABLES.VERIFY_FRAMES) {
+    // Vision guard off: no rejection, no reconciliation, canon is the plan. Only the last frame is extracted, since the next clip needs a seed; an idle loops on its anchor and needs none.
+    if (job.kind !== "idle") {
+      const verifyStarted = Date.now();
+      try {
+        seedFrameUrl = await withTimeout(
+          extractLastFrameUrl(rendered.videoUrl, FRAME_BUDGET_MS),
+          FRAME_BUDGET_MS,
+          "extractFrame",
+        );
+      } catch (error) {
+        console.warn("generateClip: last frame extraction failed", error);
+        verdict = "rejected";
+        rejectReason =
+          "last frame: extraction failed, no seed for the next clip";
+      }
+      verifyMs = Date.now() - verifyStarted;
+    }
+  } else if (job.kind === "idle") {
     // Idle's frame is never reused as a seed (see pipeline.ts), so it always plays from session.seedFrameUrl; only the midpoint needs checking since start/end are the anchor by construction.
     const verifyStarted = Date.now();
     const midCheck = await checkFrame(
