@@ -285,6 +285,7 @@ export const generateClip = async (
     seedFrameUrl: renderSeedFrameUrl,
     durationSec: plan.durationSec,
     endFrameUrl: isAnchoredLoop ? session.seedFrameUrl : undefined,
+    identityReferenceUrl: session.anchorFrameUrl,
   });
 
   const replyTextPromise: Promise<{ text: string; nextWorld: string } | null> =

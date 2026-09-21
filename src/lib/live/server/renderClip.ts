@@ -35,6 +35,9 @@ export type VideoBackend = {
     // Anchored idle loops: render start = end on this frame. Ignored by backends that report
     // supportsEndFrame: false.
     endFrameUrl?: string;
+    // Untouched upload (session.anchorFrameUrl). Only used by backends that support a second,
+    // identity-only reference; ignored by single-reference backends like turbo.
+    identityReferenceUrl?: string;
   }) => Promise<VideoRenderResult>;
   // Whether `render`'s endFrameUrl is honoured. The reference backend has no end-frame parameter.
   supportsEndFrame: boolean;
@@ -65,15 +68,29 @@ export const turboBackend: VideoBackend = {
   },
 };
 
+// Per fal's MiniMax H3 prompting guide, each reference needs an explicit role or the model treats
+// it as the current scene — 98fb8bf's unlabeled two-reference attempt snapped pose/wardrobe back to the upload.
+const IDENTITY_REFERENCE_PROMPT_PREFIX =
+  "Image 1 is for facial identity and likeness only — ignore its pose, clothing, and setting. Image 2 is the current pose, outfit, and scene — match it exactly and continue the action from it. ";
+
 export const referenceBackend: VideoBackend = {
   supportsEndFrame: false,
   // endFrameUrl is intentionally ignored: the reference-to-video model has no end-frame parameter.
-  render: async ({ prompt, seedFrameUrl, durationSec }) => {
-    // Single reference image only — feeding the original photo as a live second reference every
-    // clip kept pulling its nudity back in; identity anchoring runs separately via frameGuard's repair.
+  render: async ({
+    prompt,
+    seedFrameUrl,
+    durationSec,
+    identityReferenceUrl,
+  }) => {
+    const useIdentityReference =
+      !!identityReferenceUrl && identityReferenceUrl !== seedFrameUrl;
     const submitted = await submitH3MaxReferenceVideoGeneration({
-      prompt,
-      reference_image_urls: [seedFrameUrl],
+      prompt: useIdentityReference
+        ? IDENTITY_REFERENCE_PROMPT_PREFIX + prompt
+        : prompt,
+      reference_image_urls: useIdentityReference
+        ? [identityReferenceUrl, seedFrameUrl]
+        : [seedFrameUrl],
       duration: durationSec,
       resolution: RENDER_RESOLUTION,
       // Full-screen portrait player; "adaptive" would copy the source photo's own (landscape) ratio.
