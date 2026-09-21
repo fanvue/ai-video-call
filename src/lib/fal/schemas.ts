@@ -61,16 +61,40 @@ export const h3MaxReferenceVideoRequestSchema = z.object({
 // Same video-file-object shape as h3-max-turbo/image-to-video per the fal docs.
 export const h3MaxReferenceVideoResultSchema = h3MaxVideoResultPayloadSchema;
 
-// fal-ai/nano-banana-2/edit — used for periodic identity-drift correction.
+// fal-ai/flux-pro/kontext/max/multi — replaces nano-banana-2/edit, which 422s on any nude frame via a non-disableable content policy; safety_tolerance is this model's own documented permissive setting (same role as h3-max's enable_safety_checker).
 export const identityCorrectionRequestSchema = z.object({
   prompt: z.string(),
   image_urls: z.array(z.url()).length(2),
   num_images: z.literal(1).default(1),
   output_format: z.literal("jpeg").default("jpeg"),
+  safety_tolerance: z
+    .union([
+      z.literal("1"),
+      z.literal("2"),
+      z.literal("3"),
+      z.literal("4"),
+      z.literal("5"),
+      z.literal("6"),
+    ])
+    .default("6"),
 });
 
 export const identityCorrectionResultSchema = z.object({
   images: z.array(z.object({ url: z.url() })).min(1),
+});
+
+// fal-ai/clarity-upscaler — best-effort quality pass chained after identity correction; high resemblance + low creativity biases it toward sharpening over hallucinating new detail.
+export const frameUpscaleRequestSchema = z.object({
+  image_url: z.url(),
+  prompt: z.string(),
+  upscale_factor: z.number().default(2),
+  creativity: z.number().min(0).max(1).default(0.2),
+  resemblance: z.number().min(0).max(1).default(0.85),
+  enable_safety_checker: z.literal(false).default(false),
+});
+
+export const frameUpscaleResultSchema = z.object({
+  image: z.object({ url: z.url() }),
 });
 
 // fal-ai/ffmpeg-api/extract-frame: serverless replacement for local-ffmpeg last-frame extraction (see BLOCKED notes in the port report).
