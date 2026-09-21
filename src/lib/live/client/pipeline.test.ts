@@ -1374,11 +1374,12 @@ describe("ClipPipeline", () => {
     expect(secondReplyRequest?.session.seedFrameUrl).toBe(replySeed);
   });
 
-  it("re-seeds from the trusted frame when a plan ends on a look that already has one, instead of chaining off the drifted tail", async () => {
+  it("re-seeds from the trusted frame when a plan ends on a look that already has one, instead of chaining off the drifted tail (reference backend)", async () => {
     const requests: ClipRequest[] = [];
     const events: PipelineEvent[] = [];
     const queue = makeJobQueue();
     const pipeline = trackedPipeline({
+      backend: "reference",
       now: nowFn,
       onEvent: (e) => events.push(e),
       render: async (req) => {
@@ -1412,6 +1413,7 @@ describe("ClipPipeline", () => {
   it("keeps trusted-frame idles playable after the drifted reply clip, and prefers a tail-seeded bridge idle when one exists", async () => {
     const queue = makeJobQueue();
     const pipeline = trackedPipeline({
+      backend: "reference",
       now: nowFn,
       onEvent: () => {},
       render: async (req) => delayed(() => chainAdvancingResult(req)),
@@ -1445,10 +1447,43 @@ describe("ClipPipeline", () => {
     expect(seeds.has(ANCHOR_0)).toBe(true);
   });
 
+  it("never re-seeds on turbo: the next plan chains from the drifted tail rather than jumping back to the upload", async () => {
+    const requests: ClipRequest[] = [];
+    const queue = makeJobQueue();
+    const pipeline = trackedPipeline({
+      backend: "turbo",
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        requests.push(req);
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    pipeline.nextClip();
+
+    queue.push({ ...REPLY_JOB, requestId: "r1" });
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    const replySeed = pipeline.nextClip()!.seedFrameUrl;
+    expect(replySeed).not.toBe(ANCHOR_0);
+
+    queue.push({ ...REPLY_JOB, requestId: "r2" });
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    const secondReplyRequest = requests.find(
+      (r) => r.job.kind === "reply" && r.job.requestId === "r2",
+    );
+    expect(secondReplyRequest?.session.seedFrameUrl).toBe(replySeed);
+  });
+
   it("registers the first settled frame of a new look as its trusted seed and re-seeds from it on the next visit", async () => {
     const requests: ClipRequest[] = [];
     const queue = makeJobQueue();
     const pipeline = trackedPipeline({
+      backend: "reference",
       now: nowFn,
       onEvent: () => {},
       render: async (req) => {

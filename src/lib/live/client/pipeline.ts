@@ -344,6 +344,8 @@ export class ClipPipeline {
     let newAnchor = tail;
     if (!trusted) {
       this.trustedSeedByLook.set(key, tail.frameUrl);
+    } else if (this.backend !== "reference") {
+      // Turbo has no identity reference pulling the tail back toward the photo, so a re-seed there is a hard jump to the upload; continuity wins over drift.
     } else if (trusted !== tail.frameUrl) {
       this.seedAlias.set(tail.frameUrl, trusted);
       newAnchor = { ...tail, frameUrl: trusted };

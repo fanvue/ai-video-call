@@ -137,11 +137,16 @@ export type OpenRealtime = (
   options: OpenRealtimeOptions,
 ) => DirectorRealtimeHandle;
 
-// @fal-ai/client resolves `credentials` SYNCHRONOUSLY (src/request.js never awaits it), so the
-// token must already be fetched before this runs — see DirectorSession.open.
 export const openRealtimeWithFal = (token: string): OpenRealtime => {
   return (options) => {
-    fal.config({ credentials: () => token });
+    fal.config({
+      // wma.fal.run 401s "unsupported auth scheme" on the SDK's hardcoded `Key <jwt>`; temporary tokens must go as `Bearer`, which only requestMiddleware can set.
+      credentials: undefined,
+      requestMiddleware: async (request) => ({
+        ...request,
+        headers: { ...request.headers, Authorization: `Bearer ${token}` },
+      }),
+    });
     const session = fal.realtime.open(wma(DIRECTOR_ENDPOINT_ID), {
       receive: options.receive,
       onMedia: options.onMedia,
