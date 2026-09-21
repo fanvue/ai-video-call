@@ -102,6 +102,14 @@ const baseInput = (): DirectorOpenInput => ({
     "long dark hair, brown eyes",
   ),
   world: "bedroom",
+  surroundings: "a small bedroom with fairy lights and a white duvet",
+  wardrobe: {
+    top: { on: true, description: "black ribbed tank top" },
+    bottom: { on: false, description: "grey shorts" },
+    bra: { on: true, description: "black lace bra" },
+    panties: { on: true, description: "black panties" },
+    removedOrder: ["bottom"],
+  },
   anchorFrameUrl: "https://fal.example.com/anchor.jpg",
   speechMode: "text",
   startedAtMs: 0,
@@ -145,7 +153,70 @@ describe("DirectorSession.open", () => {
     expect(configureMessages[0]).toMatchObject({
       image_url: "https://fal.example.com/anchor.jpg",
       aspect_ratio: "9:16",
+      memory: 40,
     });
+  });
+
+  it("opens with a full premise: look lock, worn garments only, the real room, and the speech rule", async () => {
+    const { captured } = await openSession();
+    const configure = captured.handle.sent.find((m) => m.type === "configure");
+    const prompt = (configure as { prompt: string }).prompt;
+    expect(prompt).toContain("long dark hair, brown eyes");
+    expect(prompt).toContain(
+      "black ribbed tank top, black lace bra, black panties",
+    );
+    expect(prompt).not.toContain("grey shorts");
+    expect(prompt).toContain("fairy lights");
+    expect(prompt).toContain("She does not speak");
+    expect(prompt).toContain("webcam livestream");
+  });
+
+  it("rejects open() as soon as the server answers configure with an error, naming the reason", async () => {
+    const onError = vi.fn();
+    const { deps, captured } = makeDeps({ onError });
+    const session = new DirectorSession(deps);
+
+    const openPromise = session.open(baseInput());
+    await flush();
+    const captured1 = requireCaptured(captured);
+    captured1.handle.goLive();
+    await flush();
+    const assertion = expect(openPromise).rejects.toThrow("content_policy");
+    captured1.options.onData(
+      JSON.stringify({
+        type: "error",
+        code: "content_policy",
+        error: "content_policy: opening image",
+      }),
+    );
+    await assertion;
+
+    expect(onError).toHaveBeenCalledWith(
+      expect.stringContaining("content_policy"),
+    );
+    expect(captured1.handle.closeCalls).toBe(1);
+  });
+
+  it("names the transport state and last diagnostic when configure times out", async () => {
+    const onError = vi.fn();
+    const { deps, captured } = makeDeps({ onError });
+    const session = new DirectorSession(deps);
+
+    const openPromise = session.open(baseInput());
+    await flush();
+    const captured1 = requireCaptured(captured);
+    captured1.options.onDiagnostic?.({
+      kind: "progress",
+      phase: "connection-state",
+      detail: { state: "connecting" },
+    });
+    const assertion = expect(openPromise).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(CONFIGURE_TIMEOUT_MS);
+    await assertion;
+
+    expect(onError).toHaveBeenCalledWith(
+      expect.stringContaining("connection-state state=connecting"),
+    );
   });
 
   it("fails closed and closes the handle if configure never arrives", async () => {

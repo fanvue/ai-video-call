@@ -825,12 +825,15 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
             );
             setStatus("ended");
           },
+          onDiagnostic: (line) => console.info(`director transport: ${line}`),
         });
         directorSessionRef.current = directorSession;
 
         await directorSession.open({
           creator,
           world: initialLiveState.world,
+          surroundings: initialLiveState.surroundings,
+          wardrobe: initialLiveState.wardrobe,
           anchorFrameUrl: reference.anchorFrameUrl,
           speechMode: options.speechMode ?? "text",
           startedAtMs,

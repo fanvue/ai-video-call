@@ -51,10 +51,17 @@ export async function POST(request: Request) {
       world,
       speechMode,
     });
-    // The steering prompt sent to the director stream; kept short and physically descriptive,
-    // matching the same look-lock the clip backends use.
-    const prompt =
-      `${creator.lookLock} Live webcam stream. ${requestText}`.slice(0, 900);
+    // A steering prompt directs the next moment against the session premise (see buildDirectorPremise), so it restates only what must not drift and what changes now.
+    const speechLine =
+      speechMode === "native"
+        ? ` She says to camera, lip-synced: "${reply.text.replace(/"/g, "'")}".`
+        : " She stays silent, reacting with her face and body.";
+    const prompt = (
+      `Same uncut webcam livestream, same woman (${creator.lookLock}), same room and camera, continuing from the current frame with no cut. ` +
+      `A viewer just asked: "${requestText.replace(/"/g, "'")}". She does exactly that now, playfully and fully, looking into the lens.` +
+      speechLine +
+      " Only what this direction names changes; her face, hair, body and the room stay identical."
+    ).slice(0, 2000);
     return NextResponse.json({ prompt, reply: reply.text });
   } catch (error) {
     console.warn("live/directorPrompt: writeReply failed", error);

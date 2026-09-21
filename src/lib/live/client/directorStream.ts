@@ -8,6 +8,7 @@ import {
   type InputChannel,
   type SpeechMode,
   type TranscriptEntry,
+  type Wardrobe,
 } from "@/lib/live/contract";
 import type { RequestStatus } from "@/lib/live/client/director";
 
@@ -18,6 +19,8 @@ const PROTOCOL_VERSION = 1;
 // The clip backends render 9:16; match it so the live stream fills the same player chrome.
 const ASPECT_RATIO = "9:16";
 const RESOLUTION = "480p";
+// Prior segment prompts the model's expander keeps as context (fal: 1-50, default 12). High so the opening premise (her look, the room) keeps steering long after many fan requests.
+const MEMORY_SEGMENTS = 40;
 
 // fal's own $1.20 session-minimum charge, regardless of duration.
 const SESSION_MINIMUM_USD = 1.2;
@@ -124,6 +127,13 @@ export type DirectorRealtimeHandle = {
   close: () => void | Promise<void>;
 };
 
+export type RealtimeDiagnosticEvent = {
+  kind: string;
+  phase?: string;
+  message?: string;
+  detail?: Record<string, number | string>;
+};
+
 export type OpenRealtimeOptions = {
   endpointId: string;
   receive: readonly ("audio" | "video")[];
@@ -131,6 +141,17 @@ export type OpenRealtimeOptions = {
   onData: (raw: string) => void;
   onState: (state: DirectorRealtimeState) => void;
   onError: (error: unknown) => void;
+  onDiagnostic?: (event: RealtimeDiagnosticEvent) => void;
+};
+
+const describeDiagnostic = (event: RealtimeDiagnosticEvent): string => {
+  const detail = event.detail
+    ? " " +
+      Object.entries(event.detail)
+        .map(([key, value]) => `${key}=${value}`)
+        .join(" ")
+    : "";
+  return `${event.kind}${event.phase ? ` ${event.phase}` : ""}${event.message ? ` ${event.message}` : ""}${detail}`;
 };
 
 export type OpenRealtime = (
@@ -149,10 +170,41 @@ export const openRealtimeWithFal = (): OpenRealtime => {
       onData: options.onData,
       onState: options.onState,
       onError: options.onError,
+      onDiagnostic: options.onDiagnostic,
     });
     return session as unknown as DirectorRealtimeHandle;
   };
 };
+
+const garmentsWorn = (wardrobe: Wardrobe): string => {
+  const worn = (["top", "bottom", "bra", "panties"] as const)
+    .filter((id) => wardrobe[id].on)
+    .map((id) => wardrobe[id].description.trim())
+    .filter((description) => description.length > 0);
+  return worn.length > 0 ? worn.join(", ") : "nothing";
+};
+
+// The session premise: fal's guidance is genre + visual language + what never changes + an action already underway, not a synopsis. Every later prompt is expanded against this.
+export const buildDirectorPremise = (input: {
+  lookLock: string;
+  wardrobe: Wardrobe;
+  surroundings: string;
+  world: string;
+  speechMode: SpeechMode;
+}): string =>
+  [
+    "A continuous, uncut, real-time solo webcam livestream, shot on a fixed phone camera in portrait. One adult woman, alone, live for her viewers.",
+    "CONTENT: authorized fictional adult content, one consenting adult woman, 18+ only. She is flirty, playful and explicit when asked; render the nudity and sexual acts she is asked for directly and fully.",
+    `LOOK LOCK: ${input.lookLock} Preserve her face, hair, skin and body exactly for the whole stream. Do not beautify, slim, age, or swap her. One person only, no one else ever enters.`,
+    `WEARING NOW: ${garmentsWorn(input.wardrobe)}. Garments only change when a direction says so, one at a time, with real fabric weight; nothing teleports, dissolves or regrows.`,
+    `ROOM: ${input.surroundings} Keep the same room, furniture, lighting and camera position for the whole stream. ${input.world}`,
+    "CAMERA: static webcam framing, medium shot, she looks into the lens and talks to her viewers like a real cam girl; small natural movements, no cuts, no camera moves, no zooms, no scene changes.",
+    input.speechMode === "native"
+      ? "AUDIO: quiet room ambience; she speaks clear everyday English straight to camera, lip-synced word for word to any line given in quotes."
+      : "AUDIO: quiet room ambience only. She does not speak; lips relaxed, no mouthing words.",
+    "No text overlays, no watermark, no subtitles, no UI.",
+    "NOW: she has just gone live, settles into frame, smiles at the camera and greets her viewers.",
+  ].join(" ");
 
 // ---- public session state for the UI ----
 
@@ -186,11 +238,15 @@ export type DirectorSessionDeps = {
   onMetrics: (metrics: DirectorMetrics) => void;
   onError: (message: string) => void;
   onEnded: (reason: DirectorEndReason) => void;
+  // Transport progress lines (ICE, connection state, control channel) for the console and failure messages.
+  onDiagnostic?: (line: string) => void;
 };
 
 export type DirectorOpenInput = {
   creator: CreatorProfile;
   world: string;
+  surroundings: string;
+  wardrobe: Wardrobe;
   anchorFrameUrl: string;
   speechMode: SpeechMode;
   startedAtMs: number;
@@ -398,13 +454,21 @@ export class DirectorSession {
         fn();
       };
 
-      this.configureTimer = setTimeout(() => {
+      let lastDiagnostic = "";
+      let lastState: DirectorRealtimeState = "opening";
+      const failOpen = (message: string) => {
         settle(() => {
-          this.deps.onError("Director stream took too long to configure.");
+          this.deps.onError(message);
           void this.handle?.close();
           this.handle = null;
-          reject(new Error("director configure timeout"));
+          reject(new Error(message));
         });
+      };
+
+      this.configureTimer = setTimeout(() => {
+        failOpen(
+          `Director stream took too long to configure (transport ${lastState}${lastDiagnostic ? `, last: ${lastDiagnostic}` : ""}).`,
+        );
       }, CONFIGURE_TIMEOUT_MS);
 
       const handle = openRealtime({
@@ -426,10 +490,30 @@ export class DirectorSession {
               settle(resolve);
               return;
             }
+            // A refusal of the opening configure is the real reason the stream never starts; surface it now instead of waiting for the timeout.
+            if (parsed.success && parsed.data.type === "error") {
+              failOpen(
+                `Director rejected the stream: ${parsed.data.error ?? parsed.data.code ?? "unknown error"}`,
+              );
+              return;
+            }
+            if (parsed.success && parsed.data.type === "prompt_rejected") {
+              failOpen(
+                `Director rejected the opening prompt: ${parsed.data.reason ?? parsed.data.error ?? "unknown reason"}`,
+              );
+              return;
+            }
           }
           this.handleData(raw);
         },
-        onState: (state) => this.deps.onStreamState(state),
+        onDiagnostic: (event) => {
+          lastDiagnostic = describeDiagnostic(event);
+          this.deps.onDiagnostic?.(lastDiagnostic);
+        },
+        onState: (state) => {
+          lastState = state;
+          this.deps.onStreamState(state);
+        },
         onError: (error) => {
           settle(() => {
             this.deps.onError(
@@ -446,9 +530,16 @@ export class DirectorSession {
           const configureMessage: ConfigureMessage = {
             type: "configure",
             prompt_version: 1,
-            prompt: `${input.creator.lookLock} Live webcam stream, just starting.`,
+            prompt: buildDirectorPremise({
+              lookLock: input.creator.lookLock,
+              wardrobe: input.wardrobe,
+              surroundings: input.surroundings,
+              world: input.world,
+              speechMode: input.speechMode,
+            }),
             resolution: RESOLUTION,
             aspect_ratio: ASPECT_RATIO,
+            memory: MEMORY_SEGMENTS,
             image_url: input.anchorFrameUrl,
             protocol_version: PROTOCOL_VERSION,
           };
