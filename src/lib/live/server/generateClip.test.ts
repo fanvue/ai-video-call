@@ -28,6 +28,11 @@ vi.mock("./correctIdentity", () => ({
   correctIdentity: (...args: unknown[]) => correctIdentity(...args),
 }));
 
+const upscaleFrame = vi.fn();
+vi.mock("./upscaleFrame", () => ({
+  upscaleFrame: (...args: unknown[]) => upscaleFrame(...args),
+}));
+
 const extractLastFrameUrl = vi.fn();
 const extractMidFrameUrl = vi.fn();
 vi.mock("@/lib/fal/extractLastFrame", () => ({
@@ -122,6 +127,7 @@ beforeEach(() => {
   render.mockReset();
   renderBackendFor.mockReset();
   correctIdentity.mockReset();
+  upscaleFrame.mockReset();
   extractLastFrameUrl.mockReset();
   extractMidFrameUrl.mockReset();
   guardFrame.mockReset();
@@ -133,6 +139,7 @@ beforeEach(() => {
     costUsd: 0.25,
   });
   correctIdentity.mockResolvedValue(null);
+  upscaleFrame.mockResolvedValue(null);
   guardFrame.mockResolvedValue({ checked: false, issues: [], observed: null });
   extractLastFrameUrl.mockResolvedValue(LAST_URL);
   extractMidFrameUrl.mockResolvedValue(MID_URL);
@@ -335,6 +342,48 @@ describe("generateClip: hold clips other than idle", () => {
 
     expect(result.verdict).toBe("approved");
     expect(result.seedFrameUrl).toBe(LAST_URL);
+  });
+
+  it("upscales an approved clip's outgoing seed and adds its cost; idle never triggers an upscale", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    guardFrame.mockResolvedValue({
+      checked: true,
+      issues: [],
+      observed: { wardrobe: {} },
+    });
+    upscaleFrame.mockResolvedValue({
+      url: "https://example.com/upscaled.jpg",
+      costUsd: 0.03,
+    });
+
+    const greeting = await generateClip(
+      clipRequest({ job: { kind: "greeting" } }),
+    );
+    expect(upscaleFrame).toHaveBeenCalledWith(LAST_URL);
+    expect(greeting.seedFrameUrl).toBe("https://example.com/upscaled.jpg");
+    expect(greeting.costUsd).toBeCloseTo(0.25 + 0.03);
+
+    upscaleFrame.mockClear();
+    const idleReq = clipRequest({ job: { kind: "idle" } });
+    const idle = await generateClip(idleReq);
+    expect(upscaleFrame).not.toHaveBeenCalled();
+    expect(idle.seedFrameUrl).toBe(idleReq.session.seedFrameUrl);
+  });
+
+  it("falls back to the unupscaled seed, no added cost, when the upscale fails", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    guardFrame.mockResolvedValue({
+      checked: true,
+      issues: [],
+      observed: { wardrobe: {} },
+    });
+    upscaleFrame.mockResolvedValue(null);
+
+    const result = await generateClip(
+      clipRequest({ job: { kind: "greeting" } }),
+    );
+    expect(result.seedFrameUrl).toBe(LAST_URL);
+    expect(result.costUsd).toBeCloseTo(0.25);
   });
 
   it("a spin act (hold) is rejected when its last frame shows panties absent while canon has them on", async () => {
