@@ -26,11 +26,44 @@ export type OpenLucyRealtimeOptions = {
   onMedia: (stream: MediaStream) => void;
   onState: (state: LucyRealtimeState) => void;
   onError: (error: unknown) => void;
+  onDiagnostic?: (line: string) => void;
 };
 
 export type OpenLucyRealtime = (
   options: OpenLucyRealtimeOptions,
 ) => LucyRealtimeHandle;
+
+type RealtimeDiagnosticEvent = {
+  kind: string;
+  phase?: string;
+  message?: string;
+  detail?: Record<string, number | string>;
+};
+
+const describeDiagnostic = (event: RealtimeDiagnosticEvent): string => {
+  const detail = event.detail
+    ? " " +
+      Object.entries(event.detail)
+        .map(([key, value]) => `${key}=${value}`)
+        .join(" ")
+    : "";
+  return `${event.kind}${event.phase ? ` ${event.phase}` : ""}${event.message ? ` ${event.message}` : ""}${detail}`;
+};
+
+// fal documents reference_image_url as a data URI (min 512x512), so the anchor frame is inlined rather than linked.
+export const fetchAsDataUri = async (url: string): Promise<string> => {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`reference frame fetch failed: ${response.status}`);
+  }
+  const blob = await response.blob();
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error("reference frame read failed"));
+    reader.readAsDataURL(blob);
+  });
+};
 
 // Unlike wma (director), lucy.js never calls context.fetch/run — its token rides the WS URL's fal_jwt_token query param (protocol.js buildRealtimeUrl), not an Authorization header, so the Key-vs-Bearer fix directorStream.ts needed for wma.fal.run's /ice call doesn't apply here.
 export const openRealtimeWithFalLucy: OpenLucyRealtime = (options) => {
@@ -47,6 +80,8 @@ export const openRealtimeWithFalLucy: OpenLucyRealtime = (options) => {
     onMedia: options.onMedia,
     onState: options.onState,
     onError: options.onError,
+    onDiagnostic: (event: RealtimeDiagnosticEvent) =>
+      options.onDiagnostic?.(describeDiagnostic(event)),
   });
   return session as unknown as LucyRealtimeHandle;
 };
@@ -65,6 +100,7 @@ export type LucySessionDeps = {
   onMedia: (stream: MediaStream) => void;
   onError: (message: string) => void;
   onEnded: (reason: LucyEndReason) => void;
+  onDiagnostic?: (line: string) => void;
 };
 
 export type LucyOpenInput = {
@@ -107,6 +143,7 @@ export class LucySession {
         prompt: input.prompt,
         drivingStream: input.drivingStream,
         fetchToken: this.deps.fetchToken,
+        onDiagnostic: this.deps.onDiagnostic,
         onMedia: (stream) => this.deps.onMedia(stream),
         onState: (state) => {
           this.deps.onStreamState(state);

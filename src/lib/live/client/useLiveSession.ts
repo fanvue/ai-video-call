@@ -13,6 +13,7 @@ import {
   type DirectorRealtimeState,
 } from "@/lib/live/client/directorStream";
 import {
+  fetchAsDataUri,
   LucySession,
   openRealtimeWithFalLucy,
   type LucyMetrics,
@@ -728,6 +729,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   // Off-DOM hidden video element for the lucy driving pipeline; see lucyHiddenARef.
   const createHiddenVideoElement = (): HTMLVideoElement => {
     const el = document.createElement("video");
+    // Clips come from fal.media (CORS *); without this the canvas is tainted and captureStream() sends black frames.
+    el.crossOrigin = "anonymous";
     el.playsInline = true;
     el.muted = true;
     el.setAttribute("aria-hidden", "true");
@@ -997,6 +1000,12 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
           directorRef.current?.consumeIdentityReferenceDue(Date.now()) ?? false,
       });
       pipelineRef.current = pipeline;
+      const startPipeline = () => {
+        setConnectStage("renderingFirstClip");
+        pipeline.start(director.nextJob(), snapshotSource, () =>
+          director.nextJob(),
+        );
+      };
 
       if (modeRef.current === "lucy") {
         teardownLucyPipelineSurface();
@@ -1041,6 +1050,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
             lucyMediaStreamRef.current = stream;
             attachLucyStream();
           },
+          onDiagnostic: (line) => console.info(`lucy transport: ${line}`),
           onError: (message) => {
             setError(message);
             if (errorTimeoutRef.current) {
@@ -1058,17 +1068,16 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         });
         lucySessionRef.current = lucySession;
 
+        // Driving frames must already be flowing when Lucy negotiates, so the turbo pipeline starts first.
+        startPipeline();
         await lucySession.open({
-          referenceImageUrl: reference.anchorFrameUrl,
+          referenceImageUrl: await fetchAsDataUri(reference.anchorFrameUrl),
           prompt: `${creator.lookLock} Live webcam stream, restyled to match her exactly.`,
           drivingStream,
         });
+      } else {
+        startPipeline();
       }
-
-      setConnectStage("renderingFirstClip");
-      pipeline.start(director.nextJob(), snapshotSource, () =>
-        director.nextJob(),
-      );
 
       if (tickIntervalRef.current) {
         clearInterval(tickIntervalRef.current);
