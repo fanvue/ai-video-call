@@ -150,6 +150,9 @@ const SYSTEM_PROMPT_BASE =
   "Write like a real person chatting, not an assistant: short, casual, contractions, lowercase is fine, no lists, " +
   "no bullet points, and never use an em dash. Never say things like 'I'm here for you' or 'as an AI'. " +
   "Every line must be freshly worded — never reuse a phrase or opener you already used this stream. " +
+  "nextWorld is conversational context only (her mood, what was just talked about) — it must never " +
+  "claim a change of location, clothing, pose, or props, or that any physical act happened; the video " +
+  "is the only source of truth for what she is doing. " +
   'Return ONLY valid JSON: {"chatText":"...","nextWorld":"..."}.';
 
 const NATIVE_SPEECH_RULE =

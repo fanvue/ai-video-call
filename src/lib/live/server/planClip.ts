@@ -32,6 +32,9 @@ export type ClipPlan = {
   // The garment removeGarment/addGarment targets; always reconciled from observation regardless
   // of wardrobeIntent, so the director's bounded retry keeps working. Unset for a precondition clip.
   targetGarment?: GarmentId;
+  // This clip's own sexual-content status (see buildPrompt's CONTENT_LOCK). Used with wardrobeIntent
+  // by generateClip to decide whether this is a hold clip that must be frame-verified before it can play.
+  explicit: boolean;
 };
 
 const ACTION_BEAT_SEC = LIVE_TUNABLES.ACTION_CLIP_SEC;
@@ -1137,6 +1140,7 @@ const planGreeting = (
     needsReplyText: false,
     fixedReplyText: GREETING_LINE,
     wardrobeIntent: null,
+    explicit: false,
   };
 };
 
@@ -1192,6 +1196,7 @@ const planIdle = (session: LiveSessionSnapshot): ClipPlan => {
     needsReplyText: false,
     fixedReplyText: null,
     wardrobeIntent: null,
+    explicit: false,
   };
 };
 
@@ -1224,6 +1229,7 @@ const planCheckIn = (
     needsReplyText: true,
     fixedReplyText: null,
     wardrobeIntent: null,
+    explicit: false,
   };
 };
 
@@ -1306,6 +1312,7 @@ const planReply = (
     fixedReplyText: null,
     wardrobeIntent,
     targetGarment,
+    explicit: beatPlan.explicit,
   };
 };
 
@@ -1357,6 +1364,7 @@ const planBeat = (
     fixedReplyText: null,
     wardrobeIntent,
     targetGarment,
+    explicit: beatPlan.explicit,
   };
 };
 

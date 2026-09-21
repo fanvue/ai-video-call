@@ -105,13 +105,26 @@ Invariants:
 
 ## Frame guard
 
-After every render: extract last frame → `guardFrame(frame, expectedState)` using a vision
-model returning `{ topOn, bottomOn, visibleProps[], pose, extraPeople, extraLimbs }` →
-compare with expected → if mismatch, `repairFrame(frame, expectedState, anchorFrame)` with the
-image edit model (explicit instructions: restore garment X, remove object Y, keep pose,
-background, framing; identity from anchor). Guard failures (model refusal, timeout) are logged
-and skipped; repair is never attempted blind. Identity re-anchoring against the original
-upload continues to run on the existing 45s cadence.
+`guardFrame(frame, expectedState)` uses a vision model returning `{ top, bottom, bra, panties,
+visibleProps[], pose, extraPeople, extraLimbs }`, each garment `"present" | "absent" | "unknown"`
+(never guessed) and validated with a zod schema — an unparseable or schema-invalid response comes
+back `checked: false`, never adopted.
+
+Every `ClipResult` carries a `verdict: "approved" | "rejected"` and `rejectReason`. A **hold clip**
+(`plan.wardrobeIntent === null && !plan.explicit` — idle, greeting, checkIn, a non-wardrobe act,
+a hold/verbatim line, a pose/framing transition) is verified before it can play: idle checks only
+its midpoint frame (start/end are the anchor by construction); every other hold clip checks both
+its midpoint and last frame. It is **rejected** if either frame couldn't be checked (extraction or
+vision failure/timeout, unparseable JSON), shows a canon-on garment `absent`, or reports
+extraPeople/extraLimbs — fail closed. An approved hold clip reconciles pose only, never wardrobe.
+
+A **non-hold clip** (a requested wardrobe change or an explicit act) keeps the single last-frame
+guard with directional wardrobe reconciliation (`reconcileState.ts`) and is rejected only for
+extraPeople/extraLimbs, and only when the check ran — this path fails OPEN on an unchecked frame,
+the deliberate asymmetry with hold clips, so a vision refusal can never permanently block a
+legitimately requested explicit clip. Frame repair (`repairFrame`) was retired with this pass; a
+failing clip is rejected and retried as a whole clip instead of pixel-patched. Identity
+re-anchoring against the original upload continues to run on the existing 45s cadence.
 
 ## Speech
 

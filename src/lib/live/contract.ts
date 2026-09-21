@@ -269,12 +269,17 @@ export const clipResultSchema = z.object({
   followUps: z.array(plannedBeatSchema).max(6),
   guard: frameGuardReportSchema,
   observed: observedStateSchema.nullable(),
+  // See docs/LIVE_ENGINE.md "Frame guard" for when a hold vs. non-hold clip is rejected.
+  verdict: z.enum(["approved", "rejected"]),
+  rejectReason: z.string().max(300).nullable(),
   timings: z.object({
     planMs: z.number().int().min(0),
     renderMs: z.number().int().min(0),
     frameMs: z.number().int().min(0),
     guardMs: z.number().int().min(0),
     repairMs: z.number().int().min(0),
+    // Hold-clip two-frame (or idle one-frame) verification time; 0 on the non-hold path.
+    verifyMs: z.number().int().min(0).optional(),
   }),
   costUsd: z.number().min(0),
 });

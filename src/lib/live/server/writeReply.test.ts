@@ -276,4 +276,26 @@ describe("writeReply", () => {
       createGroqChatCompletion.mock.calls[0]?.[0].messages ?? [];
     expect(systemMessage.content).toMatch(/max 8 words/i);
   });
+
+  it("tells the model nextWorld is conversational context only, never a claimed physical change", async () => {
+    createGroqChatCompletion.mockResolvedValueOnce(
+      completionWith(JSON.stringify({ chatText: "mmm okay", nextWorld: "w" })),
+    );
+    await writeReply({
+      transcript: [],
+      requestText: "hi",
+      physical: "beat",
+      creator,
+      channel: "voice",
+      world: "w",
+    });
+    const [systemMessage] =
+      createGroqChatCompletion.mock.calls[0]?.[0].messages ?? [];
+    expect(systemMessage.content).toMatch(
+      /nextWorld is conversational context only/i,
+    );
+    expect(systemMessage.content).toMatch(
+      /never claim a change of location, clothing, pose, or props/i,
+    );
+  });
 });

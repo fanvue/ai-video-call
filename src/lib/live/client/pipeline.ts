@@ -298,13 +298,22 @@ export class ClipPipeline {
     }
     this.chainInflight = null;
 
-    if (error || !result) {
+    // A guard-rejected clip already cost money but must never reach the screen or become canon.
+    const rejected = result !== null && result.verdict === "rejected";
+    if (rejected) {
+      this.onEvent({ type: "clipDiscarded", result, costUsd: result.costUsd });
+    }
+    if (error || !result || rejected) {
       if (attempt < 1) {
         this.chainInflight = { job };
         this.submitChainJob(job, attempt + 1);
         return;
       }
-      const message = error instanceof Error ? error.message : String(error);
+      const message = rejected
+        ? (result.rejectReason ?? "clip rejected by frame guard")
+        : error instanceof Error
+          ? error.message
+          : String(error);
       this.onEvent({ type: "error", job, message });
       // Abandon the rest of this chain (anchor stays put); drain any already-queued follow-on
       // jobs so a later poll doesn't run them from a seed that never rendered.
@@ -402,14 +411,22 @@ export class ClipPipeline {
       return;
     }
 
-    if (error || !result) {
+    const rejected = result !== null && result.verdict === "rejected";
+    if (rejected) {
+      this.onEvent({ type: "clipDiscarded", result, costUsd: result.costUsd });
+    }
+    if (error || !result || rejected) {
       if (attempt < 1) {
         // submitIdleJob does the increment; don't double-count here, or a retried idle
         // permanently leaks one inflight slot and the stockpile eventually stalls (a freeze).
         this.submitIdleJob(anchorAtSubmit, attempt + 1);
         return;
       }
-      const message = error instanceof Error ? error.message : String(error);
+      const message = rejected
+        ? (result.rejectReason ?? "idle clip rejected by frame guard")
+        : error instanceof Error
+          ? error.message
+          : String(error);
       this.onEvent({ type: "error", job: { kind: "idle" }, message });
       this.fillIdleStockpile();
       return;

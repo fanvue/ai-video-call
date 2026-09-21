@@ -62,6 +62,8 @@ const clipResult = (overrides: Partial<ClipResult>): ClipResult => ({
   followUps: [],
   guard: { checked: true, issues: [], repaired: false },
   observed: null,
+  verdict: "approved",
+  rejectReason: null,
   timings: { planMs: 0, renderMs: 0, frameMs: 0, guardMs: 0, repairMs: 0 },
   costUsd: 0.01,
   ...overrides,
@@ -283,6 +285,37 @@ describe("LiveDirector", () => {
     expect(director.getState().jobQueue).toEqual([
       { kind: "checkIn", channel: "chat" },
     ]);
+  });
+
+  it("does not commit state, transcript or follow-ups from a guard-rejected clip", () => {
+    const director = makeDirector();
+    director.nextJob(); // greeting
+    const before = director.getState();
+    director.clipCompleted(
+      clipResult({
+        jobKind: "reply",
+        verdict: "rejected",
+        rejectReason: "extra person in frame",
+        state: {
+          ...dressedState,
+          wardrobe: {
+            ...dressedState.wardrobe,
+            bra: { ...dressedState.wardrobe.bra, on: false },
+          },
+        },
+        seedFrameUrl: "https://example.com/rejected.jpg",
+        reply: { text: "hey", channel: "chat", typingLeadSec: 0 },
+        followUps: [
+          { id: "b1", intent: { type: "act", act: "spin" }, attempt: 0 },
+        ],
+      }),
+      1000,
+    );
+    const after = director.getState();
+    expect(after.liveState).toBe(before.liveState);
+    expect(after.seedFrameUrl).toBe(before.seedFrameUrl);
+    expect(after.transcript).toEqual(before.transcript);
+    expect(after.jobQueue).toEqual(before.jobQueue);
   });
 
   it("queues a viewer reply job tagged with the viewer's handle", () => {

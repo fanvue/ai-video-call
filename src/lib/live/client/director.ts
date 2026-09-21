@@ -165,6 +165,11 @@ export class LiveDirector {
     if (result.jobKind === "idle") {
       return;
     }
+    // The pipeline never plays a rejected clip; refuse its state too so a guard failure can't
+    // rewrite canon through a caller that forgot to check the verdict.
+    if (result.verdict === "rejected") {
+      return;
+    }
 
     let transcript = this.state.transcript;
     if (result.reply) {

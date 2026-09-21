@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import { vi } from "vitest";
 import type { LiveState } from "../contract";
 import { guardFrame, repairFrame } from "./frameGuard";
 
@@ -51,6 +52,17 @@ const expectedWithProp = (prop: LiveState["body"]["prop"]): LiveState => ({
   body: { ...expected.body, prop },
 });
 
+const fullReport = (overrides: Record<string, unknown> = {}) => ({
+  top: "present",
+  bottom: "present",
+  bra: "present",
+  panties: "present",
+  visibleProps: [],
+  extraPeople: false,
+  extraLimbs: false,
+  ...overrides,
+});
+
 beforeEach(() => {
   createGroqVisionCompletion.mockReset();
   correctFrameIdentityDrift.mockReset();
@@ -60,17 +72,7 @@ beforeEach(() => {
 describe("guardFrame", () => {
   it("reports no issues when the frame matches expected state", async () => {
     createGroqVisionCompletion.mockResolvedValue(
-      completionWith(
-        JSON.stringify({
-          topOn: true,
-          bottomOn: true,
-          braOn: true,
-          pantiesOn: true,
-          visibleProps: [],
-          extraPeople: false,
-          extraLimbs: false,
-        }),
-      ),
+      completionWith(JSON.stringify(fullReport())),
     );
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
@@ -85,23 +87,25 @@ describe("guardFrame", () => {
 
   it("returns observed wardrobe booleans even when they disagree with expected", async () => {
     createGroqVisionCompletion.mockResolvedValue(
-      completionWith(
-        JSON.stringify({
-          topOn: false,
-          bottomOn: true,
-          braOn: true,
-          pantiesOn: true,
-          visibleProps: [],
-          extraPeople: false,
-          extraLimbs: false,
-        }),
-      ),
+      completionWith(JSON.stringify(fullReport({ top: "absent" }))),
     );
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
       expected,
     });
     expect(result.observed?.wardrobe.top).toBe(false);
+  });
+
+  it("does not report a garment observed as unknown, and omits it from observed.wardrobe", async () => {
+    createGroqVisionCompletion.mockResolvedValue(
+      completionWith(JSON.stringify(fullReport({ bra: "unknown" }))),
+    );
+    const result = await guardFrame({
+      frameUrl: "https://x/frame.jpg",
+      expected,
+    });
+    expect(result.issues.some((issue) => issue.includes("bra"))).toBe(false);
+    expect(result.observed?.wardrobe.bra).toBeUndefined();
   });
 
   it("returns observed:null when the vision call fails or is unparseable", async () => {
@@ -115,17 +119,7 @@ describe("guardFrame", () => {
 
   it("flags a garment that drifted off when it should be on", async () => {
     createGroqVisionCompletion.mockResolvedValue(
-      completionWith(
-        JSON.stringify({
-          topOn: false,
-          bottomOn: true,
-          braOn: true,
-          pantiesOn: true,
-          visibleProps: [],
-          extraPeople: false,
-          extraLimbs: false,
-        }),
-      ),
+      completionWith(JSON.stringify(fullReport({ top: "absent" }))),
     );
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
@@ -136,17 +130,7 @@ describe("guardFrame", () => {
 
   it("flags an unexpected object in her hand", async () => {
     createGroqVisionCompletion.mockResolvedValue(
-      completionWith(
-        JSON.stringify({
-          topOn: true,
-          bottomOn: true,
-          braOn: true,
-          pantiesOn: true,
-          visibleProps: ["phone"],
-          extraPeople: false,
-          extraLimbs: false,
-        }),
-      ),
+      completionWith(JSON.stringify(fullReport({ visibleProps: ["phone"] }))),
     );
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
@@ -158,15 +142,7 @@ describe("guardFrame", () => {
   it("flags extra people and extra limbs", async () => {
     createGroqVisionCompletion.mockResolvedValue(
       completionWith(
-        JSON.stringify({
-          topOn: true,
-          bottomOn: true,
-          braOn: true,
-          pantiesOn: true,
-          visibleProps: [],
-          extraPeople: true,
-          extraLimbs: true,
-        }),
+        JSON.stringify(fullReport({ extraPeople: true, extraLimbs: true })),
       ),
     );
     const result = await guardFrame({
@@ -200,19 +176,32 @@ describe("guardFrame", () => {
     expect(result.checked).toBe(false);
   });
 
+  it("returns unchecked when a field fails schema validation instead of crashing", async () => {
+    createGroqVisionCompletion.mockResolvedValue(
+      completionWith(JSON.stringify(fullReport({ extraPeople: "yes" }))),
+    );
+    const result = await guardFrame({
+      frameUrl: "https://x/frame.jpg",
+      expected,
+    });
+    expect(result.checked).toBe(false);
+    expect(result.observed).toBeNull();
+  });
+
+  it("returns unchecked when a garment field is a value outside present/absent/unknown", async () => {
+    createGroqVisionCompletion.mockResolvedValue(
+      completionWith(JSON.stringify(fullReport({ top: "maybe" }))),
+    );
+    const result = await guardFrame({
+      frameUrl: "https://x/frame.jpg",
+      expected,
+    });
+    expect(result.checked).toBe(false);
+  });
+
   it("flags the wrong prop when a different object is visible instead of the expected one", async () => {
     createGroqVisionCompletion.mockResolvedValue(
-      completionWith(
-        JSON.stringify({
-          topOn: true,
-          bottomOn: true,
-          braOn: true,
-          pantiesOn: true,
-          visibleProps: ["drink"],
-          extraPeople: false,
-          extraLimbs: false,
-        }),
-      ),
+      completionWith(JSON.stringify(fullReport({ visibleProps: ["drink"] }))),
     );
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
@@ -230,18 +219,7 @@ describe("guardFrame", () => {
 
   it("flags a garment whose color drifted even though it is still on", async () => {
     createGroqVisionCompletion.mockResolvedValue(
-      completionWith(
-        JSON.stringify({
-          topOn: true,
-          topColor: "red",
-          bottomOn: true,
-          braOn: true,
-          pantiesOn: true,
-          visibleProps: [],
-          extraPeople: false,
-          extraLimbs: false,
-        }),
-      ),
+      completionWith(JSON.stringify(fullReport({ topColor: "red" }))),
     );
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
@@ -259,18 +237,7 @@ describe("guardFrame", () => {
 
   it("does not flag color when it matches expected", async () => {
     createGroqVisionCompletion.mockResolvedValue(
-      completionWith(
-        JSON.stringify({
-          topOn: true,
-          topColor: "Black",
-          bottomOn: true,
-          braOn: true,
-          pantiesOn: true,
-          visibleProps: [],
-          extraPeople: false,
-          extraLimbs: false,
-        }),
-      ),
+      completionWith(JSON.stringify(fullReport({ topColor: "Black" }))),
     );
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
@@ -281,18 +248,7 @@ describe("guardFrame", () => {
 
   it("parses a valid pose into observed.pose", async () => {
     createGroqVisionCompletion.mockResolvedValue(
-      completionWith(
-        JSON.stringify({
-          topOn: true,
-          bottomOn: true,
-          braOn: true,
-          pantiesOn: true,
-          visibleProps: [],
-          extraPeople: false,
-          extraLimbs: false,
-          pose: "standing",
-        }),
-      ),
+      completionWith(JSON.stringify(fullReport({ pose: "standing" }))),
     );
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
@@ -303,18 +259,7 @@ describe("guardFrame", () => {
 
   it("drops an unknown/unparseable pose rather than adopting it", async () => {
     createGroqVisionCompletion.mockResolvedValue(
-      completionWith(
-        JSON.stringify({
-          topOn: true,
-          bottomOn: true,
-          braOn: true,
-          pantiesOn: true,
-          visibleProps: [],
-          extraPeople: false,
-          extraLimbs: false,
-          pose: "unknown",
-        }),
-      ),
+      completionWith(JSON.stringify(fullReport({ pose: "unknown" }))),
     );
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
@@ -325,18 +270,7 @@ describe("guardFrame", () => {
 
   it("flags pose drift as informational only, never triggering repair", async () => {
     createGroqVisionCompletion.mockResolvedValue(
-      completionWith(
-        JSON.stringify({
-          topOn: true,
-          bottomOn: true,
-          braOn: true,
-          pantiesOn: true,
-          visibleProps: [],
-          extraPeople: false,
-          extraLimbs: false,
-          pose: "standing",
-        }),
-      ),
+      completionWith(JSON.stringify(fullReport({ pose: "standing" }))),
     );
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",
@@ -354,17 +288,7 @@ describe("guardFrame", () => {
 
   it("does not flag a synonym for the expected prop as wrong", async () => {
     createGroqVisionCompletion.mockResolvedValue(
-      completionWith(
-        JSON.stringify({
-          topOn: true,
-          bottomOn: true,
-          braOn: true,
-          pantiesOn: true,
-          visibleProps: ["toy"],
-          extraPeople: false,
-          extraLimbs: false,
-        }),
-      ),
+      completionWith(JSON.stringify(fullReport({ visibleProps: ["toy"] }))),
     );
     const result = await guardFrame({
       frameUrl: "https://x/frame.jpg",

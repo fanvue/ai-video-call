@@ -73,6 +73,8 @@ const makeResult = (
     followUps: [],
     guard: { checked: true, issues: [], repaired: false },
     observed: null,
+    verdict: "approved",
+    rejectReason: null,
     timings: { planMs: 1, renderMs: 1, frameMs: 1, guardMs: 1, repairMs: 1 },
     costUsd: 0.02,
     ...overrides,
@@ -523,6 +525,91 @@ describe("ClipPipeline", () => {
     expect(pipeline.getBufferStats().chainedReady).toBe(0);
     // The queued beat was drained rather than left to run later from a seed that never rendered.
     expect(queue.next()).toEqual({ kind: "idle" });
+  });
+
+  it("treats a guard-rejected chain clip as a failure: retries once, then errors, never plays it", async () => {
+    const events: PipelineEvent[] = [];
+    const queue = makeJobQueue();
+    let replyRenders = 0;
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: (e) => events.push(e),
+      render: async (req) => {
+        if (req.job.kind === "reply") {
+          replyRenders += 1;
+          return delayed(() =>
+            makeResult("reply", freshFrame(), {
+              verdict: "rejected",
+              rejectReason: "extra person in frame",
+              costUsd: 0.05,
+            }),
+          );
+        }
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    pipeline.nextClip();
+
+    queue.push(REPLY_JOB);
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // attempt 1 rejected, retries
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // attempt 2 rejected, abandons
+
+    expect(replyRenders).toBe(2);
+    // Both renders were paid for and both are logged as discarded; neither is ever playable.
+    const discarded = events.filter((e) => e.type === "clipDiscarded");
+    expect(discarded).toHaveLength(2);
+    expect(discarded.every((e) => e.costUsd === 0.05)).toBe(true);
+    const errors = events.filter((e) => e.type === "error");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.message).toBe("extra person in frame");
+    expect(
+      events.filter(
+        (e) => e.type === "clipReady" && e.result.jobKind === "reply",
+      ),
+    ).toHaveLength(0);
+    expect(pipeline.getBufferStats().chainedReady).toBe(0);
+  });
+
+  it("treats a guard-rejected idle clip as a failure and never stocks it", async () => {
+    const events: PipelineEvent[] = [];
+    const queue = makeJobQueue();
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: (e) => events.push(e),
+      render: async (req) => {
+        if (req.job.kind !== "idle") {
+          return delayed(() => chainAdvancingResult(req));
+        }
+        return delayed(() =>
+          makeResult("idle", req.session.seedFrameUrl, {
+            verdict: "rejected",
+            rejectReason: "wardrobe drifted",
+          }),
+        );
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // idle attempt 1 rejected, retry
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // idle attempt 2 rejected, report
+
+    expect(pipeline.getBufferStats().idleReady).toBe(0);
+    expect(
+      events.filter((e) => e.type === "clipReady" && e.lane === "idle"),
+    ).toHaveLength(0);
+    expect(
+      events.filter((e) => e.type === "error").length,
+    ).toBeGreaterThanOrEqual(1);
+    expect(
+      events.filter((e) => e.type === "clipDiscarded").length,
+    ).toBeGreaterThanOrEqual(2);
+    // Rejection follows the same retry path as a thrown render, so the counter isn't leaked.
+    expect(pipeline.getBufferStats().idleInflight).toBeGreaterThan(0);
   });
 
   it("keeps a reference-backend (loops: false) idle result as playable filler instead of discarding it", async () => {

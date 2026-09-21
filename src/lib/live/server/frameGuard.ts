@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { correctFrameIdentityDrift } from "@/lib/fal/requestFrameIdentityCorrection";
 import { createGroqVisionCompletion } from "@/lib/groq";
 import type {
@@ -10,21 +11,26 @@ import type {
 } from "../contract";
 import { poseSchema } from "../contract";
 
-type VisionReport = {
-  topOn?: boolean;
-  bottomOn?: boolean;
-  braOn?: boolean;
-  pantiesOn?: boolean;
-  topColor?: string;
-  bottomColor?: string;
-  braColor?: string;
-  pantiesColor?: string;
-  visibleProps?: string[];
-  extraPeople?: boolean;
-  extraLimbs?: boolean;
+// "unknown" covers occluded, cropped, layered-over, or otherwise not-judgeable — never coerced to
+// present/absent, so an unjudgeable frame can't silently pass or fail a garment check.
+const garmentPresenceSchema = z.enum(["present", "absent", "unknown"]);
+
+const visionReportSchema = z.object({
+  top: garmentPresenceSchema.optional(),
+  bottom: garmentPresenceSchema.optional(),
+  bra: garmentPresenceSchema.optional(),
+  panties: garmentPresenceSchema.optional(),
+  topColor: z.string().optional(),
+  bottomColor: z.string().optional(),
+  braColor: z.string().optional(),
+  pantiesColor: z.string().optional(),
+  visibleProps: z.array(z.string()).optional(),
+  extraPeople: z.boolean().optional(),
+  extraLimbs: z.boolean().optional(),
   // Raw model output; "unknown" or anything else unparseable is dropped by poseFromReport below.
-  pose?: string;
-};
+  pose: z.string().optional(),
+});
+type VisionReport = z.infer<typeof visionReportSchema>;
 
 const VALID_POSES = new Set<string>(poseSchema.options);
 
@@ -37,15 +43,17 @@ const poseFromReport = (report: VisionReport): Pose | undefined =>
 
 const GUARD_PROMPT =
   "Look at this single frame from an adult webcam stream. Return ONLY JSON describing exactly what is visible: " +
-  '{"topOn":bool,"bottomOn":bool,"braOn":bool,"pantiesOn":bool,"topColor":"...","bottomColor":"...",' +
+  '{"top":"present|absent|unknown","bottom":"present|absent|unknown","bra":"present|absent|unknown",' +
+  '"panties":"present|absent|unknown","topColor":"...","bottomColor":"...",' +
   '"braColor":"...","pantiesColor":"...","visibleProps":["..."],"extraPeople":bool,"extraLimbs":bool,' +
   '"pose":"sitting|standing|leaning|kneeling|lying|onAllFours|bentOver|unknown"}. ' +
-  "topOn/bottomOn/braOn/pantiesOn describe whether that garment is currently worn and visible. For each garment " +
-  'that is on, give its ONE main color as a single common color word (e.g. "black", "red", "blue"); omit or use ' +
-  '"" for a garment that is off. visibleProps lists any handheld object (e.g. "vibrator", "drink"), empty array ' +
-  "if hands are empty. extraPeople is true only if more than one person is visible. extraLimbs is true only if " +
-  'the body shows extra or malformed limbs. pose is her overall body position in the frame; use "unknown" if ' +
-  "it does not clearly match one of the other options.";
+  'For top/bottom/bra/panties: "present" only if that garment is clearly worn; "absent" only if that body ' +
+  'region is clearly visible and bare; "unknown" if it is occluded, cropped out of frame, covered by another ' +
+  'layer, or otherwise not judgeable — never guess. For each garment that is "present", give its ONE main color ' +
+  'as a single common color word (e.g. "black", "red", "blue"); omit or use "" otherwise. visibleProps lists any ' +
+  'handheld object (e.g. "vibrator", "drink"), empty array if hands are empty. extraPeople is true only if ' +
+  "more than one person is visible. extraLimbs is true only if the body shows extra or malformed limbs. pose is " +
+  'her overall body position in the frame; use "unknown" if it does not clearly match one of the other options.';
 
 // Common garment colors, longest-first so "light blue" wins over a bare "blue" scan if ever extended.
 const COLOR_WORDS = [
@@ -75,18 +83,21 @@ const expectedColor = (description: string): string | null =>
 const parseVisionReport = (raw: string): VisionReport | null => {
   const cleaned = raw.replace(/^```json\s*|\s*```$/g, "").trim();
   const objectMatch = cleaned.match(/\{[\s\S]*\}/);
+  let json: unknown;
   try {
-    return JSON.parse(objectMatch?.[0] ?? cleaned) as VisionReport;
+    json = JSON.parse(objectMatch?.[0] ?? cleaned);
   } catch {
     return null;
   }
+  const parsed = visionReportSchema.safeParse(json);
+  return parsed.success ? parsed.data : null;
 };
 
 const GARMENT_SEEN: Record<GarmentId, keyof VisionReport> = {
-  top: "topOn",
-  bottom: "bottomOn",
-  bra: "braOn",
-  panties: "pantiesOn",
+  top: "top",
+  bottom: "bottom",
+  bra: "bra",
+  panties: "panties",
 };
 
 const GARMENT_COLOR_SEEN: Record<GarmentId, keyof VisionReport> = {
@@ -113,8 +124,9 @@ const compareToExpected = (
 ): string[] => {
   const issues: string[] = [];
   for (const id of Object.keys(GARMENT_SEEN) as GarmentId[]) {
-    const seen = report[GARMENT_SEEN[id]];
-    if (typeof seen !== "boolean") continue;
+    const reported = report[GARMENT_SEEN[id]];
+    if (reported !== "present" && reported !== "absent") continue;
+    const seen = reported === "present";
     const wanted = expected.wardrobe[id].on;
     if (wanted && !seen)
       issues.push(`${id} should be on but frame shows it off`);
@@ -176,9 +188,9 @@ const observedWardrobeFrom = (
 ): ObservedState["wardrobe"] => {
   const wardrobe: ObservedState["wardrobe"] = {};
   for (const id of Object.keys(GARMENT_SEEN) as GarmentId[]) {
-    const seen = report[GARMENT_SEEN[id]];
-    if (typeof seen === "boolean") {
-      wardrobe[id] = seen;
+    const reported = report[GARMENT_SEEN[id]];
+    if (reported === "present" || reported === "absent") {
+      wardrobe[id] = reported === "present";
     }
   }
   return wardrobe;
