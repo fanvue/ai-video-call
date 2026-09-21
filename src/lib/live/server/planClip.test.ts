@@ -718,6 +718,19 @@ describe("planClip: negation", () => {
     expect(plan.expectedState.wardrobe).toEqual(s.state.wardrobe);
   });
 
+  it("mentioning an outfit alongside an unrelated 'down'/'off' never undresses her", () => {
+    const s = session();
+    expect(reply(s, "nice outfit, sit down").expectedState.wardrobe).toEqual(
+      s.state.wardrobe,
+    );
+    expect(
+      reply(s, "love that outfit, calm down").expectedState.wardrobe,
+    ).toEqual(s.state.wardrobe);
+    expect(
+      reply(s, "your outfit is off the charts").expectedState.wardrobe,
+    ).toEqual(s.state.wardrobe);
+  });
+
   it("a cancelled request followed by an unmatched clause makes no state change", () => {
     const s = session();
     const plan = reply(s, "never mind, stay sitting");

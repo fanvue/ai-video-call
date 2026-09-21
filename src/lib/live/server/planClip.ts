@@ -322,8 +322,10 @@ const GARMENT_OFF_PATTERN: Record<GarmentId, RegExp> = {
 };
 
 // A dress or one-piece is captured as the top garment; "dressed"/"dress up" are redress verbs, not this.
-const RE_ONE_PIECE =
-  /\b(dress|one[- ]piece|romper|jumpsuit|lingerie|outfit)\b/i;
+// Bound to a removal verb the same way every other garment is — "nice outfit, sit down" must not undress her.
+const RE_ONE_PIECE_OFF = offPatternFor(
+  "dress|one[- ]piece|romper|jumpsuit|lingerie|outfit",
+);
 const RE_OFF_VERB = /\b(off|remove|take off|slide off|pull down|down|strip)\b/i;
 // A bare removal verb with no named garment ("take it off") means the top layer.
 const RE_GENERIC_OFF = /\b(take|pull|slide|rip) it off\b/i;
@@ -507,8 +509,7 @@ const stripGarmentBeats = (
 ): Beat[] | null => {
   const target =
     GARMENT_ORDER.find((id) => GARMENT_OFF_PATTERN[id].test(text)) ??
-    (RE_GENERIC_OFF.test(text) ||
-    (RE_ONE_PIECE.test(text) && RE_OFF_VERB.test(text))
+    (RE_GENERIC_OFF.test(text) || RE_ONE_PIECE_OFF.test(text)
       ? "top"
       : undefined);
   if (!target) return null;
