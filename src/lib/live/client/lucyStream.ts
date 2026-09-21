@@ -6,6 +6,13 @@ import { LIVE_TUNABLES } from "@/lib/live/contract";
 
 export const LUCY_ENDPOINT_ID = "decart/lucy-2-5/realtime";
 
+// Decart's SDK defines lucy-2.5 input as 1280x720 at 30fps; portrait is the same size with width and height swapped. Anything else is scaled server-side and, in our case, produced no output at all.
+export const LUCY_INPUT = { width: 720, height: 1280, fps: 30 } as const;
+
+// Decart's character-swap template: name the reference, say what to keep from the video, keep enhancement on.
+export const buildLucyPrompt = (lookLock: string): string =>
+  `Replace the person in the video with the woman from the reference image: ${lookLock} Keep her framing, pose, motion, expression, clothing and the room exactly as they are in the video.`;
+
 const OPEN_TIMEOUT_MS = 30_000;
 // Matches the server's TOKEN_EXPIRATION_SECONDS (lucyToken/route.ts) so the SDK's tokenProvider refresh loop re-mints before the session outlives the token.
 const TOKEN_EXPIRATION_SECONDS = 120;
@@ -72,7 +79,7 @@ export const openRealtimeWithFalLucy: OpenLucyRealtime = (options) => {
     input: {
       prompt: options.prompt,
       reference_image_url: options.referenceImageUrl,
-      enable_prompt_expansion: false,
+      enable_prompt_expansion: true,
     },
     localStream: options.drivingStream,
     tokenProvider: () => options.fetchToken(),

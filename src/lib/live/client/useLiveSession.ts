@@ -13,7 +13,9 @@ import {
   type DirectorRealtimeState,
 } from "@/lib/live/client/directorStream";
 import {
+  buildLucyPrompt,
   fetchAsDataUri,
+  LUCY_INPUT,
   LucySession,
   openRealtimeWithFalLucy,
   type LucyMetrics,
@@ -802,18 +804,24 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
           ? lucyHiddenARef.current
           : lucyHiddenBRef.current;
       if (active && active.videoWidth > 0 && active.videoHeight > 0) {
-        if (
-          canvas.width !== active.videoWidth ||
-          canvas.height !== active.videoHeight
-        ) {
-          canvas.width = active.videoWidth;
-          canvas.height = active.videoHeight;
-        }
-        ctx.drawImage(active, 0, 0, canvas.width, canvas.height);
+        // Cover-fit into the fixed model-sized canvas; the canvas itself never resizes.
+        const scale = Math.max(
+          canvas.width / active.videoWidth,
+          canvas.height / active.videoHeight,
+        );
+        const drawWidth = active.videoWidth * scale;
+        const drawHeight = active.videoHeight * scale;
+        ctx.drawImage(
+          active,
+          (canvas.width - drawWidth) / 2,
+          (canvas.height - drawHeight) / 2,
+          drawWidth,
+          drawHeight,
+        );
         drawnFrames += 1;
         if (drawnFrames === 1) {
           console.info(
-            `lucy driving: first frame ${canvas.width}x${canvas.height} paused=${active.paused} readyState=${active.readyState}`,
+            `lucy driving: first frame clip ${active.videoWidth}x${active.videoHeight} -> canvas ${canvas.width}x${canvas.height} paused=${active.paused} readyState=${active.readyState}`,
           );
         }
       } else if (
@@ -1063,17 +1071,16 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         player.attach(lucyHiddenARef.current, lucyHiddenBRef.current);
         player.start();
         const canvas = document.createElement("canvas");
-        // 9:16 default until the first decoded frame's actual dimensions land in the draw loop.
-        canvas.width = 720;
-        canvas.height = 1280;
+        canvas.width = LUCY_INPUT.width;
+        canvas.height = LUCY_INPUT.height;
         lucyCanvasRef.current = canvas;
         startLucyCanvasDrawLoop();
         const captureCanvas = canvas as HTMLCanvasElement & {
           webkitCaptureStream?: (frameRate?: number) => MediaStream;
         };
         const drivingStream =
-          captureCanvas.captureStream?.(30) ??
-          captureCanvas.webkitCaptureStream?.(30) ??
+          captureCanvas.captureStream?.(LUCY_INPUT.fps) ??
+          captureCanvas.webkitCaptureStream?.(LUCY_INPUT.fps) ??
           new MediaStream();
 
         setLucyMetrics(null);
@@ -1135,7 +1142,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         startPipeline();
         await lucySession.open({
           referenceImageUrl: await fetchAsDataUri(reference.anchorFrameUrl),
-          prompt: `${creator.lookLock} Live webcam stream, restyled to match her exactly.`,
+          prompt: buildLucyPrompt(creator.lookLock),
           drivingStream,
         });
       } else {
