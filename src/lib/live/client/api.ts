@@ -37,6 +37,14 @@ export const renderClip = async (req: ClipRequest): Promise<ClipResult> => {
   return clipResultSchema.parse(raw);
 };
 
+export type UpscaleSeedResult = { url: string | null; costUsd: number };
+
+// Called after a clip already resolved (see pipeline.ts) — never blocks clip start.
+export const upscaleSeed = async (
+  frameUrl: string,
+): Promise<UpscaleSeedResult> =>
+  postJson<UpscaleSeedResult>("/api/live/upscaleSeed", { frameUrl });
+
 export const uploadReference = async (
   file: File,
 ): Promise<ReferenceUploadResult> => {

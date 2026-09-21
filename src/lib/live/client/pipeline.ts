@@ -36,6 +36,11 @@ export type ClipPipelineOptions = {
   // Polled once per chain job submission (not idle, which never becomes canon); true at most once
   // per REFERENCE_REFRESH_INTERVAL_MS. See director.consumeReferenceRefreshDue.
   needsIdentityRefresh?: () => boolean;
+  // Called after a chain clip already resolved (never gates clipReady/playback) to sharpen the
+  // seed it left behind before the NEXT chain job renders from it. See upscaleChainTailInBackground.
+  upscaleSeed?: (
+    frameUrl: string,
+  ) => Promise<{ url: string | null; costUsd: number }>;
 };
 
 export type SnapshotSource = () => LiveSessionSnapshot;
@@ -57,6 +62,7 @@ export class ClipPipeline {
   private readonly onEvent: (event: PipelineEvent) => void;
   private readonly abandonDependents?: (job: ClipJob) => void;
   private readonly needsIdentityRefresh?: () => boolean;
+  private readonly upscaleSeed?: ClipPipelineOptions["upscaleSeed"];
   private backend: RenderBackend;
   private speechMode: SpeechMode;
 
@@ -97,6 +103,7 @@ export class ClipPipeline {
     this.onEvent = options.onEvent;
     this.abandonDependents = options.abandonDependents;
     this.needsIdentityRefresh = options.needsIdentityRefresh;
+    this.upscaleSeed = options.upscaleSeed;
     this.backend = options.backend ?? "turbo";
     this.speechMode = options.speechMode ?? "text";
   }
@@ -392,6 +399,25 @@ export class ClipPipeline {
     this.addCost(result.costUsd);
     this.announceIfRecovered();
     this.tryAdvanceChain();
+    this.upscaleChainTailInBackground(result.seedFrameUrl);
+  }
+
+  // Patches whichever of chainTail/anchor still holds the raw frame; tryAdvanceChain may have
+  // already promoted chainTail into anchor by the time this resolves. Neither matching = stale, drop it.
+  private upscaleChainTailInBackground(rawFrameUrl: string): void {
+    if (!this.upscaleSeed) return;
+    this.upscaleSeed(rawFrameUrl)
+      .then(({ url, costUsd }) => {
+        if (this.disposed) return;
+        if (costUsd > 0) this.addCost(costUsd);
+        if (!url) return;
+        if (this.chainTail?.frameUrl === rawFrameUrl) {
+          this.chainTail = { ...this.chainTail, frameUrl: url };
+        } else if (this.anchor.frameUrl === rawFrameUrl) {
+          this.anchor = { ...this.anchor, frameUrl: url };
+        }
+      })
+      .catch(() => {});
   }
 
   // ---- Idle lane ----

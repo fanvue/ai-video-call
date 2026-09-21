@@ -18,7 +18,6 @@ import { guardFrame } from "./frameGuard";
 import { planClip, typingLeadSecFor } from "./planClip";
 import { reconcilePose, reconcileWardrobe } from "./reconcileState";
 import { renderBackendFor } from "./renderClip";
-import { upscaleFrame } from "./upscaleFrame";
 import { writeCheckIn, writeReply } from "./writeReply";
 
 const ANATOMY_ISSUE_RE = /extra person|extra or malformed limbs/;
@@ -521,16 +520,6 @@ export const generateClip = async (
     }
   }
 
-  // Upscale every approved non-idle seed so quality loss doesn't compound render over render.
-  let seedUpscaleCostUsd = 0;
-  if (verdict === "approved" && job.kind !== "idle") {
-    const upscaled = await upscaleFrame(seedFrameUrl);
-    if (upscaled) {
-      seedFrameUrl = upscaled.url;
-      seedUpscaleCostUsd = upscaled.costUsd;
-    }
-  }
-
   const replyOutcome = await replyTextPromise;
   // A rejected clip's dialogue never rewrites canon: only an approved clip's nextWorld is adopted.
   const finalState =
@@ -578,6 +567,6 @@ export const generateClip = async (
     verdict,
     rejectReason,
     timings: { planMs, renderMs, frameMs, guardMs, repairMs: 0, verifyMs },
-    costUsd: rendered.costUsd + identityCorrectionCostUsd + seedUpscaleCostUsd,
+    costUsd: rendered.costUsd + identityCorrectionCostUsd,
   };
 };

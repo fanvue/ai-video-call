@@ -15,11 +15,6 @@ vi.mock("./correctIdentity", () => ({
   correctIdentity: (...args: unknown[]) => correctIdentity(...args),
 }));
 
-const upscaleFrame = vi.fn();
-vi.mock("./upscaleFrame", () => ({
-  upscaleFrame: (...args: unknown[]) => upscaleFrame(...args),
-}));
-
 const extractLastFrameUrl = vi.fn();
 const extractMidFrameUrl = vi.fn();
 vi.mock("@/lib/fal/extractLastFrame", () => ({
@@ -94,7 +89,6 @@ const request = (
 beforeEach(() => {
   render.mockReset();
   correctIdentity.mockReset();
-  upscaleFrame.mockReset();
   extractLastFrameUrl.mockReset();
   extractMidFrameUrl.mockReset();
   guardFrame.mockReset();
@@ -103,7 +97,6 @@ beforeEach(() => {
     costUsd: 0.275,
   });
   correctIdentity.mockResolvedValue(null);
-  upscaleFrame.mockResolvedValue(null);
   extractLastFrameUrl.mockResolvedValue("https://example.com/last.jpg");
 });
 
@@ -129,25 +122,6 @@ describe("generateClip with the vision guard off (default)", () => {
     expect(result.seedFrameUrl).toBe(session.seedFrameUrl);
     expect(extractLastFrameUrl).not.toHaveBeenCalled();
     expect(guardFrame).not.toHaveBeenCalled();
-    expect(upscaleFrame).not.toHaveBeenCalled();
-  });
-
-  it("greeting: upscales the extracted seed and adds its cost when the upscale succeeds", async () => {
-    upscaleFrame.mockResolvedValue({
-      url: "https://example.com/last-upscaled.jpg",
-      costUsd: 0.03,
-    });
-    const result = await generateClip(request({ kind: "greeting" }));
-    expect(upscaleFrame).toHaveBeenCalledWith("https://example.com/last.jpg");
-    expect(result.seedFrameUrl).toBe("https://example.com/last-upscaled.jpg");
-    expect(result.costUsd).toBeCloseTo(0.275 + 0.03);
-  });
-
-  it("greeting: falls back to the unupscaled seed, no added cost, when the upscale fails", async () => {
-    upscaleFrame.mockResolvedValue(null);
-    const result = await generateClip(request({ kind: "greeting" }));
-    expect(result.seedFrameUrl).toBe("https://example.com/last.jpg");
-    expect(result.costUsd).toBeCloseTo(0.275);
   });
 
   it("wardrobe beat: adopts the planned wardrobe without observing it", async () => {

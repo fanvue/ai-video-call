@@ -62,6 +62,9 @@ export type StartOptions = {
 export type UseLiveSessionDeps = {
   renderClip: (req: ClipRequest) => Promise<ClipResult>;
   uploadReference: (file: File) => Promise<ReferenceUploadResult>;
+  upscaleSeed?: (
+    frameUrl: string,
+  ) => Promise<{ url: string | null; costUsd: number }>;
 };
 
 const EMPTY_BUFFER_DEPTH: BufferDepth = {
@@ -708,6 +711,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         },
         needsIdentityRefresh: () =>
           directorRef.current?.consumeReferenceRefreshDue(Date.now()) ?? false,
+        upscaleSeed: deps.upscaleSeed,
       });
       pipelineRef.current = pipeline;
 

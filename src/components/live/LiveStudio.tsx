@@ -1,7 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { renderClip, uploadReference } from "@/lib/live/client/api";
+import {
+  renderClip,
+  uploadReference,
+  upscaleSeed,
+} from "@/lib/live/client/api";
 import {
   DEFAULT_TIP_MENU,
   type TipMenuAction,
@@ -62,7 +66,11 @@ export const LiveStudio = () => {
       new URLSearchParams(window.location.search).get("debug") === "1",
   );
 
-  const [session, videoRefs] = useLiveSession({ renderClip, uploadReference });
+  const [session, videoRefs] = useLiveSession({
+    renderClip,
+    uploadReference,
+    upscaleSeed,
+  });
   const { bindVideoA, bindVideoB } = videoRefs;
 
   const processedTipEventIdsRef = useRef<Set<string>>(new Set());

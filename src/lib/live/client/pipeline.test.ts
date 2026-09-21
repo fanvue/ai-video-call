@@ -1100,4 +1100,104 @@ describe("ClipPipeline", () => {
     expect(behindReply?.seedFrameUrl).toBe(reply?.seedFrameUrl);
     expect(behindReply?.seedFrameUrl).not.toBe(ANCHOR_0);
   });
+
+  it("upscales a settled chain job's seed in the background, without delaying clipReady, and feeds it to the next chain job", async () => {
+    const requests: ClipRequest[] = [];
+    const queue = makeJobQueue();
+    const upscaleDeferreds = new Map<
+      string,
+      Deferred<{ url: string | null; costUsd: number }>
+    >();
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        requests.push(req);
+        return delayed(() => chainAdvancingResult(req));
+      },
+      upscaleSeed: async (frameUrl) => {
+        const d = defer<{ url: string | null; costUsd: number }>();
+        upscaleDeferreds.set(frameUrl, d);
+        return d.promise;
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting settles; clipReady already fired
+    expect(pipeline.nextClip()).not.toBeNull(); // clipReady wasn't blocked on the pending upscale
+
+    queue.push(REPLY_JOB);
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // reply settles onto a fresh frame
+    const reply = pipeline.nextClip();
+    const rawReplySeed = reply!.seedFrameUrl;
+
+    const upscaled = "https://example.com/upscaled.jpg";
+    upscaleDeferreds
+      .get(rawReplySeed)
+      ?.resolve({ url: upscaled, costUsd: 0.03 });
+    // Resolving upscaleSeed's own promise is itself a microtask hop before its .then() runs.
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+
+    queue.push({ ...REPLY_JOB, requestId: "r2" });
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    pipeline.nextClip();
+
+    const secondReplyRequest = requests.find(
+      (r) => r.job.kind === "reply" && r.job.requestId === "r2",
+    );
+    expect(secondReplyRequest?.session.seedFrameUrl).toBe(upscaled);
+  });
+
+  it("a stale upscale result never clobbers a chainTail that already moved past it", async () => {
+    const requests: ClipRequest[] = [];
+    const queue = makeJobQueue();
+    const upscaleDeferreds = new Map<
+      string,
+      Deferred<{ url: string | null; costUsd: number }>
+    >();
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        requests.push(req);
+        return delayed(() => chainAdvancingResult(req));
+      },
+      upscaleSeed: async (frameUrl) => {
+        const d = defer<{ url: string | null; costUsd: number }>();
+        upscaleDeferreds.set(frameUrl, d);
+        return d.promise;
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting settles, upscale kicked off on ANCHOR_0
+    pipeline.nextClip(); // consume the greeting so the reply below is what nextClip() returns next
+
+    queue.push(REPLY_JOB);
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // reply settles: chainTail moves past ANCHOR_0
+    const reply = pipeline.nextClip();
+    const replySeed = reply!.seedFrameUrl;
+
+    // The greeting's upscale (keyed by ANCHOR_0) finally resolves, long after chainTail moved on.
+    upscaleDeferreds.get(ANCHOR_0)?.resolve({
+      url: "https://example.com/stale-upscaled.jpg",
+      costUsd: 0.03,
+    });
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+
+    queue.push({ ...REPLY_JOB, requestId: "r2" });
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    pipeline.nextClip();
+
+    const secondReplyRequest = requests.find(
+      (r) => r.job.kind === "reply" && r.job.requestId === "r2",
+    );
+    expect(secondReplyRequest?.session.seedFrameUrl).toBe(replySeed);
+  });
 });
