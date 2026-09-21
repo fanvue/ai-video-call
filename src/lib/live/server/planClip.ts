@@ -113,23 +113,24 @@ const GARMENT_LABEL: Record<GarmentId, string> = {
   panties: "panties",
 };
 
-const wardrobeLockLine = (wardrobe: Wardrobe): string => {
+// seedHasBody is false only for clip one of a session whose reference photo is a headshot with no wardrobe pixels to copy.
+const wardrobeLockLine = (wardrobe: Wardrobe, seedHasBody: boolean): string => {
   const parts = GARMENT_ORDER.map(
     (id) =>
       `${GARMENT_LABEL[id]} (${wardrobe[id].description}) ${wardrobe[id].on ? "ON" : "OFF"}`,
   );
   const off = GARMENT_ORDER.filter((id) => !wardrobe[id].on);
   const on = GARMENT_ORDER.filter((id) => wardrobe[id].on);
-  // Copy-from-pixels framing, not a state description: describing "stays on" lets the model redraw
-  // its own version of the garment; telling it to copy the seed frame's actual pixels does not.
   const offGuard =
     off.length > 0
       ? ` Her ${off.map((id) => GARMENT_LABEL[id]).join(" and ")} stay${off.length === 1 ? "s" : ""} off for every single frame of this clip, start to finish, even briefly — nothing regrows there.`
       : "";
   const onGuard =
-    on.length > 0
-      ? ` Copy her ${on.map((id) => GARMENT_LABEL[id]).join(" and ")} pixel-for-pixel from the seed frame — same color, fabric, and fit — for every single frame of this clip, start to finish, even briefly. Do not redraw ${on.length === 1 ? "it" : "them"} from memory of an earlier or later moment; nothing comes off there unless named below.`
-      : "";
+    on.length === 0
+      ? ""
+      : seedHasBody
+        ? ` Copy her ${on.map((id) => GARMENT_LABEL[id]).join(" and ")} pixel-for-pixel from the seed frame — same color, fabric, and fit — for every single frame of this clip, start to finish, even briefly. Do not redraw ${on.length === 1 ? "it" : "them"} from memory of an earlier or later moment; nothing comes off there unless named below.`
+        : ` The seed photo is a headshot and does not show her body, so there are no clothing pixels in it to copy — the description above is the complete and only truth of what she is wearing. Render her ${on.map((id) => GARMENT_LABEL[id]).join(" and ")} exactly as described, fully covering that part of her body, for every single frame of this clip; nothing is bare or exposed there unless named below.`;
   return (
     `WARDROBE LOCK, right now: ${parts.join("; ")}. Change only what this clip's instruction ` +
     "explicitly names — if nothing below names a garment, none moves. Default is no clothing change." +
@@ -142,6 +143,7 @@ const wardrobeLockLine = (wardrobe: Wardrobe): string => {
 const wardrobeReinforcementLine = (
   prevWardrobe: Wardrobe,
   nextWardrobe: Wardrobe,
+  seedHasBody: boolean,
 ): string => {
   const unchanged = GARMENT_ORDER.filter(
     (id) => prevWardrobe[id].on === nextWardrobe[id].on,
@@ -150,9 +152,11 @@ const wardrobeReinforcementLine = (
   const changing = GARMENT_ORDER.length - unchanged.length;
   const parts = unchanged.map((id) => {
     const garment = nextWardrobe[id];
-    return garment.on
+    if (!garment.on)
+      return `her ${GARMENT_LABEL[id]} stays off and does not reappear`;
+    return seedHasBody
       ? `copy her ${GARMENT_LABEL[id]} (${garment.description}) pixel-for-pixel from the seed frame`
-      : `her ${GARMENT_LABEL[id]} stays off and does not reappear`;
+      : `render her ${GARMENT_LABEL[id]} (${garment.description}) exactly as described, fully covering that part of her body — the seed photo is a headshot with no body pixels to copy`;
   });
   // Removing one garment (e.g. a top) sitting next to an untouched one (e.g. a bra) tends to make the
   // model flicker the untouched one too, since it's redrawing that whole area of the body anyway.
@@ -243,6 +247,7 @@ const composeLocks = (
   // picks up an object mid-clip that the committed state doesn't hold). Never affects `expectedState`.
   lockBodyOverride?: Body,
   holdOnly?: boolean,
+  seedHasBody = true,
 ): string[] => {
   const lockBody = lockBodyOverride ?? state.body;
   return [
@@ -252,7 +257,7 @@ const composeLocks = (
     WARDROBE_COUNT_LOCK,
     lookLockLine(lookLock),
     sceneLockLine(state.surroundings),
-    wardrobeLockLine(state.wardrobe),
+    wardrobeLockLine(state.wardrobe, seedHasBody),
     propLockLine(lockBody.prop),
     bodyLockLine(lockBody),
     PHYSICS_LOCK,
@@ -271,17 +276,22 @@ const buildPrompt = (params: {
   lockBodyOverride?: Body;
   // True for idle/greeting: nothing sexual is instructed, so don't invite it either.
   holdOnly?: boolean;
+  // False only for clip one, when the reference photo is a headshot with no body pixels to copy from.
+  seedHasBody?: boolean;
 }): string => {
+  const seedHasBody = params.seedHasBody ?? true;
   const locks = composeLocks(
     params.state,
     params.speechMode,
     params.creator.lookLock,
     params.lockBodyOverride,
     params.holdOnly,
+    seedHasBody,
   );
   const reinforcement = wardrobeReinforcementLine(
     params.state.wardrobe,
     params.nextWardrobe,
+    seedHasBody,
   );
   return [
     ...locks,
@@ -1391,6 +1401,8 @@ const planGreeting = (
     nextWardrobe: state.wardrobe,
     nextBody,
     holdOnly: true,
+    seedHasBody:
+      session.seedFrameUrl !== session.anchorFrameUrl || session.anchorHasBody,
   });
   return {
     prompt,

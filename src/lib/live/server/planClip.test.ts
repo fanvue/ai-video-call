@@ -53,6 +53,7 @@ const session = (
   state: state(),
   seedFrameUrl: "https://example.com/seed.jpg",
   anchorFrameUrl: "https://example.com/anchor.jpg",
+  anchorHasBody: true,
   elapsedSec: 30,
   transcript: [],
   ...overrides,
@@ -89,6 +90,35 @@ describe("planClip: greeting", () => {
     expect(plan.prompt).not.toMatch(
       /is only a face\/identity likeness reference/i,
     );
+  });
+
+  it("describes the wardrobe explicitly instead of pointing at the seed frame when the reference photo has no visible body", () => {
+    const s = session({
+      seedFrameUrl: "https://example.com/anchor.jpg",
+      anchorFrameUrl: "https://example.com/anchor.jpg",
+      anchorHasBody: false,
+    });
+    const plan = planClip({
+      session: s,
+      job: { kind: "greeting" },
+      speechMode: "text",
+    });
+    expect(plan.prompt).not.toMatch(/pixel-for-pixel from the seed frame/i);
+    expect(plan.prompt).toMatch(/no clothing pixels in it to copy/i);
+  });
+
+  it("still copies from the seed frame once the seed is a real generated frame, even with a bodyless anchor", () => {
+    const s = session({
+      seedFrameUrl: "https://example.com/extracted.jpg",
+      anchorFrameUrl: "https://example.com/anchor.jpg",
+      anchorHasBody: false,
+    });
+    const plan = planClip({
+      session: s,
+      job: { kind: "greeting" },
+      speechMode: "text",
+    });
+    expect(plan.prompt).toMatch(/pixel-for-pixel from the seed frame/i);
   });
 });
 

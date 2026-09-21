@@ -40,10 +40,16 @@ export type ReferenceUploadResult = {
   // Actual crop of the photo, captured by vision; undefined falls back to a "medium" guess.
   framing?: "wider" | "medium" | "torso";
   captured: boolean;
+  // False when the photo doesn't show her torso — nothing there for the greeting clip to copy wardrobe pixels from.
+  bodyVisible: boolean;
 };
 
 export type LiveSessionStatus =
-  "connecting" | "live" | "holding" | "ended" | "error";
+  | "connecting"
+  | "live"
+  | "holding"
+  | "ended"
+  | "error";
 
 export type BufferDepth = {
   idleReady: number;
@@ -78,10 +84,15 @@ export type StudioTimings = {
 
 // Real join-flow progress, driven by actual pipeline milestones (see useLiveSession.start).
 export type ConnectStage =
-  "uploading" | "capturingLook" | "renderingFirstClip" | "primingBuffer";
+  | "uploading"
+  | "capturingLook"
+  | "renderingFirstClip"
+  | "primingBuffer";
 
 export type QueueOwner =
-  { type: "fan" } | { type: "viewer"; handle: string } | { type: "studio" };
+  | { type: "fan" }
+  | { type: "viewer"; handle: string }
+  | { type: "studio" };
 
 export type QueueStripEntry = { kind: ClipJobKind; owner: QueueOwner };
 
@@ -265,11 +276,15 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     if (!director) {
       return;
     }
-    const queued = director.getState().jobQueue.map((job): QueueStripEntry => ({
-      kind: job.kind,
-      owner:
-        job.kind === "reply" ? ownerForReplyJob(job) : currentOwnerRef.current,
-    }));
+    const queued = director.getState().jobQueue.map(
+      (job): QueueStripEntry => ({
+        kind: job.kind,
+        owner:
+          job.kind === "reply"
+            ? ownerForReplyJob(job)
+            : currentOwnerRef.current,
+      }),
+    );
     setQueueStrip({ current: currentActRef.current, queued });
   }, []);
 
@@ -521,6 +536,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       const director = new LiveDirector({
         creator,
         anchorFrameUrl: reference.anchorFrameUrl,
+        anchorHasBody: reference.bodyVisible,
         seedFrameUrl: reference.anchorFrameUrl,
         liveState: initialLiveState,
         now: Date.now(),

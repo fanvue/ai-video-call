@@ -141,5 +141,6 @@ export async function POST(request: Request) {
       ? (capture?.framing as "wider" | "medium" | "torso")
       : undefined,
     captured,
+    bodyVisible: capture !== null && capture.torsoVisible !== false,
   });
 }
