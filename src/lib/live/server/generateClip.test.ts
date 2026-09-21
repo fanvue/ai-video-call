@@ -199,12 +199,13 @@ describe("generateClip: chained jobs", () => {
     expect(result.loops).toBe(false);
   });
 
-  it("a beat job (mid-chain) guards but skips repair even when flagged, so the next queued beat isn't held up by it", async () => {
+  it("a beat job (mid-chain) repairs a flagged frame, since its output seeds the next beat in the same sequence", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
     guardFrame.mockResolvedValue({
       checked: true,
       issues: ["top should be on but frame shows it off"],
     });
+    repairFrame.mockResolvedValue("https://example.com/repaired.jpg");
     const req = clipRequest({
       job: {
         kind: "beat",
@@ -221,12 +222,13 @@ describe("generateClip: chained jobs", () => {
 
     expect(extractLastFrameUrl).toHaveBeenCalled();
     expect(guardFrame).toHaveBeenCalled();
-    expect(repairFrame).not.toHaveBeenCalled();
+    expect(repairFrame).toHaveBeenCalled();
     expect(result.guard.checked).toBe(true);
+    expect(result.guard.repaired).toBe(true);
     expect(result.guard.issues).toEqual([
       "top should be on but frame shows it off",
     ]);
-    expect(result.seedFrameUrl).toBe("https://example.com/extracted.jpg");
+    expect(result.seedFrameUrl).toBe("https://example.com/repaired.jpg");
   });
 
   it("a beat job whose plan is a no-op hold still renders without an end frame and goes through extract/guard — pinning never stopped mid-clip drift, only the prompt itself can", async () => {

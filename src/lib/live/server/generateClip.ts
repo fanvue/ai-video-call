@@ -44,8 +44,6 @@ export const generateClip = async (
   const videoBackend = renderBackendFor(backend);
   // Only idle loops on the anchor; every other job chains forward from a real generated frame, single-image-seed style — pinning a hold's end frame to the seed never stopped it from drifting mid-clip, it only masked the seam for the next clip.
   const isAnchoredLoop = job.kind === "idle" && videoBackend.supportsEndFrame;
-  // Repair only fixes the seed for the NEXT render, not this clip's already-baked-in video, so skip it mid-chain to save latency.
-  const isIntermediateBeat = job.kind === "reply" || job.kind === "beat";
 
   const renderStarted = Date.now();
   const renderPromise = videoBackend.render({
@@ -135,11 +133,8 @@ export const generateClip = async (
     guardMs = Date.now() - guardStarted;
 
     const repairStarted = Date.now();
-    if (
-      !isIntermediateBeat &&
-      guardOutcome.checked &&
-      guardOutcome.issues.length > 0
-    ) {
+    // A chained beat's frame is the next beat's seed too — leaving a flagged issue unrepaired let drift compound across a multi-beat sequence.
+    if (guardOutcome.checked && guardOutcome.issues.length > 0) {
       try {
         seedFrameUrl = await withTimeout(
           repairFrame({
