@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { LiveDirector } from "./director";
+import { LIVE_TUNABLES } from "@/lib/live/contract";
 import type {
   ClipResult,
   CreatorProfile,
@@ -573,6 +574,69 @@ describe("LiveDirector", () => {
     expect(director.consumeIdentityReferenceDue(45_000)).toBe(true);
     expect(director.consumeIdentityReferenceDue(45_500)).toBe(false);
     expect(director.consumeIdentityReferenceDue(90_000)).toBe(true);
+  });
+
+  it("consumeIdentityReferenceDue fires once IDENTITY_REFERENCE_MAX_CHAIN_CLIPS chain clips have rendered, even before the interval elapses", () => {
+    const director = makeDirector(dressedState, 0);
+    for (
+      let i = 0;
+      i < LIVE_TUNABLES.IDENTITY_REFERENCE_MAX_CHAIN_CLIPS - 1;
+      i += 1
+    ) {
+      director.clipCompleted(
+        clipResult({ jobKind: "reply", state: dressedState }),
+        1_000,
+      );
+      expect(director.consumeIdentityReferenceDue(1_000)).toBe(false);
+    }
+    director.clipCompleted(
+      clipResult({ jobKind: "reply", state: dressedState }),
+      1_000,
+    );
+    expect(director.consumeIdentityReferenceDue(1_000)).toBe(true);
+  });
+
+  it("resets the chain clip count (not just the timestamp) once consumeIdentityReferenceDue fires", () => {
+    const director = makeDirector(dressedState, 0);
+    for (
+      let i = 0;
+      i < LIVE_TUNABLES.IDENTITY_REFERENCE_MAX_CHAIN_CLIPS;
+      i += 1
+    ) {
+      director.clipCompleted(
+        clipResult({ jobKind: "reply", state: dressedState }),
+        1_000,
+      );
+    }
+    expect(director.consumeIdentityReferenceDue(1_000)).toBe(true); // chain-count trigger
+    // Right after firing, neither trigger is armed again: interval just reset, and so did the count.
+    expect(director.consumeIdentityReferenceDue(1_000)).toBe(false);
+    for (
+      let i = 0;
+      i < LIVE_TUNABLES.IDENTITY_REFERENCE_MAX_CHAIN_CLIPS - 1;
+      i += 1
+    ) {
+      director.clipCompleted(
+        clipResult({ jobKind: "reply", state: dressedState }),
+        1_000,
+      );
+    }
+    expect(director.consumeIdentityReferenceDue(1_000)).toBe(false);
+  });
+
+  it("does not count an idle clip toward the chain clip limit", () => {
+    const director = makeDirector(dressedState, 0);
+    for (
+      let i = 0;
+      i < LIVE_TUNABLES.IDENTITY_REFERENCE_MAX_CHAIN_CLIPS;
+      i += 1
+    ) {
+      director.clipCompleted(
+        clipResult({ jobKind: "idle", state: dressedState }),
+        1_000,
+      );
+    }
+    expect(director.consumeIdentityReferenceDue(1_000)).toBe(false);
   });
 
   it("marks a fan reply as precededByIdle once the gap since the last activity clears the threshold", () => {

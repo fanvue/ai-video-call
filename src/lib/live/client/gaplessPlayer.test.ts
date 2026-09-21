@@ -72,6 +72,24 @@ class FakeVideo {
   }
 }
 
+// Adds requestVideoFrameCallback so tests can exercise the rVFC-preferred confirmPlaying path.
+class RvfcFakeVideo extends FakeVideo {
+  private rvfcCallback: (() => void) | null = null;
+
+  requestVideoFrameCallback(callback: () => void): number {
+    this.rvfcCallback = callback;
+    return 1;
+  }
+
+  cancelVideoFrameCallback(): void {
+    this.rvfcCallback = null;
+  }
+
+  fireVideoFrame(): void {
+    this.rvfcCallback?.();
+  }
+}
+
 const clip = (id: string, loops = false, interrupts = false): ClipToPlay => ({
   id,
   videoUrl: `https://cdn.example/${id}.mp4`,
@@ -347,5 +365,43 @@ describe("GaplessPlayer", () => {
     expect(started).toEqual(["replacement"]);
     expect(player.getActiveSlot()).toBe("b");
     expect(b.src).toBe(replacement.videoUrl);
+  });
+
+  it("prefers requestVideoFrameCallback over the playing event when the element supports it", async () => {
+    const a = new RvfcFakeVideo();
+    const b = new RvfcFakeVideo();
+    const player = new GaplessPlayer({ onStatusChange: () => {} });
+    const queue: ClipToPlay[] = [clip("loop1", true)];
+    const getNextClip = vi.fn(() => queue.shift() ?? null);
+    player.setNextClipHandler(getNextClip);
+    player.setInterruptReadyHandler(() => true);
+    const started: string[] = [];
+    player.setClipStartedHandler((id) => started.push(id));
+    player.attach(
+      a as unknown as HTMLVideoElement,
+      b as unknown as HTMLVideoElement,
+    );
+    player.start();
+    await flush();
+    started.length = 0;
+
+    b.readyState = 0;
+    const incoming = clip("incoming", false, true);
+    queue.push(incoming);
+    player.checkForClip();
+    await flush();
+    b.fire("loadeddata");
+    await flush();
+    expect(player.getActiveSlot()).toBe("a");
+
+    b.fire("playing"); // ignored: rVFC is preferred once available, this alone must not swap
+    await flush();
+    expect(player.getActiveSlot()).toBe("a");
+    expect(started).toEqual([]);
+
+    b.fireVideoFrame(); // a real presented frame confirms the swap
+    await flush();
+    expect(player.getActiveSlot()).toBe("b");
+    expect(started).toEqual(["incoming"]);
   });
 });

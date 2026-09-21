@@ -264,6 +264,7 @@ describe("planClip: reply catalog -> intents", () => {
     expect(plan.expectedState.wardrobe.bra.on).toBe(false);
     expect(plan.followUps.map((b) => b.intent)).toEqual([
       { type: "removeGarment", garment: "panties" },
+      { type: "rest" },
     ]);
   });
 
@@ -272,6 +273,7 @@ describe("planClip: reply catalog -> intents", () => {
     expect(plan.expectedState.body.prop).toBe("dildo");
     expect(plan.followUps.map((b) => b.intent)).toEqual([
       { type: "useProp", mode: "mouth" },
+      { type: "rest" },
     ]);
   });
 
@@ -279,6 +281,7 @@ describe("planClip: reply catalog -> intents", () => {
     const plan = replyPlan("use the vibrator on yourself");
     expect(plan.followUps.map((b) => b.intent)).toEqual([
       { type: "useProp", mode: "external" },
+      { type: "rest" },
     ]);
   });
 
@@ -293,6 +296,7 @@ describe("planClip: reply catalog -> intents", () => {
     expect(plan.expectedState.wardrobe.top.on).toBe(false);
     expect(plan.followUps.map((b) => b.intent)).toEqual([
       { type: "removeGarment", garment: "bra" },
+      { type: "rest" },
     ]);
   });
 
@@ -320,7 +324,7 @@ describe("planClip: reply catalog -> intents", () => {
     });
     const plan = replyPlan("take off your bra", s);
     expect(plan.prompt).toMatch(/already off/i);
-    expect(plan.followUps).toEqual([]);
+    expect(plan.followUps.map((b) => b.intent)).toEqual([{ type: "rest" }]);
   });
 
   it("already fully nude resolves to a single hold, not four dropped beats", () => {
@@ -333,7 +337,7 @@ describe("planClip: reply catalog -> intents", () => {
     });
     const s = session({ state: state({ wardrobe: nude }) });
     const plan = replyPlan("strip", s);
-    expect(plan.followUps).toEqual([]);
+    expect(plan.followUps.map((b) => b.intent)).toEqual([{ type: "rest" }]);
     expect(plan.prompt).toMatch(/already exactly there|already/i);
   });
 
@@ -368,7 +372,7 @@ describe("planClip: reply catalog -> intents", () => {
 
   it('"doggy" resolves to a single act, one clip, no separate pose beat', () => {
     const plan = replyPlan("doggy style please");
-    expect(plan.followUps).toEqual([]);
+    expect(plan.followUps.map((b) => b.intent)).toEqual([{ type: "rest" }]);
     expect(plan.expectedState.body.pose).toBe("onAllFours");
     expect(plan.expectedState.body.facing).toBe("away");
     expect(plan.prompt).toMatch(/hands and knees/i);
@@ -378,7 +382,7 @@ describe("planClip: reply catalog -> intents", () => {
 
   it('"spank your ass" resolves to the spank act, explicit', () => {
     const plan = replyPlan("spank your ass");
-    expect(plan.followUps).toEqual([]);
+    expect(plan.followUps.map((b) => b.intent)).toEqual([{ type: "rest" }]);
     expect(plan.prompt).toMatch(/render the nudity/i);
     expect(plan.prompt).toMatch(/spanks her own ass/i);
   });
@@ -407,7 +411,7 @@ describe("planClip: reply catalog -> intents", () => {
 
   it('"jiggle tits" resolves to the bounce act', () => {
     const plan = replyPlan("jiggle tits");
-    expect(plan.followUps).toEqual([]);
+    expect(plan.followUps.map((b) => b.intent)).toEqual([{ type: "rest" }]);
     expect(plan.expectedState.body).toEqual(session().state.body);
   });
 
@@ -459,6 +463,7 @@ describe("planClip: reply catalog -> intents", () => {
     expect(plan.expectedState.body.prop).toBe("dildo");
     expect(plan.followUps.map((b) => b.intent)).toEqual([
       { type: "useProp", mode: "mouth" },
+      { type: "rest" },
     ]);
     expect(plan.wardrobeIntent).toBeNull();
   });
@@ -471,7 +476,7 @@ describe("planClip: reply catalog -> intents", () => {
     expect(plan.prompt).toMatch(/sets a dildo down out of frame/i);
     expect(plan.expectedState.body.prop).toBe("none");
     expect(plan.expectedState.wardrobe.bra.on).toBe(false);
-    expect(plan.followUps).toEqual([]);
+    expect(plan.followUps.map((b) => b.intent)).toEqual([{ type: "rest" }]);
   });
 
   it('"take your panties off" while lying repositions and removes in one clip', () => {
@@ -479,12 +484,12 @@ describe("planClip: reply catalog -> intents", () => {
     const plan = replyPlan("take your panties off", s);
     expect(plan.prompt).toMatch(/shifts to sit up/i);
     expect(plan.expectedState.wardrobe.panties.on).toBe(false);
-    expect(plan.followUps).toEqual([]);
+    expect(plan.followUps.map((b) => b.intent)).toEqual([{ type: "rest" }]);
   });
 
   it('"dance" resolves to a single act intent', () => {
     const plan = replyPlan("dance for me");
-    expect(plan.followUps).toEqual([]);
+    expect(plan.followUps.map((b) => b.intent)).toEqual([{ type: "rest" }]);
     expect(plan.expectedState.body.pose).toBe("standing");
   });
 });
@@ -495,7 +500,7 @@ describe('planClip: reply catalog -> intents ("spin" one-clip lead-in)', () => {
     const plan = replyPlan("do a spin", s);
     expect(plan.prompt).toMatch(/she rises to her feet/i);
     expect(plan.expectedState.body.pose).toBe("standing");
-    expect(plan.followUps).toEqual([]);
+    expect(plan.followUps.map((b) => b.intent)).toEqual([{ type: "rest" }]);
     expect(plan.wardrobeIntent).toBeNull();
   });
 
@@ -504,7 +509,7 @@ describe('planClip: reply catalog -> intents ("spin" one-clip lead-in)', () => {
       state: state({ body: body({ pose: "standing", facing: "camera" }) }),
     });
     const plan = replyPlan("do a spin", s);
-    expect(plan.followUps).toEqual([]);
+    expect(plan.followUps.map((b) => b.intent)).toEqual([{ type: "rest" }]);
     expect(plan.expectedState.body.pose).toBe("standing");
     expect(plan.prompt).not.toMatch(/rises to her feet|sitting/i);
   });
@@ -647,7 +652,7 @@ describe("planClip: touch (masturbation) branches on wardrobe coverage", () => {
 describe("planClip: spread (legs vs ass)", () => {
   it('"spread your legs" resolves the legs variant', () => {
     const plan = replyPlan("spread your legs");
-    expect(plan.followUps).toEqual([]);
+    expect(plan.followUps.map((b) => b.intent)).toEqual([{ type: "rest" }]);
     expect(plan.prompt).toMatch(/legs spread toward the lens/i);
   });
 
@@ -731,7 +736,7 @@ describe("planAct: every act leaves wardrobe untouched", () => {
 });
 
 describe("planClip: compound multi-act request", () => {
-  it('"spank your ass then spread your cheeks, then play with your tits" resolves to [spank, spread(ass), boobPlay] with no inserted pose/rest beats', () => {
+  it('"spank your ass then spread your cheeks, then play with your tits" resolves to [spank, spread(ass), boobPlay] then an explicit return-to-idle step', () => {
     const plan = replyPlan(
       "spank your ass then spread your cheeks, then play with your tits",
     );
@@ -739,6 +744,17 @@ describe("planClip: compound multi-act request", () => {
     expect(plan.followUps.map((b) => b.intent)).toEqual([
       { type: "act", act: "spread", detail: "ass" },
       { type: "act", act: "boobPlay" },
+      { type: "rest" },
+    ]);
+  });
+
+  it('"stand up, then take off your jacket, then wave" enacts all three steps in order, dropping none', () => {
+    const plan = replyPlan("stand up, then take off your jacket, then wave");
+    expect(plan.prompt).toMatch(/standing/i);
+    expect(plan.followUps.map((b) => b.intent)).toEqual([
+      { type: "verbatim", text: "take off your jacket" },
+      { type: "act", act: "gesture" },
+      { type: "rest" },
     ]);
   });
 });

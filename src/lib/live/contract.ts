@@ -325,6 +325,8 @@ export const LIVE_TUNABLES = {
   UPSCALE_INTERVAL_MS: 60_000,
   // How often a chain render includes the dual identity reference (see consumeIdentityReferenceDue). Sending it on every render made every requested clip pay its extra fal latency; periodic is enough to correct drift.
   IDENTITY_REFERENCE_INTERVAL_MS: 45_000,
+  // Second, independent trigger alongside the interval: forces the identity correction once this many chain clips have rendered without one, so a burst of rapid requests can't drift for the full interval just because it finishes in fewer wall-clock seconds. See consumeIdentityReferenceDue.
+  IDENTITY_REFERENCE_MAX_CHAIN_CLIPS: 4,
   TRANSCRIPT_WINDOW: 40,
   // Spend cap: every session auto-ends here regardless of activity.
   MAX_SESSION_MS: 180_000,

@@ -348,6 +348,67 @@ describe("ClipPipeline", () => {
     expect(seeds[3]).not.toBe(seeds[2]);
   });
 
+  it("renders two fan requests enqueued back to back in strict submission order, never overlapping", async () => {
+    const requests: ClipRequest[] = [];
+    const queue = makeJobQueue();
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        requests.push(req);
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting
+
+    queue.push({ ...REPLY_JOB, requestId: "A", text: "A" });
+    pipeline.onRequestEnqueued();
+    // B arrives while A is still in flight, not once A has resolved.
+    await vi.advanceTimersByTimeAsync(2);
+    queue.push({ ...REPLY_JOB, requestId: "B", text: "B" });
+    pipeline.onRequestEnqueued();
+
+    // A must be the only chain render in flight so far; B stays queued behind it.
+    expect(requests.filter((r) => r.job.kind === "reply")).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS * 2);
+
+    const replyOrder = requests
+      .filter((r) => r.job.kind === "reply")
+      .map((r) => (r.job.kind === "reply" ? r.job.requestId : null));
+    expect(replyOrder).toEqual(["A", "B"]);
+  });
+
+  it("renders three requests submitted in the same burst (zero delay) in strict FIFO order", async () => {
+    const requests: ClipRequest[] = [];
+    const queue = makeJobQueue();
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        requests.push(req);
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting
+
+    for (const requestId of ["A", "B", "C"]) {
+      queue.push({ ...REPLY_JOB, requestId, text: requestId });
+      pipeline.onRequestEnqueued();
+    }
+
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS * 3);
+
+    const replyOrder = requests
+      .filter((r) => r.job.kind === "reply")
+      .map((r) => (r.job.kind === "reply" ? r.job.requestId : null));
+    expect(replyOrder).toEqual(["A", "B", "C"]);
+  });
+
   it("never plays a new-anchor idle before the last chained clip has played", async () => {
     const queue = makeJobQueue();
     const pipeline = trackedPipeline({
@@ -1208,6 +1269,39 @@ describe("ClipPipeline", () => {
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
     const replyRequest = requests.find((req) => req.job.kind === "reply");
     expect(replyRequest?.useIdentityReference).toBe(true);
+  });
+
+  it("passes useIdentityReference through for every chain job the director's gate reports due, e.g. once a chain-clip-count limit is reached", async () => {
+    // Stands in for LiveDirector's chain-clip-count trigger: due every Nth chain job.
+    const requests: ClipRequest[] = [];
+    const queue = makeJobQueue();
+    let chainJobsSinceDue = 0;
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        requests.push(req);
+        return delayed(() => chainAdvancingResult(req));
+      },
+      needsIdentityReference: () => {
+        chainJobsSinceDue += 1;
+        if (chainJobsSinceDue >= 2) {
+          chainJobsSinceDue = 0;
+          return true;
+        }
+        return false;
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting: 1st chain job, not due
+
+    queue.push({ ...REPLY_JOB, requestId: "r1" });
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // reply: 2nd chain job, due
+
+    const replies = requests.filter((r) => r.job.kind === "reply");
+    expect(replies[0]?.useIdentityReference).toBe(true);
   });
 
   it("a stale upscale result never clobbers a chainTail that already moved past it", async () => {

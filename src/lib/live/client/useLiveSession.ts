@@ -13,6 +13,10 @@ import {
   type PlayerStatus,
 } from "@/lib/live/client/gaplessPlayer";
 import {
+  RenderStatsTracker,
+  type RenderPercentiles,
+} from "@/lib/live/client/renderStats";
+import {
   createSeededRandom,
   RoomSim,
   type RoomChatMessage,
@@ -150,6 +154,9 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     null,
   );
   const [lastTimings, setLastTimings] = useState<StudioTimings | null>(null);
+  const [renderStats, setRenderStats] = useState<RenderPercentiles | null>(
+    null,
+  );
   const [connectStage, setConnectStage] = useState<ConnectStage>("uploading");
   const [roomEvents, setRoomEvents] = useState<RoomChatMessage[]>([]);
   const [viewerCount, setViewerCount] = useState(0);
@@ -200,6 +207,9 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   // Maps a rendered clip's id to what it was, so the player's onClipStarted (id only) can look
   // up job kind / reply for chat-sync and the connecting -> live transition.
   const clipMetaRef = useRef<Map<string, ClipResult>>(new Map());
+  const renderStatsTrackerRef = useRef(new RenderStatsTracker());
+  // requestId -> when its fan message was sent, for request-to-first-visible-frame logging.
+  const requestSentAtMsRef = useRef<Map<string, number>>(new Map());
   // The clip actually on screen right now (set from onClipStarted), used to gate background
   // timers on whether that clip is a real request/beat vs. idle filler.
   const currentPlayingClipIdRef = useRef<string | null>(null);
@@ -400,6 +410,13 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       if (requestId) {
         directorRef.current?.setRequestStatus(requestId, "playing");
         refreshRequestStatuses();
+        const sentAtMs = requestSentAtMsRef.current.get(requestId);
+        if (sentAtMs !== undefined) {
+          console.log(
+            `useLiveSession: request-to-first-visible-frame requestId=${requestId} ms=${Date.now() - sentAtMs}`,
+          );
+          requestSentAtMsRef.current.delete(requestId);
+        }
       }
       refreshBufferDepth();
       greetingPlayedRef.current = true;
@@ -552,6 +569,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         renderMs: result.timings.renderMs,
         costUsd: result.costUsd,
       });
+      renderStatsTrackerRef.current.record(result.timings.renderMs);
+      setRenderStats(renderStatsTrackerRef.current.snapshot());
       if (result.jobKind === "greeting") {
         setConnectStage("primingBuffer");
       }
@@ -655,6 +674,9 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       currentActRef.current = null;
       currentRequestIdRef.current = null;
       requestIdByClipIdRef.current = new Map();
+      requestSentAtMsRef.current = new Map();
+      renderStatsTrackerRef.current = new RenderStatsTracker();
+      setRenderStats(null);
       failureCountRef.current = 0;
       for (const timeoutId of failedChipTimeoutsRef.current) {
         clearTimeout(timeoutId);
@@ -761,10 +783,12 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       if (!director || !pipeline || !trimmed) {
         return;
       }
+      const sentAtMs = Date.now();
       const { entry } = director.fanRequest(
         { text: trimmed, channel, paid },
-        Date.now(),
+        sentAtMs,
       );
+      requestSentAtMsRef.current.set(entry.id, sentAtMs);
       setTranscript((prev) => [...prev, entry]);
       pipeline.onRequestEnqueued();
       refreshBufferDepth();
@@ -865,6 +889,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       speechMode,
       anchorChangedAtMs,
       lastTimings,
+      renderStats,
       connectStage,
       roomEvents,
       viewerCount,
@@ -898,6 +923,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       speechMode,
       anchorChangedAtMs,
       lastTimings,
+      renderStats,
       connectStage,
       roomEvents,
       viewerCount,

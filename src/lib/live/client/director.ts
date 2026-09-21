@@ -42,6 +42,9 @@ export type DirectorState = {
   // Last time a chain render was told to include the dual identity reference; ticks past
   // IDENTITY_REFERENCE_INTERVAL_MS. See consumeIdentityReferenceDue.
   lastIdentityReferenceAtMs: number;
+  // Chain clips committed since the last identity reference; ticks past
+  // IDENTITY_REFERENCE_MAX_CHAIN_CLIPS. See consumeIdentityReferenceDue.
+  chainClipsSinceIdentityReference: number;
 };
 
 export type DirectorInit = {
@@ -89,6 +92,7 @@ export class LiveDirector {
       restScheduledSinceLastRequest: false,
       lastDispatchedJob: null,
       lastIdentityReferenceAtMs: init.now,
+      chainClipsSinceIdentityReference: 0,
     };
   }
 
@@ -279,6 +283,10 @@ export class LiveDirector {
       transcript,
       jobQueue: queue,
       requestStatuses,
+      // Counts every committed chain clip (idle/rejected/repeat deliveries never reach here);
+      // reset alongside lastIdentityReferenceAtMs whenever consumeIdentityReferenceDue fires.
+      chainClipsSinceIdentityReference:
+        this.state.chainClipsSinceIdentityReference + 1,
     };
   }
 
@@ -342,14 +350,22 @@ export class LiveDirector {
   }
 
   // Gated periodically, not every chain render — dual-reference was adding its fal latency to every requested clip.
+  // Fires on whichever trigger (interval elapsed or chain clip count) comes first, so a rapid burst can't drift for the full interval.
   consumeIdentityReferenceDue(now: number): boolean {
-    if (
-      now - this.state.lastIdentityReferenceAtMs <
-      LIVE_TUNABLES.IDENTITY_REFERENCE_INTERVAL_MS
-    ) {
+    const intervalElapsed =
+      now - this.state.lastIdentityReferenceAtMs >=
+      LIVE_TUNABLES.IDENTITY_REFERENCE_INTERVAL_MS;
+    const chainLimitReached =
+      this.state.chainClipsSinceIdentityReference >=
+      LIVE_TUNABLES.IDENTITY_REFERENCE_MAX_CHAIN_CLIPS;
+    if (!intervalElapsed && !chainLimitReached) {
       return false;
     }
-    this.state = { ...this.state, lastIdentityReferenceAtMs: now };
+    this.state = {
+      ...this.state,
+      lastIdentityReferenceAtMs: now,
+      chainClipsSinceIdentityReference: 0,
+    };
     return true;
   }
 

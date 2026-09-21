@@ -63,25 +63,43 @@ const waitForPlayable = (el: HTMLVideoElement): Promise<boolean> =>
     el.addEventListener("canplaythrough", done, { once: true });
   });
 
-// Confirms play() actually produced a decoded, visible frame rather than just resolving its
-// promise (browsers can resolve play() before a frame is ready, or stall right after).
+// A video element exposing requestVideoFrameCallback — not in lib.dom.d.ts yet, so declared locally.
+type RvfcVideoElement = HTMLVideoElement & {
+  requestVideoFrameCallback: (callback: () => void) => number;
+  cancelVideoFrameCallback: (handle: number) => void;
+};
+
+// Confirms play() actually produced a decoded frame (browsers can resolve play() early). Prefers rVFC, which fires only once a frame is presented; a hidden tab presents no frames, so `playing` stands in there.
 const confirmPlaying = (el: HTMLVideoElement): Promise<boolean> =>
   new Promise((resolve) => {
     if (el.readyState >= HAVE_CURRENT_DATA) {
       resolve(true);
       return;
     }
-    const timer = setTimeout(() => {
-      el.removeEventListener("playing", done);
-      resolve(false);
-    }, PLAY_CONFIRM_TIMEOUT_MS);
-    const done = () => {
+    const rvfcEl = el as Partial<RvfcVideoElement>;
+    const hasRvfc = typeof rvfcEl.requestVideoFrameCallback === "function";
+    let frameHandle: number | null = null;
+    const finish = (ok: boolean) => {
       clearTimeout(timer);
-      el.removeEventListener("playing", done);
-      resolve(true);
+      el.removeEventListener("playing", onEvent);
+      el.removeEventListener("loadeddata", onEvent);
+      if (frameHandle !== null) {
+        rvfcEl.cancelVideoFrameCallback?.(frameHandle);
+      }
+      resolve(ok);
     };
-    el.addEventListener("playing", done, { once: true });
-    el.addEventListener("loadeddata", done, { once: true });
+    const onEvent = () => {
+      const hidden = typeof document !== "undefined" && document.hidden;
+      if (!hasRvfc || hidden) {
+        finish(true);
+      }
+    };
+    const timer = setTimeout(() => finish(false), PLAY_CONFIRM_TIMEOUT_MS);
+    if (typeof rvfcEl.requestVideoFrameCallback === "function") {
+      frameHandle = rvfcEl.requestVideoFrameCallback(() => finish(true));
+    }
+    el.addEventListener("playing", onEvent);
+    el.addEventListener("loadeddata", onEvent);
   });
 
 export class GaplessPlayer {

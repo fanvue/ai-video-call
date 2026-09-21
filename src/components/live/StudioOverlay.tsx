@@ -5,6 +5,7 @@ import type {
   BufferDepth,
   StudioTimings,
 } from "@/lib/live/client/useLiveSession";
+import type { RenderPercentiles } from "@/lib/live/client/renderStats";
 
 type StudioOverlayProps = {
   liveState: LiveState | null;
@@ -12,6 +13,7 @@ type StudioOverlayProps = {
   costTotal: number;
   anchorChangedAtMs: number | null;
   lastTimings: StudioTimings | null;
+  renderStats: RenderPercentiles | null;
   nowMs: number;
 };
 
@@ -28,6 +30,7 @@ export const StudioOverlay = ({
   costTotal,
   anchorChangedAtMs,
   lastTimings,
+  renderStats,
   nowMs,
 }: StudioOverlayProps) => {
   const anchorAgeSec =
@@ -52,6 +55,12 @@ export const StudioOverlay = ({
         {lastTimings ? `${lastTimings.renderMs}ms` : "-"} ·{" "}
         {lastTimings ? `$${lastTimings.costUsd.toFixed(3)}` : "-"} · Spent $
         {costTotal.toFixed(2)}
+      </p>
+      <p className="m-0">
+        Render p50/p95:{" "}
+        {renderStats
+          ? `${renderStats.p50}ms / ${renderStats.p95}ms (n=${renderStats.count})`
+          : "-"}
       </p>
     </div>
   );

@@ -1335,7 +1335,14 @@ const resolveIntents = (
         continue;
       }
     }
-    if (!intents) continue;
+    if (!intents) {
+      // In a multi-step message an uncatalogued clause still must surface as a beat, not vanish (was silently dropping middle asks); a lone message falls through below to the friendlier generic hold instead.
+      const trimmed = clause.trim();
+      if (clauses.length > 1 && trimmed.length > 0) {
+        allIntents.push({ type: "verbatim", text: trimmed.slice(0, 300) });
+      }
+      continue;
+    }
     allIntents.push(...intents);
   }
 
@@ -1585,12 +1592,20 @@ const planReply = (
     leadWithAction: true,
   });
 
+  // One slot reserved below for the plan's own terminal return-to-idle step.
   let cappedFollowUps = restIntents;
-  if (cappedFollowUps.length > 6) {
+  if (cappedFollowUps.length > 5) {
     console.warn(
       `planReply: ${cappedFollowUps.length} follow-up intents resolved, dropping the tail beyond the contract's 6-beat cap`,
     );
-    cappedFollowUps = cappedFollowUps.slice(0, 6);
+    cappedFollowUps = cappedFollowUps.slice(0, 5);
+  }
+  // Every plan ends on an explicit return-to-idle step; nextJob() drops it as a no-op if she's
+  // already at baseline, so this is free when the request's own last beat already settles her.
+  const lastPlannedIntent =
+    cappedFollowUps[cappedFollowUps.length - 1] ?? first;
+  if (lastPlannedIntent.type !== "rest") {
+    cappedFollowUps = [...cappedFollowUps, { type: "rest" }];
   }
   const followUps: PlannedBeat[] = cappedFollowUps.map((intent, index) => ({
     id: `${job.requestId}-follow-${index}`,

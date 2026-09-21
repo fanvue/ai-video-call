@@ -386,6 +386,7 @@ export const LiveStudio = () => {
               costTotal={session.costTotal}
               anchorChangedAtMs={session.anchorChangedAtMs}
               lastTimings={session.lastTimings}
+              renderStats={session.renderStats}
               nowMs={now}
             />
           </div>
