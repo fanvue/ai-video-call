@@ -6,6 +6,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { defaultCreatorProfile } from "@/lib/live/client/defaultCreatorProfile";
 import { defaultLiveState } from "@/lib/live/client/defaultLiveState";
 import { LiveDirector, type RequestStatus } from "@/lib/live/client/director";
+import {
+  DirectorSession,
+  openRealtimeWithFal,
+  type DirectorMetrics,
+  type DirectorRealtimeState,
+} from "@/lib/live/client/directorStream";
 import { ClipPipeline, type PipelineEvent } from "@/lib/live/client/pipeline";
 import {
   GaplessPlayer,
@@ -27,6 +33,7 @@ import {
   type ClipJobKind,
   type ClipRequest,
   type ClipResult,
+  type CreatorProfile,
   type InputChannel,
   type LiveState,
   type RenderBackend,
@@ -69,6 +76,16 @@ export type UseLiveSessionDeps = {
   upscaleSeed?: (
     frameUrl: string,
   ) => Promise<{ url: string | null; costUsd: number }>;
+  // Director mode only (backend === "director"); unused by turbo/reference.
+  fetchDirectorToken: () => Promise<string>;
+  composeDirectorPrompt: (input: {
+    creator: CreatorProfile;
+    transcript: TranscriptEntry[];
+    world: string;
+    requestText: string;
+    channel: InputChannel;
+    speechMode: SpeechMode;
+  }) => Promise<{ prompt: string; reply: string }>;
 };
 
 const EMPTY_BUFFER_DEPTH: BufferDepth = {
@@ -101,7 +118,12 @@ export type QueueStripEntry = {
 
 export type TypingDevice = "laptop" | "phone" | null;
 
-export type SessionEndReason = "maxDuration" | "costCap" | null;
+export type SessionEndReason =
+  | "maxDuration"
+  | "costCap"
+  // Director-only: the fal stream ended itself (stream_exhausted / a fatal error message).
+  | "streamEnded"
+  | null;
 
 const EMPTY_QUEUE_STRIP: {
   current: QueueStripEntry | null;
@@ -178,10 +200,21 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   // viewer requests) without touching the director/pipeline/render engine underneath it.
   const [privateMode, setPrivateModeState] = useState(false);
   const privateModeRef = useRef(false);
+  // Director-only readout for StudioOverlay; null in turbo/reference mode.
+  const [directorMetrics, setDirectorMetrics] =
+    useState<DirectorMetrics | null>(null);
+  const [directorStreamState, setDirectorStreamState] =
+    useState<DirectorRealtimeState | null>(null);
 
   const directorRef = useRef<LiveDirector | null>(null);
   const pipelineRef = useRef<ClipPipeline | null>(null);
   const roomRef = useRef<RoomSim | null>(null);
+  // Which engine `send`/`end`/mute-toggle route to for the active session.
+  const modeRef = useRef<"clip" | "director">("clip");
+  const directorSessionRef = useRef<DirectorSession | null>(null);
+  const directorMediaStreamRef = useRef<MediaStream | null>(null);
+  // Desired sound state for the director video element; mirrors `soundOn` in LiveStudio.
+  const directorSoundOnRef = useRef(true);
   const videoARef = useRef<HTMLVideoElement | null>(null);
   const videoBRef = useRef<HTMLVideoElement | null>(null);
   const speechModeRef = useRef<SpeechMode>("text");
@@ -618,25 +651,54 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     ],
   );
 
+  // Director mode has no gapless pair to swap: the fal stream's single MediaStream is attached
+  // directly to videoA and left playing; videoB stays unused (hidden by the same CSS as ever).
+  const attachDirectorStream = useCallback(() => {
+    const el = videoARef.current;
+    const stream = directorMediaStreamRef.current;
+    if (!el || !stream) return;
+    if (el.srcObject !== stream) {
+      el.srcObject = stream;
+    }
+    el.muted = !directorSoundOnRef.current;
+    el.play().catch(() => {
+      // Autoplay-with-sound blocked; fall back to muted and ask for the existing tap-to-unmute UI.
+      el.muted = true;
+      setNeedsTap(true);
+      el.play().catch(() => {});
+    });
+  }, []);
+
   const attachVideoElements = useCallback(() => {
+    if (modeRef.current === "director") {
+      attachDirectorStream();
+      return;
+    }
     const a = videoARef.current;
     const b = videoBRef.current;
     if (a && b) {
       player.attach(a, b);
       player.start();
     }
-  }, [player]);
+  }, [player, attachDirectorStream]);
 
   useEffect(
     () => () => {
       player.dispose();
       pipelineRef.current?.dispose();
+      directorSessionRef.current?.close();
       if (tickIntervalRef.current) {
         clearInterval(tickIntervalRef.current);
       }
     },
     [player],
   );
+
+  useEffect(() => {
+    const handleUnload = () => directorSessionRef.current?.close();
+    window.addEventListener("pagehide", handleUnload);
+    return () => window.removeEventListener("pagehide", handleUnload);
+  }, []);
 
   const bindVideoA = useCallback(
     (el: HTMLVideoElement | null) => {
@@ -701,6 +763,93 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         reference.surroundings,
         reference.framing,
       );
+
+      modeRef.current = options.backend === "director" ? "director" : "clip";
+      if (modeRef.current === "director") {
+        applyLiveState(initialLiveState);
+        setTranscript([]);
+        setCostTotal(0);
+        setAnchorChangedAtMs(Date.now());
+        speechModeRef.current = options.speechMode ?? "text";
+        setBackendState("director");
+        setSpeechModeState(options.speechMode ?? "text");
+        setQueueStrip(EMPTY_QUEUE_STRIP);
+        setDirectorMetrics(null);
+        setDirectorStreamState("opening");
+        directorMediaStreamRef.current = null;
+        directorSoundOnRef.current = true;
+        const startedAtMs = Date.now();
+        setSessionStartedAtMs(startedAtMs);
+        setConnectStage("renderingFirstClip");
+
+        const directorSession = new DirectorSession({
+          fetchToken: deps.fetchDirectorToken,
+          openRealtime: (token) => openRealtimeWithFal(token),
+          now: () => Date.now(),
+          composePrompt: deps.composeDirectorPrompt,
+          onTranscriptEntry: (entry) =>
+            setTranscript((prev) => [...prev, entry]),
+          onRequestStatus: (requestId, requestStatus) =>
+            setRequestStatusesState((prev) => ({
+              ...prev,
+              [requestId]: requestStatus,
+            })),
+          onStreamState: (state) => {
+            setDirectorStreamState(state);
+            if (state === "live") {
+              setConnectStage("primingBuffer");
+              setStatus((current) =>
+                current === "connecting" ? "live" : current,
+              );
+            }
+          },
+          onMedia: (stream) => {
+            directorMediaStreamRef.current = stream;
+            attachDirectorStream();
+          },
+          onMetrics: (metrics) => {
+            setDirectorMetrics(metrics);
+            setCostTotal(metrics.costUsd);
+          },
+          onError: (message) => {
+            setError(message);
+            if (errorTimeoutRef.current) {
+              clearTimeout(errorTimeoutRef.current);
+            }
+            errorTimeoutRef.current = setTimeout(() => setError(null), 6000);
+          },
+          onEnded: (reason) => {
+            // "stopped" is the user's own end(); it already owns the status and needs no banner.
+            if (reason === "stopped") return;
+            setEndReason(
+              reason === "maxDuration" ? "maxDuration" : "streamEnded",
+            );
+            setStatus("ended");
+          },
+        });
+        directorSessionRef.current = directorSession;
+
+        await directorSession.open({
+          creator,
+          world: initialLiveState.world,
+          anchorFrameUrl: reference.anchorFrameUrl,
+          speechMode: options.speechMode ?? "text",
+          startedAtMs,
+        });
+
+        if (tickIntervalRef.current) {
+          clearInterval(tickIntervalRef.current);
+        }
+        tickIntervalRef.current = setInterval(() => {
+          const metrics = directorSessionRef.current?.getMetricsWithCost();
+          if (metrics) {
+            setDirectorMetrics(metrics);
+            setCostTotal(metrics.costUsd);
+          }
+        }, 1000);
+        return;
+      }
+
       const director = new LiveDirector({
         creator,
         anchorFrameUrl: reference.anchorFrameUrl,
@@ -772,11 +921,17 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       applyLiveState,
       isBusy,
       tickRoom,
+      attachDirectorStream,
     ],
   );
 
   const send = useCallback(
     (text: string, channel: InputChannel, paid?: boolean) => {
+      if (modeRef.current === "director") {
+        // Director has no per-request tip/paid handling; the stream is steered by prompt text only.
+        directorSessionRef.current?.request(text, channel);
+        return;
+      }
       const director = directorRef.current;
       const pipeline = pipelineRef.current;
       const trimmed = text.trim();
@@ -825,6 +980,12 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     directorRef.current = null;
     pipelineRef.current = null;
     roomRef.current = null;
+    directorSessionRef.current?.close();
+    directorSessionRef.current = null;
+    directorMediaStreamRef.current = null;
+    if (videoARef.current) {
+      videoARef.current.srcObject = null;
+    }
     setStatus("ended");
   }, [clearPendingReveal, player]);
 
@@ -844,11 +1005,24 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   }, []);
 
   const resumeAfterTap = useCallback(() => {
+    if (modeRef.current === "director") {
+      const el = videoARef.current;
+      setNeedsTap(false);
+      el?.play().catch(() => {});
+      return;
+    }
     player.resumeAfterTap();
   }, [player]);
 
   const setMuted = useCallback(
     (muted: boolean) => {
+      if (modeRef.current === "director") {
+        directorSoundOnRef.current = !muted;
+        if (videoARef.current) {
+          videoARef.current.muted = muted;
+        }
+        return;
+      }
       player.setMuted(muted);
     },
     [player],
@@ -899,6 +1073,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       offline,
       sessionStartedAtMs,
       privateMode,
+      directorMetrics,
+      directorStreamState,
       start,
       send,
       end,
@@ -933,6 +1109,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       offline,
       sessionStartedAtMs,
       privateMode,
+      directorMetrics,
+      directorStreamState,
       start,
       send,
       end,

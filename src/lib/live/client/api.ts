@@ -1,8 +1,12 @@
-// Thin fetch wrappers for the two server routes. See docs/LIVE_ENGINE.md.
+// Thin fetch wrappers for the server routes. See docs/LIVE_ENGINE.md.
 import {
   clipResultSchema,
   type ClipRequest,
   type ClipResult,
+  type CreatorProfile,
+  type InputChannel,
+  type SpeechMode,
+  type TranscriptEntry,
 } from "@/lib/live/contract";
 import type { ReferenceUploadResult } from "@/lib/live/client/useLiveSession";
 
@@ -59,3 +63,25 @@ export const uploadReference = async (
     contentType,
   });
 };
+
+// Mints a short-lived, single-app-scoped fal token for the browser's director WebRTC session.
+export const fetchDirectorToken = async (): Promise<string> => {
+  const { token } = await postJson<{ token: string }>(
+    "/api/live/directorToken",
+    {},
+  );
+  return token;
+};
+
+export const composeDirectorPrompt = async (input: {
+  creator: CreatorProfile;
+  transcript: TranscriptEntry[];
+  world: string;
+  requestText: string;
+  channel: InputChannel;
+  speechMode: SpeechMode;
+}): Promise<{ prompt: string; reply: string }> =>
+  postJson<{ prompt: string; reply: string }>(
+    "/api/live/directorPrompt",
+    input,
+  );

@@ -111,5 +111,13 @@ export const referenceBackend: VideoBackend = {
   },
 };
 
-export const renderBackendFor = (backend: RenderBackend): VideoBackend =>
-  backend === "reference" ? referenceBackend : turboBackend;
+export const renderBackendFor = (backend: RenderBackend): VideoBackend => {
+  // Director is a live WebRTC stream, handled entirely client-side by DirectorSession; it must
+  // never reach the clip pipeline — fail loud rather than silently rendering a turbo/reference clip.
+  if (backend === "director") {
+    throw new Error(
+      "renderBackendFor: 'director' is a live-stream backend, not a clip backend",
+    );
+  }
+  return backend === "reference" ? referenceBackend : turboBackend;
+};

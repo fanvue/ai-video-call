@@ -199,7 +199,9 @@ export const clipJobSchema = z.discriminatedUnion("kind", [
 export type ClipJob = z.infer<typeof clipJobSchema>;
 export type ClipJobKind = ClipJob["kind"];
 
-export const renderBackendSchema = z.enum(["turbo", "reference"]);
+// "director" is a live WebRTC stream (fal minimax/h3-max/director), not a clip-render backend —
+// it never reaches clipRequestSchema/renderClip; see src/lib/live/client/directorStream.ts.
+export const renderBackendSchema = z.enum(["turbo", "reference", "director"]);
 export type RenderBackend = z.infer<typeof renderBackendSchema>;
 
 export const speechModeSchema = z.enum(["text", "native"]);
@@ -332,4 +334,7 @@ export const LIVE_TUNABLES = {
   MAX_SESSION_MS: 180_000,
   // Cumulative render spend cap: the pipeline stops dispatching new jobs once reached.
   SESSION_COST_CAP_USD: 8,
+  // Director (minimax/h3-max/director) bills per second of live stream, promo rate; list price is
+  // $0.08/sec. There is also a $1.20 session minimum charge regardless of duration.
+  DIRECTOR_COST_PER_SEC_USD: 0.02,
 } as const;

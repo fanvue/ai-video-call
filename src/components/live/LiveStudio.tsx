@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  composeDirectorPrompt,
+  fetchDirectorToken,
   renderClip,
   uploadReference,
   upscaleSeed,
@@ -70,6 +72,8 @@ export const LiveStudio = () => {
     renderClip,
     uploadReference,
     upscaleSeed,
+    fetchDirectorToken,
+    composeDirectorPrompt,
   });
   const { bindVideoA, bindVideoB } = videoRefs;
 
@@ -212,6 +216,8 @@ export const LiveStudio = () => {
       setStartError("Session ended: spending cap reached ($8.00).");
     } else if (session.endReason === "maxDuration") {
       setStartError("Session ended: max session length reached.");
+    } else if (session.endReason === "streamEnded") {
+      setStartError("Session ended: the live stream ended.");
     }
   }, [voice, stopPrivateMeter, session.endReason]);
 
@@ -388,6 +394,8 @@ export const LiveStudio = () => {
               lastTimings={session.lastTimings}
               renderStats={session.renderStats}
               nowMs={now}
+              directorMetrics={session.directorMetrics}
+              directorStreamState={session.directorStreamState}
             />
           </div>
         ) : null}

@@ -32,9 +32,8 @@ export const SetupScreen = ({ busy, error, onSubmit }: SetupScreenProps) => {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [voiceExperimental, setVoiceExperimental] = useState(false);
   // Reference-to-video (single anchor image, periodic identity correction) held up better in
-  // testing than the image-to-video/guard-repair chain, so it's now the default rather than opt-in.
-  const [referenceModelExperimental, setReferenceModelExperimental] =
-    useState(true);
+  // testing than the image-to-video/guard-repair chain, so it's the default over turbo or director.
+  const [backend, setBackend] = useState<RenderBackend>("reference");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const canSubmit = Boolean(file) && !busy;
@@ -137,16 +136,33 @@ export const SetupScreen = ({ busy, error, onSubmit }: SetupScreenProps) => {
               />
               Voice (experimental)
             </label>
-            <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
-              <input
-                type="checkbox"
-                checked={referenceModelExperimental}
-                onChange={(event) =>
-                  setReferenceModelExperimental(event.target.checked)
-                }
-              />
-              Reference model (recommended)
-            </label>
+            <div
+              role="radiogroup"
+              aria-label="Render model"
+              className="flex flex-col gap-2"
+            >
+              {(
+                [
+                  { value: "turbo", label: "Turbo" },
+                  { value: "reference", label: "Reference (recommended)" },
+                  { value: "director", label: "Director (live stream, alpha)" },
+                ] as const
+              ).map((option) => (
+                <label
+                  key={option.value}
+                  className="flex items-center gap-2 text-xs text-[var(--muted)]"
+                >
+                  <input
+                    type="radio"
+                    name="renderBackend"
+                    value={option.value}
+                    checked={backend === option.value}
+                    onChange={() => setBackend(option.value)}
+                  />
+                  {option.label}
+                </label>
+              ))}
+            </div>
           </div>
         ) : null}
       </div>
@@ -162,7 +178,7 @@ export const SetupScreen = ({ busy, error, onSubmit }: SetupScreenProps) => {
             file,
             sceneId,
             displayName: displayName.trim(),
-            backend: referenceModelExperimental ? "reference" : "turbo",
+            backend,
             speechMode: voiceExperimental ? "native" : "text",
           });
         }}
