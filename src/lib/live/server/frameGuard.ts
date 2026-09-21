@@ -5,8 +5,10 @@ import type {
   GarmentId,
   LiveState,
   ObservedState,
+  Pose,
   Prop,
 } from "../contract";
+import { poseSchema } from "../contract";
 
 type VisionReport = {
   topOn?: boolean;
@@ -20,17 +22,30 @@ type VisionReport = {
   visibleProps?: string[];
   extraPeople?: boolean;
   extraLimbs?: boolean;
+  // Raw model output; "unknown" or anything else unparseable is dropped by poseFromReport below.
+  pose?: string;
 };
+
+const VALID_POSES = new Set<string>(poseSchema.options);
+
+// Only ever returns one of the seven valid poses; "unknown" and any garbage the model returns
+// are dropped here so a bad read is never adopted as canon.
+const poseFromReport = (report: VisionReport): Pose | undefined =>
+  typeof report.pose === "string" && VALID_POSES.has(report.pose)
+    ? (report.pose as Pose)
+    : undefined;
 
 const GUARD_PROMPT =
   "Look at this single frame from an adult webcam stream. Return ONLY JSON describing exactly what is visible: " +
   '{"topOn":bool,"bottomOn":bool,"braOn":bool,"pantiesOn":bool,"topColor":"...","bottomColor":"...",' +
-  '"braColor":"...","pantiesColor":"...","visibleProps":["..."],"extraPeople":bool,"extraLimbs":bool}. ' +
+  '"braColor":"...","pantiesColor":"...","visibleProps":["..."],"extraPeople":bool,"extraLimbs":bool,' +
+  '"pose":"sitting|standing|leaning|kneeling|lying|onAllFours|bentOver|unknown"}. ' +
   "topOn/bottomOn/braOn/pantiesOn describe whether that garment is currently worn and visible. For each garment " +
   'that is on, give its ONE main color as a single common color word (e.g. "black", "red", "blue"); omit or use ' +
   '"" for a garment that is off. visibleProps lists any handheld object (e.g. "vibrator", "drink"), empty array ' +
   "if hands are empty. extraPeople is true only if more than one person is visible. extraLimbs is true only if " +
-  "the body shows extra or malformed limbs.";
+  'the body shows extra or malformed limbs. pose is her overall body position in the frame; use "unknown" if ' +
+  "it does not clearly match one of the other options.";
 
 // Common garment colors, longest-first so "light blue" wins over a bare "blue" scan if ever extended.
 const COLOR_WORDS = [
@@ -144,6 +159,15 @@ const compareToExpected = (
   }
   if (report.extraPeople) issues.push("extra person visible in frame");
   if (report.extraLimbs) issues.push("extra or malformed limbs visible");
+
+  // Informational only — never matched by ANATOMY_ISSUE_RE, so it never triggers repairFrame; the
+  // reconciled pose (see generateClip.ts) is the actual fix.
+  const observedPose = poseFromReport(report);
+  if (observedPose && observedPose !== expected.body.pose) {
+    issues.push(
+      `pose drifted: expected ${expected.body.pose}, showing ${observedPose}`,
+    );
+  }
   return issues;
 };
 
@@ -189,7 +213,10 @@ export const guardFrame = async ({
     return {
       checked: true,
       issues: compareToExpected(report, expected).slice(0, 12),
-      observed: { wardrobe: observedWardrobeFrom(report) },
+      observed: {
+        wardrobe: observedWardrobeFrom(report),
+        pose: poseFromReport(report),
+      },
     };
   } catch (error) {
     console.warn(

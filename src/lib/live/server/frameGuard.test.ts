@@ -279,6 +279,79 @@ describe("guardFrame", () => {
     expect(result.issues).toEqual([]);
   });
 
+  it("parses a valid pose into observed.pose", async () => {
+    createGroqVisionCompletion.mockResolvedValue(
+      completionWith(
+        JSON.stringify({
+          topOn: true,
+          bottomOn: true,
+          braOn: true,
+          pantiesOn: true,
+          visibleProps: [],
+          extraPeople: false,
+          extraLimbs: false,
+          pose: "standing",
+        }),
+      ),
+    );
+    const result = await guardFrame({
+      frameUrl: "https://x/frame.jpg",
+      expected,
+    });
+    expect(result.observed?.pose).toBe("standing");
+  });
+
+  it("drops an unknown/unparseable pose rather than adopting it", async () => {
+    createGroqVisionCompletion.mockResolvedValue(
+      completionWith(
+        JSON.stringify({
+          topOn: true,
+          bottomOn: true,
+          braOn: true,
+          pantiesOn: true,
+          visibleProps: [],
+          extraPeople: false,
+          extraLimbs: false,
+          pose: "unknown",
+        }),
+      ),
+    );
+    const result = await guardFrame({
+      frameUrl: "https://x/frame.jpg",
+      expected,
+    });
+    expect(result.observed?.pose).toBeUndefined();
+  });
+
+  it("flags pose drift as informational only, never triggering repair", async () => {
+    createGroqVisionCompletion.mockResolvedValue(
+      completionWith(
+        JSON.stringify({
+          topOn: true,
+          bottomOn: true,
+          braOn: true,
+          pantiesOn: true,
+          visibleProps: [],
+          extraPeople: false,
+          extraLimbs: false,
+          pose: "standing",
+        }),
+      ),
+    );
+    const result = await guardFrame({
+      frameUrl: "https://x/frame.jpg",
+      expected,
+    });
+    expect(result.issues.some((issue) => issue.includes("pose drifted"))).toBe(
+      true,
+    );
+    expect(
+      result.issues.some((issue) =>
+        /extra person|extra or malformed limbs/.test(issue),
+      ),
+    ).toBe(false);
+  });
+
   it("does not flag a synonym for the expected prop as wrong", async () => {
     createGroqVisionCompletion.mockResolvedValue(
       completionWith(

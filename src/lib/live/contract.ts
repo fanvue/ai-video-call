@@ -232,7 +232,7 @@ export const frameGuardReportSchema = z.object({
 export type FrameGuardReport = z.infer<typeof frameGuardReportSchema>;
 
 // What the guard saw, for the director's retry decision and the studio overlay. Props are not
-// reconciled this phase (vision misses small toys), so only wardrobe is reported here.
+// reconciled this phase (vision misses small toys), so only wardrobe and pose are reported here.
 export const observedStateSchema = z.object({
   wardrobe: z.object({
     top: z.boolean().optional(),
@@ -240,6 +240,8 @@ export const observedStateSchema = z.object({
     bra: z.boolean().optional(),
     panties: z.boolean().optional(),
   }),
+  // Only ever a valid pose — the guard drops its own "unknown" sentinel before this is built.
+  pose: poseSchema.optional(),
 });
 export type ObservedState = z.infer<typeof observedStateSchema>;
 

@@ -312,6 +312,28 @@ describe("planClip: reply catalog -> intents", () => {
   });
 });
 
+describe('planClip: reply catalog -> intents ("spin" standing precondition)', () => {
+  it('"spin" while sitting plans a stand-up transition, queuing the spin as its single follow-up', () => {
+    const s = session({ state: state({ body: body({ pose: "sitting" }) }) });
+    const plan = replyPlan("do a spin", s);
+    expect(plan.expectedState.body.pose).toBe("standing");
+    expect(plan.followUps.map((b) => b.intent)).toEqual([
+      { type: "act", act: "spin" },
+    ]);
+    expect(plan.wardrobeIntent).toBeNull();
+  });
+
+  it('"spin" while already standing plays the spin directly, ending standing with no mention of sitting', () => {
+    const s = session({
+      state: state({ body: body({ pose: "standing", facing: "camera" }) }),
+    });
+    const plan = replyPlan("do a spin", s);
+    expect(plan.followUps).toEqual([]);
+    expect(plan.expectedState.body.pose).toBe("standing");
+    expect(plan.prompt).not.toMatch(/sitting/i);
+  });
+});
+
 describe("planBeatIntent: preconditions", () => {
   it("removing panties while lying plans a stand-up clip and re-queues the original beat", () => {
     const s = state({ body: body({ pose: "lying" }) });

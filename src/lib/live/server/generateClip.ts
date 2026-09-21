@@ -8,7 +8,7 @@ import type {
 } from "../contract";
 import { guardFrame, repairFrame } from "./frameGuard";
 import { planClip, typingLeadSecFor } from "./planClip";
-import { reconcileWardrobe } from "./reconcileState";
+import { reconcilePose, reconcileWardrobe } from "./reconcileState";
 import { renderBackendFor } from "./renderClip";
 import { writeCheckIn, writeReply } from "./writeReply";
 
@@ -147,14 +147,18 @@ export const generateClip = async (
     }
     guardMs = Date.now() - guardStarted;
 
-    // State follows the frame: whatever the guard actually saw becomes canon, not the prediction.
+    // State follows the frame: whatever the guard actually saw becomes canon, not the prediction —
+    // wardrobe only in the request's own direction (see reconcileState.ts), pose unconditionally.
     if (guardOutcome.checked && guardOutcome.observed) {
       expectedState = {
         ...expectedState,
         wardrobe: reconcileWardrobe(
           expectedState.wardrobe,
           guardOutcome.observed.wardrobe,
+          plan.wardrobeIntent,
+          plan.targetGarment,
         ),
+        body: reconcilePose(expectedState.body, guardOutcome.observed.pose),
       };
     }
 

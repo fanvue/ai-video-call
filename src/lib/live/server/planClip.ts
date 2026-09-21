@@ -25,6 +25,13 @@ export type ClipPlan = {
   needsReplyText: boolean;
   // Text to use verbatim without calling the reply LLM (greeting only).
   fixedReplyText: string | null;
+  // Direction of THIS clip's own wardrobe change, for reconcileWardrobe: "remove"/"add" for a
+  // removeGarment/addGarment beat, null for everything else including a precondition/transition
+  // clip (it doesn't touch wardrobe itself, even though the beat it re-queues will).
+  wardrobeIntent: "remove" | "add" | null;
+  // The garment removeGarment/addGarment targets; always reconciled from observation regardless
+  // of wardrobeIntent, so the director's bounded retry keeps working. Unset for a precondition clip.
+  targetGarment?: GarmentId;
 };
 
 const ACTION_BEAT_SEC = LIVE_TUNABLES.ACTION_CLIP_SEC;
@@ -239,6 +246,20 @@ const garmentPrecondition = (
   return null;
 };
 
+// These read as a stationary showcase move; playing one from a seated end frame is what makes the
+// model reconcile a "sitting" NOW line against a standing frame by moving again next clip.
+const ACTS_REQUIRE_STANDING = new Set<
+  Extract<BeatIntent, { type: "act" }>["act"]
+>(["spin", "dance", "twerk"]);
+
+const actPrecondition = (
+  act: Extract<BeatIntent, { type: "act" }>["act"],
+  body: Body,
+): BeatIntent | null =>
+  ACTS_REQUIRE_STANDING.has(act) && body.pose !== "standing"
+    ? { type: "pose", pose: "standing", facing: body.facing }
+    : null;
+
 const removalChoreo = (
   id: GarmentId,
   wardrobe: Wardrobe,
@@ -340,7 +361,7 @@ const planAct = (
         physical:
           "She sways her hips to a beat only she can hear, full body in frame. No clothing changes.",
         nextWardrobe: wardrobe,
-        nextBody: body,
+        nextBody: { ...body, pose: "standing" },
         durationSec: ACTION_BEAT_SEC,
         explicit: false,
       };
@@ -362,9 +383,9 @@ const planAct = (
         physical:
           "0-2s: she shifts her weight, ready to turn. 2-8s: she turns a full 360-degree circle in " +
           "place, showing her body from every angle; every garment she is wearing stays exactly on " +
-          "her body the entire turn. 8-11s: she settles back into her starting pose and framing, holding still.",
+          "her body the entire turn. 8-11s: she settles standing, facing the webcam, holding still.",
         nextWardrobe: wardrobe,
-        nextBody: body,
+        nextBody: { ...body, pose: "standing", facing: "camera" },
         durationSec: ACTION_BEAT_SEC,
         explicit: false,
       };
@@ -498,8 +519,13 @@ export const planBeatIntent = (
         durationSec: ACTION_BEAT_SEC,
         explicit: true,
       };
-    case "act":
+    case "act": {
+      const precondition = actPrecondition(intent.act, body);
+      if (precondition) {
+        return { ...planBeatIntent(precondition, state), precondition };
+      }
       return planAct(intent, wardrobe, body);
+    }
     case "hold":
       return {
         physical: intent.line,
@@ -1110,6 +1136,7 @@ const planGreeting = (
     },
     needsReplyText: false,
     fixedReplyText: GREETING_LINE,
+    wardrobeIntent: null,
   };
 };
 
@@ -1164,6 +1191,7 @@ const planIdle = (session: LiveSessionSnapshot): ClipPlan => {
     replyDraft: null,
     needsReplyText: false,
     fixedReplyText: null,
+    wardrobeIntent: null,
   };
 };
 
@@ -1195,6 +1223,7 @@ const planCheckIn = (
     replyDraft: { channel: job.channel, typingLeadSec: 0 },
     needsReplyText: true,
     fixedReplyText: null,
+    wardrobeIntent: null,
   };
 };
 
@@ -1252,6 +1281,21 @@ const planReply = (
 
   const typingLeadSec = job.channel === "chat" ? typingLeadSecFor(job.text) : 0;
 
+  // A precondition clip (e.g. standing up first) doesn't touch wardrobe itself, even when `first`
+  // is a removeGarment/addGarment — the actual garment change is deferred to the re-queued beat.
+  const wardrobeIntent: ClipPlan["wardrobeIntent"] = beatPlan.precondition
+    ? null
+    : first.type === "removeGarment"
+      ? "remove"
+      : first.type === "addGarment"
+        ? "add"
+        : null;
+  const targetGarment: GarmentId | undefined =
+    !beatPlan.precondition &&
+    (first.type === "removeGarment" || first.type === "addGarment")
+      ? first.garment
+      : undefined;
+
   return {
     prompt,
     durationSec,
@@ -1260,6 +1304,8 @@ const planReply = (
     replyDraft: { channel: job.channel, typingLeadSec },
     needsReplyText: true,
     fixedReplyText: null,
+    wardrobeIntent,
+    targetGarment,
   };
 };
 
@@ -1288,6 +1334,19 @@ const planBeat = (
   const followUps: PlannedBeat[] = beatPlan.precondition
     ? [{ id: job.beat.id, intent: job.beat.intent, attempt: job.beat.attempt }]
     : [];
+  const beatIntent = job.beat.intent;
+  const wardrobeIntent: ClipPlan["wardrobeIntent"] = beatPlan.precondition
+    ? null
+    : beatIntent.type === "removeGarment"
+      ? "remove"
+      : beatIntent.type === "addGarment"
+        ? "add"
+        : null;
+  const targetGarment: GarmentId | undefined =
+    !beatPlan.precondition &&
+    (beatIntent.type === "removeGarment" || beatIntent.type === "addGarment")
+      ? beatIntent.garment
+      : undefined;
   return {
     prompt,
     durationSec,
@@ -1296,6 +1355,8 @@ const planBeat = (
     replyDraft: null,
     needsReplyText: false,
     fixedReplyText: null,
+    wardrobeIntent,
+    targetGarment,
   };
 };
 

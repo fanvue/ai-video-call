@@ -252,6 +252,32 @@ describe("generateClip: chained jobs", () => {
     expect(result.state.wardrobe.bra.on).toBe(true);
   });
 
+  it("a spin (act) beat where the guard sees the bra drift off does not adopt it, but does adopt the observed pose, with no repair", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    guardFrame.mockResolvedValue({
+      checked: true,
+      issues: ["bra should be on but frame shows it off"],
+      observed: { wardrobe: { bra: false }, pose: "standing" },
+    });
+    const req = clipRequest({
+      session: session({
+        state: state({ body: body({ pose: "standing", facing: "camera" }) }),
+      }),
+      job: {
+        kind: "beat",
+        beat: { id: "b1", intent: { type: "act", act: "spin" }, attempt: 0 },
+      },
+    });
+
+    const result = await generateClip(req);
+
+    // Unrequested drift against an "act" (direction null, bra isn't the beat's own garment) is
+    // never adopted — the bra stays canon-on, corrected by the next clip's prompt instead.
+    expect(result.state.wardrobe.bra.on).toBe(true);
+    expect(result.state.body.pose).toBe("standing");
+    expect(repairFrame).not.toHaveBeenCalled();
+  });
+
   it("a beat job whose plan is a no-op hold still renders without an end frame and goes through extract/guard — pinning never stopped mid-clip drift, only the prompt itself can", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
     const req = clipRequest({
