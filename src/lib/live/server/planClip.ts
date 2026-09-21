@@ -51,6 +51,12 @@ const ANATOMY_LOCK =
   "ANATOMY LOCK: exactly one adult woman — one head, two arms, two hands, ten fingers, two legs, two feet. " +
   "Never extra limbs, fused limbs, a second body, or floating parts.";
 
+// Nothing else states a garment count, so a removal beat alone invites a hallucinated second one underneath.
+const WARDROBE_COUNT_LOCK =
+  "GARMENT COUNT LOCK: she owns exactly one of each garment named in the WARDROBE LOCK below — one top, " +
+  "one bottom, one bra, one pair of panties. Never a second one underneath, beside, or in place of it; " +
+  "when a garment comes off, only bare skin is under it, nothing layered.";
+
 const PHYSICS_LOCK =
   "PHYSICS: fabric has real weight, one garment moves at a time, hands do one thing at a time, she shifts " +
   "her weight before standing. Nothing teleports, dissolves, or regrows mid-clip.";
@@ -182,6 +188,7 @@ const composeLocks = (
     CONTENT_LOCK,
     CAMERA_LOCK,
     ANATOMY_LOCK,
+    WARDROBE_COUNT_LOCK,
     lookLockLine(lookLock),
     wardrobeLockLine(state.wardrobe),
     propLockLine(lockBody.prop),
@@ -381,7 +388,8 @@ const stripAllBeats = (
     beats.push({
       physical:
         `STRIP TEASE, one garment only. She slowly takes off her ${GARMENT_LABEL[id]} (${desc}) — ` +
-        "the exact garment visible now, no substitute — and it leaves the frame. Nothing else comes off this clip.",
+        "the exact garment visible now, no substitute, only one of it — and it leaves the frame. " +
+        "Bare skin underneath, no second garment revealed. Nothing else comes off this clip.",
       nextWardrobe: next,
       nextBody: { ...body, hands: "free", contact: "none" },
       durationSec: ACTION_BEAT_SEC,
@@ -460,7 +468,8 @@ const stripGarmentBeats = (
     {
       physical:
         `STRIP TEASE, one garment only. She slowly takes off her ${GARMENT_LABEL[target]} (${desc}) — ` +
-        "the exact garment visible now, no substitute — and it leaves the frame. No other garment moves.",
+        "the exact garment visible now, no substitute, only one of it — and it leaves the frame. " +
+        "Bare skin underneath, no second garment revealed. No other garment moves.",
       nextWardrobe: removeGarment(wardrobe, target),
       nextBody: { ...body, hands: "free", contact: "none" },
       durationSec: ACTION_BEAT_SEC,
@@ -1077,7 +1086,8 @@ const garmentCorrectionBeats = (
     {
       physical:
         `STRIP TEASE, one garment only. She slowly takes off her ${GARMENT_LABEL[target]} (${desc}), ` +
-        "the exact garment visible now, no substitute, and it leaves the frame. No other garment moves.",
+        "the exact garment visible now, no substitute, only one of it, and it leaves the frame. " +
+        "Bare skin underneath, no second garment revealed. No other garment moves.",
       nextWardrobe: removeGarment(wardrobe, target),
       nextBody: { ...body, hands: "free", contact: "none" },
       durationSec: ACTION_BEAT_SEC,
