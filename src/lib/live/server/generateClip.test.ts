@@ -97,6 +97,7 @@ const clipRequest = (overrides: Partial<ClipRequest> = {}): ClipRequest => ({
   job: { kind: "idle" },
   backend: "turbo",
   speechMode: "text",
+  useIdentityReference: false,
   ...overrides,
 });
 

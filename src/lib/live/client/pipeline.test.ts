@@ -1184,6 +1184,32 @@ describe("ClipPipeline", () => {
     expect(upscaleSeed).toHaveBeenCalledTimes(2);
   });
 
+  it("only sets useIdentityReference on a chain job's first attempt, and only when the gate says it's due", async () => {
+    const requests: ClipRequest[] = [];
+    const queue = makeJobQueue();
+    let due = false;
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        requests.push(req);
+        return delayed(() => chainAdvancingResult(req));
+      },
+      needsIdentityReference: () => due,
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    expect(requests[0]?.useIdentityReference).toBe(false);
+
+    due = true;
+    queue.push(REPLY_JOB);
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    const replyRequest = requests.find((req) => req.job.kind === "reply");
+    expect(replyRequest?.useIdentityReference).toBe(true);
+  });
+
   it("a stale upscale result never clobbers a chainTail that already moved past it", async () => {
     const requests: ClipRequest[] = [];
     const queue = makeJobQueue();

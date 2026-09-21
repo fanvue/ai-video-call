@@ -229,6 +229,8 @@ export const clipRequestSchema = z.object({
   job: clipJobSchema,
   backend: renderBackendSchema.default("turbo"),
   speechMode: speechModeSchema.default("text"),
+  // Gates the reference backend's dual (identity + current-frame) reference; see consumeIdentityReferenceDue.
+  useIdentityReference: z.boolean().default(false),
 });
 export type ClipRequest = z.infer<typeof clipRequestSchema>;
 
@@ -321,6 +323,8 @@ export const LIVE_TUNABLES = {
   TYPING_LEAD_AFTER_IDLE_MS: 8_000,
   // How often the seed a chain job leaves behind gets upscaled in the background (see upscaleChainTailInBackground). Per-clip was too frequent: it competed with actual render calls for fal capacity and slowed clip turnaround.
   UPSCALE_INTERVAL_MS: 60_000,
+  // How often a chain render includes the dual identity reference (see consumeIdentityReferenceDue). Sending it on every render made every requested clip pay its extra fal latency; periodic is enough to correct drift.
+  IDENTITY_REFERENCE_INTERVAL_MS: 45_000,
   TRANSCRIPT_WINDOW: 40,
   // Spend cap: every session auto-ends here regardless of activity.
   MAX_SESSION_MS: 180_000,

@@ -250,7 +250,7 @@ const evaluateFrameChecks = ({
 export const generateClip = async (
   request: ClipRequest,
 ): Promise<ClipResult> => {
-  const { session, job, backend, speechMode } = request;
+  const { session, job, backend, speechMode, useIdentityReference } = request;
 
   const planStarted = Date.now();
   const plan = planClip({ session, job, speechMode, backend });
@@ -270,7 +270,9 @@ export const generateClip = async (
     seedFrameUrl: session.seedFrameUrl,
     durationSec: plan.durationSec,
     endFrameUrl: isAnchoredLoop ? session.seedFrameUrl : undefined,
-    identityReferenceUrl: session.anchorFrameUrl,
+    identityReferenceUrl: useIdentityReference
+      ? session.anchorFrameUrl
+      : undefined,
   });
 
   const replyTextPromise: Promise<{ text: string; nextWorld: string } | null> =
@@ -301,6 +303,9 @@ export const generateClip = async (
   // Render is the one hard-fail path — everything after this point degrades instead of throwing.
   const rendered = await renderPromise;
   const renderMs = Date.now() - renderStarted;
+  console.log(
+    `generateClip: renderMs=${renderMs} kind=${job.kind} backend=${backend} dualRef=${useIdentityReference}`,
+  );
 
   let seedFrameUrl = session.seedFrameUrl;
   // No longer split per step: every path now runs its frame check(s) through checkFrame/evaluateFrameChecks and reports total time as verifyMs.

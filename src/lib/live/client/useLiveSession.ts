@@ -713,6 +713,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
           directorRef.current?.abandonRequest(requestIdForJob(job));
         },
         upscaleSeed: deps.upscaleSeed,
+        needsIdentityReference: () =>
+          directorRef.current?.consumeIdentityReferenceDue(Date.now()) ?? false,
       });
       pipelineRef.current = pipeline;
 

@@ -70,11 +70,15 @@ const session: LiveSessionSnapshot = {
   transcript: [],
 };
 
-const request = (job: ClipRequest["job"]): ClipRequest => ({
+const request = (
+  job: ClipRequest["job"],
+  useIdentityReference = false,
+): ClipRequest => ({
   session,
   job,
   backend: "turbo",
   speechMode: "text",
+  useIdentityReference,
 });
 
 beforeEach(() => {
@@ -135,5 +139,18 @@ describe("generateClip with the vision guard off (default)", () => {
     expect(result.verdict).toBe("rejected");
     expect(result.rejectReason).toMatch(/extraction failed/);
     expect(result.seedFrameUrl).toBe(session.seedFrameUrl);
+  });
+
+  it("only forwards identityReferenceUrl to the backend when useIdentityReference is set", async () => {
+    await generateClip(request({ kind: "idle" }, false));
+    expect(render).toHaveBeenCalledWith(
+      expect.objectContaining({ identityReferenceUrl: undefined }),
+    );
+
+    render.mockClear();
+    await generateClip(request({ kind: "idle" }, true));
+    expect(render).toHaveBeenCalledWith(
+      expect.objectContaining({ identityReferenceUrl: session.anchorFrameUrl }),
+    );
   });
 });

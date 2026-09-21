@@ -38,6 +38,8 @@ export type ClipPipelineOptions = {
   upscaleSeed?: (
     frameUrl: string,
   ) => Promise<{ url: string | null; costUsd: number }>;
+  // Whether the next chain job should include the dual identity reference (see consumeIdentityReferenceDue).
+  needsIdentityReference?: () => boolean;
 };
 
 export type SnapshotSource = () => LiveSessionSnapshot;
@@ -59,6 +61,7 @@ export class ClipPipeline {
   private readonly onEvent: (event: PipelineEvent) => void;
   private readonly abandonDependents?: (job: ClipJob) => void;
   private readonly upscaleSeed?: ClipPipelineOptions["upscaleSeed"];
+  private readonly needsIdentityReference?: () => boolean;
   private backend: RenderBackend;
   private speechMode: SpeechMode;
 
@@ -100,6 +103,7 @@ export class ClipPipeline {
     this.onEvent = options.onEvent;
     this.abandonDependents = options.abandonDependents;
     this.upscaleSeed = options.upscaleSeed;
+    this.needsIdentityReference = options.needsIdentityReference;
     this.backend = options.backend ?? "turbo";
     this.speechMode = options.speechMode ?? "text";
   }
@@ -322,6 +326,9 @@ export class ClipPipeline {
       return;
     }
     const seed = this.chainTail ?? this.anchor;
+    // Only checked on the first attempt: a retry of the same job must not re-consume the gate.
+    const useIdentityReference =
+      attempt === 0 && (this.needsIdentityReference?.() ?? false);
     const request: ClipRequest = {
       session: {
         ...snapshot(),
@@ -331,6 +338,7 @@ export class ClipPipeline {
       job,
       backend: this.backend,
       speechMode: this.speechMode,
+      useIdentityReference,
     };
     this.chainInflight = { job };
     if (attempt === 0) {
@@ -466,6 +474,7 @@ export class ClipPipeline {
       // Idle is never committed as canon or reused as a seed, so always use the faster turbo backend.
       backend: "turbo",
       speechMode: this.speechMode,
+      useIdentityReference: false,
     };
     this.idleInflightCount += 1;
     this.render(request).then(

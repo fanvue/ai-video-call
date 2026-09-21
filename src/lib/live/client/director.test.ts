@@ -567,6 +567,14 @@ describe("LiveDirector", () => {
     expect(director.getState().jobQueue).toEqual([{ kind: "beat", beat }]);
   });
 
+  it("consumeIdentityReferenceDue fires once the interval has elapsed, and not again until the next one", () => {
+    const director = makeDirector(dressedState, 0);
+    expect(director.consumeIdentityReferenceDue(29_999)).toBe(false);
+    expect(director.consumeIdentityReferenceDue(45_000)).toBe(true);
+    expect(director.consumeIdentityReferenceDue(45_500)).toBe(false);
+    expect(director.consumeIdentityReferenceDue(90_000)).toBe(true);
+  });
+
   it("marks a fan reply as precededByIdle once the gap since the last activity clears the threshold", () => {
     const director = makeDirector(dressedState, 0);
     director.nextJob();

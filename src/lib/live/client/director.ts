@@ -39,6 +39,9 @@ export type DirectorState = {
   // The last job handed out by nextJob(), so clipCompleted can inspect a beat's own intent/attempt
   // without changing its signature (idle jobs are synthesized and never recorded here).
   lastDispatchedJob: ClipJob | null;
+  // Last time a chain render was told to include the dual identity reference; ticks past
+  // IDENTITY_REFERENCE_INTERVAL_MS. See consumeIdentityReferenceDue.
+  lastIdentityReferenceAtMs: number;
 };
 
 export type DirectorInit = {
@@ -85,6 +88,7 @@ export class LiveDirector {
       checkedInSinceLastRequest: false,
       restScheduledSinceLastRequest: false,
       lastDispatchedJob: null,
+      lastIdentityReferenceAtMs: init.now,
     };
   }
 
@@ -335,6 +339,18 @@ export class LiveDirector {
       checkedInSinceLastRequest: checkedIn,
       restScheduledSinceLastRequest: restScheduled,
     };
+  }
+
+  // Gated periodically, not every chain render — dual-reference was adding its fal latency to every requested clip.
+  consumeIdentityReferenceDue(now: number): boolean {
+    if (
+      now - this.state.lastIdentityReferenceAtMs <
+      LIVE_TUNABLES.IDENTITY_REFERENCE_INTERVAL_MS
+    ) {
+      return false;
+    }
+    this.state = { ...this.state, lastIdentityReferenceAtMs: now };
+    return true;
   }
 
   // Idle jobs are never stored in the queue; synthesize one on demand when nothing is planned. A
