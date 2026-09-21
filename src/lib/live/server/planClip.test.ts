@@ -229,7 +229,49 @@ describe("planClip: reply intent catalog", () => {
   it("plays a spin on the bare word 'spin', not just 'spin around' or 'do a spin'", () => {
     const s = session();
     const plan = reply(s, "can you spin for me");
-    expect(plan.prompt).toMatch(/360-degree turn/i);
+    expect(plan.prompt).toMatch(/360-degree/i);
+  });
+
+  it("'show me your tits' removes the top and bra across this clip and its follow-up, instead of falling through to a no-clothing-change generic action", () => {
+    const s = session();
+    const plan = reply(s, "show me your tits");
+    expect(plan.expectedState.wardrobe.bottom.on).toBe(true);
+    expect(plan.prompt).not.toMatch(
+      /no garment is added, removed, or shifted/i,
+    );
+    const finalWardrobe =
+      plan.followUps[plan.followUps.length - 1]?.nextState.wardrobe ??
+      plan.expectedState.wardrobe;
+    expect(finalWardrobe.top.on).toBe(false);
+    expect(finalWardrobe.bra.on).toBe(false);
+  });
+
+  it("'show me your pussy' removes bottoms and panties across this clip and its follow-up, leaving top and bra untouched", () => {
+    const s = session();
+    const plan = reply(s, "let me see your pussy");
+    expect(plan.expectedState.wardrobe.top.on).toBe(true);
+    expect(plan.expectedState.wardrobe.bra.on).toBe(true);
+    const finalWardrobe =
+      plan.followUps[plan.followUps.length - 1]?.nextState.wardrobe ??
+      plan.expectedState.wardrobe;
+    expect(finalWardrobe.bottom.on).toBe(false);
+    expect(finalWardrobe.panties.on).toBe(false);
+  });
+
+  it("'show me your tits' when already bare is a no-op, not a repeat removal", () => {
+    const s = session({
+      state: state({
+        wardrobe: wardrobe({
+          top: { on: false, description: "black ribbed tank top" },
+          bra: { on: false, description: "black lace bra" },
+          removedOrder: ["top", "bra"],
+        }),
+      }),
+    });
+    const plan = reply(s, "show me your tits");
+    expect(plan.expectedState.wardrobe.top.on).toBe(false);
+    expect(plan.expectedState.wardrobe.bra.on).toBe(false);
+    expect(plan.prompt).toMatch(/already showing/i);
   });
 
   it("invites nudity/sex content only on a beat that actually removes clothing", () => {
@@ -753,8 +795,8 @@ describe("planClip: negation", () => {
 
   it("a filler word ('stop'/'no') beside an unrelated request, with no comma, still performs it", () => {
     const s = session();
-    expect(reply(s, "stop and spin around").prompt).toMatch(/360-degree turn/i);
-    expect(reply(s, "no wait spin around").prompt).toMatch(/360-degree turn/i);
+    expect(reply(s, "stop and spin around").prompt).toMatch(/360-degree/i);
+    expect(reply(s, "no wait spin around").prompt).toMatch(/360-degree/i);
   });
 });
 

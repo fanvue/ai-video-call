@@ -49,7 +49,7 @@ const CAMERA_LOCK =
 
 const ANATOMY_LOCK =
   "ANATOMY LOCK: exactly one adult woman — one head, two arms, two hands, ten fingers, two legs, two feet. " +
-  "Never extra limbs, fused limbs, a second body, or floating parts.";
+  "Never extra limbs, fused limbs, a second body, floating parts, or clothing fused into skin.";
 
 // Stated as a structural fact, not an action, and without naming any removal verb: H3 Max invents a
 // wardrobe beat from removal words alone, including during idle holds that must not touch clothing at all.
@@ -60,7 +60,9 @@ const WARDROBE_COUNT_LOCK =
 
 const PHYSICS_LOCK =
   "PHYSICS: fabric has real weight, one garment moves at a time, hands do one thing at a time, she shifts " +
-  "her weight before standing. Nothing teleports, dissolves, or regrows mid-clip.";
+  "her weight before standing. Nothing teleports, dissolves, or regrows mid-clip. Clothes change only if " +
+  "this clip's own instruction names a layer coming off or going on — never grow a shirt onto a bare " +
+  "chest or any other garment back onto skin it isn't on.";
 
 const NO_OVERLAY_LOCK = "No text overlays, no watermark, no subtitles, no UI.";
 
@@ -339,6 +341,11 @@ const RE_TEASE_WAIST =
   /\b(panty tease|waistband (tease|snap|pull)|flash (your |ur )?panties)\b/i;
 const RE_TEASE_HEM =
   /\b(tease|lift (your |the )?(top|hem|shirt)|flash (your |ur )?(top|chest|tits)|peek)\b/i;
+// "show"/"see", not "flash" — flash is the tease-only phrasing above, this is an actual reveal request.
+const RE_REVEAL_CHEST =
+  /\b(show|see|let (me|us) see)\s+(me |us )?(your |ur |that |her )?(tits?|boobs?|breasts?|chest|nipples?)\b/i;
+const RE_REVEAL_GENITALS =
+  /\b(show|see|let (me|us) see)\s+(me |us )?(your |ur |that |her )?(pussy|cunt|vagina)\b/i;
 const RE_FACE_CAMERA =
   /\b(face (the )?(camera|webcam|lens)|face me|look at me)\b/i;
 const RE_FACE_AWAY =
@@ -535,6 +542,49 @@ const stripGarmentBeats = (
       durationSec: ACTION_BEAT_SEC,
     },
   ];
+};
+
+// "Show me your tits" names a body part, not a removal verb, so without this it fell through to genericActionBeats, which explicitly bans clothing changes.
+const revealBeats = (
+  text: string,
+  wardrobe: Wardrobe,
+  body: Body,
+): Beat[] | null => {
+  const garments: GarmentId[] = RE_REVEAL_CHEST.test(text)
+    ? ["top", "bra"]
+    : RE_REVEAL_GENITALS.test(text)
+      ? ["bottom", "panties"]
+      : [];
+  if (garments.length === 0) return null;
+  const toRemove = garments.filter((id) => isOn(wardrobe, id));
+  if (toRemove.length === 0) {
+    return [
+      {
+        physical:
+          "She is already showing exactly that. She holds the pose and smiles.",
+        nextWardrobe: wardrobe,
+        nextBody: body,
+        durationSec: LIVE_TUNABLES.IDLE_CLIP_SEC,
+      },
+    ];
+  }
+  let current = wardrobe;
+  const beats: Beat[] = [];
+  for (const id of toRemove) {
+    const desc = describeGarment(current, id);
+    const next = removeGarment(current, id);
+    beats.push({
+      physical:
+        `She takes off her ${GARMENT_LABEL[id]} (${desc}) — the exact garment visible now, no ` +
+        "substitute, only one of it — to show what was asked for, and it leaves the frame. Bare " +
+        "skin underneath, no second garment revealed. No other garment moves.",
+      nextWardrobe: next,
+      nextBody: { ...body, hands: "free", contact: "none" },
+      durationSec: ACTION_BEAT_SEC,
+    });
+    current = next;
+  }
+  return beats;
 };
 
 const poseBeats = (
@@ -974,8 +1024,9 @@ const spinBeats = (
   return [
     {
       physical:
-        "She does one full 360-degree turn in place, arms relaxed at her sides, then settles back " +
-        "into the exact pose and framing she started in. The fixed webcam never moves.",
+        "She stands up, turns once in a full 360-degree circle in place to show her body, and " +
+        "settles back into the exact pose and framing she started in. Full body stays in frame. " +
+        "The fixed webcam never moves.",
       nextWardrobe: wardrobe,
       nextBody: body,
       durationSec: ACTION_BEAT_SEC,
@@ -1065,6 +1116,7 @@ const matchBeats = (
   stripAllBeats(text, wardrobe, body) ??
   teaseBeats(text, wardrobe, body) ??
   stripGarmentBeats(text, wardrobe, body) ??
+  revealBeats(text, wardrobe, body) ??
   gestureBeats(text, wardrobe, body) ??
   tongueBeats(text, wardrobe, body) ??
   bounceBeats(text, wardrobe, body) ??
