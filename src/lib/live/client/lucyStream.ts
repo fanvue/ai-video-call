@@ -97,7 +97,9 @@ export type LucyMetrics = {
   costUsd: number;
 };
 
-export type LucyEndReason = "maxDuration" | "error" | "stopped";
+// "streamClosed" is the server hanging up on a live session (Decart gives no reason); "stopped" is our own close().
+export type LucyEndReason =
+  "maxDuration" | "error" | "stopped" | "streamClosed";
 
 export type LucySessionDeps = {
   fetchToken: () => Promise<string>;
@@ -162,7 +164,7 @@ export class LucySession {
           if (state === "failed" || state === "closed") {
             // Reachable both before and after open() settles: a live stream can still die later,
             // and endSession/onEnded must fire either way — only the promise settlement is gated.
-            this.endSession(state === "failed" ? "error" : "stopped");
+            this.endSession(state === "failed" ? "error" : "streamClosed");
             settle(() => reject(new Error(`lucy stream ${state}`)));
           }
         },

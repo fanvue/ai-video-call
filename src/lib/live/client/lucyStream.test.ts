@@ -170,4 +170,21 @@ describe("LucySession.close", () => {
     expect(onEnded).toHaveBeenCalledTimes(1);
     expect(onEnded).toHaveBeenCalledWith("stopped");
   });
+
+  it("reports a server-side close of a live stream as streamClosed, not as our own stop", async () => {
+    const onEnded = vi.fn();
+    const { deps, captured } = makeDeps({ onEnded });
+    const session = new LucySession(deps);
+    const openPromise = session.open(baseInput());
+    const onState = requireCaptured(captured).options.onState as (
+      state: LucyRealtimeState,
+    ) => void;
+    onState("live");
+    await openPromise;
+
+    onState("closed");
+
+    expect(onEnded).toHaveBeenCalledTimes(1);
+    expect(onEnded).toHaveBeenCalledWith("streamClosed");
+  });
 });
