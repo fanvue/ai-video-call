@@ -123,6 +123,9 @@ export const plannedBeatSchema = z.object({
   durationSec: z.number().int().min(10).max(15),
   // State after this beat completes.
   nextState: liveStateSchema.pick({ wardrobe: true, body: true }),
+  // A sexual act that doesn't itself change wardrobe/contact (doggy, spread legs), so CONTENT_LOCK
+  // gating can't infer it from nextState alone.
+  explicit: z.boolean().optional(),
 });
 export type PlannedBeat = z.infer<typeof plannedBeatSchema>;
 

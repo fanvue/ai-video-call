@@ -366,6 +366,17 @@ describe("planClip: reply intent catalog", () => {
     expect(allText).toMatch(/mouth/i);
   });
 
+  it("'suck a dildo' uses it in her mouth, not the default external-against-skin line", () => {
+    const s = session();
+    const plan = reply(s, "suck the dildo");
+    const allText = [
+      plan.prompt,
+      ...plan.followUps.map((b) => b.physical),
+    ].join(" ");
+    expect(allText).toMatch(/mouth/i);
+    expect(allText).not.toMatch(/against her skin/i);
+  });
+
   it("puts one garment back on when asked to redress", () => {
     const s = session({
       state: state({
@@ -459,6 +470,44 @@ describe("planClip: beat", () => {
       speechMode: "text",
     });
     expect(plan.prompt).toMatch(/settle to a still, stable end pose/i);
+  });
+
+  it("an explicit follow-up beat (e.g. doggy's grinding motion) gets the permissive content lock, not the hold lock that would contradict its own instruction", () => {
+    const s = session();
+    const plan = planClip({
+      session: s,
+      job: {
+        kind: "beat",
+        beat: {
+          id: "b1",
+          physical: "she rocks and grinds her hips toward the webcam",
+          durationSec: 11,
+          nextState: { wardrobe: s.state.wardrobe, body: s.state.body },
+          explicit: true,
+        },
+      },
+      speechMode: "text",
+    });
+    expect(plan.prompt).toMatch(/render them directly and fully/i);
+    expect(plan.prompt).not.toMatch(/nothing sexual or nudity-changing/i);
+  });
+
+  it("a non-explicit follow-up beat with no wardrobe/contact change still gets the hold lock", () => {
+    const s = session();
+    const plan = planClip({
+      session: s,
+      job: {
+        kind: "beat",
+        beat: {
+          id: "b1",
+          physical: "she waves",
+          durationSec: 11,
+          nextState: { wardrobe: s.state.wardrobe, body: s.state.body },
+        },
+      },
+      speechMode: "text",
+    });
+    expect(plan.prompt).toMatch(/nothing sexual or nudity-changing/i);
   });
 });
 
@@ -576,6 +625,15 @@ describe("planClip: act catalog additions", () => {
       plan.expectedState;
     expect(finalState.body.pose).toBe("onAllFours");
     expect(finalState.body.facing).toBe("away");
+  });
+
+  it("doggy style's grinding beat gets the permissive content lock, not the plain-hold lock that would contradict its own instruction", () => {
+    const s = session({
+      state: state({ body: body({ pose: "kneeling" }) }),
+    });
+    const plan = reply(s, "doggy style");
+    const grindBeat = plan.followUps[plan.followUps.length - 1];
+    expect(grindBeat?.explicit).toBe(true);
   });
 
   it("bend over sets the bentOver pose", () => {

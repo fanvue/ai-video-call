@@ -299,6 +299,7 @@ export const LiveStudio = () => {
             elapsed={
               startedAtMs !== null ? formatElapsed(startedAtMs, now) : "00:00"
             }
+            costUsd={session.costTotal}
             viewerCount={session.viewerCount}
             privateMode={session.privateMode}
             goal={wallet.goal}

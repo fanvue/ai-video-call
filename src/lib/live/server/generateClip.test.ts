@@ -173,7 +173,7 @@ describe("generateClip: chained jobs", () => {
     expect(result.seedFrameUrl).toBe("https://example.com/extracted.jpg");
   });
 
-  it("a reply job extracts the last frame and guards it (drift compounds mid-chain), but does not loop", async () => {
+  it("a reply job extracts the last frame and guards it, and does not loop", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
     writeReply.mockResolvedValue({ text: "mmm okay", nextWorld: "w" });
     const req = clipRequest({
@@ -198,12 +198,13 @@ describe("generateClip: chained jobs", () => {
     expect(result.loops).toBe(false);
   });
 
-  it("a beat job (mid-chain) guards but skips repair even when flagged, so the next queued beat isn't held up by it", async () => {
+  it("a beat job (mid-chain) repairs flagged drift too, so it never carries a wrong wardrobe into the next queued beat's seed", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
     guardFrame.mockResolvedValue({
       checked: true,
       issues: ["top should be on but frame shows it off"],
     });
+    repairFrame.mockResolvedValue("https://example.com/repaired.jpg");
     const req = clipRequest({
       job: {
         kind: "beat",
@@ -220,12 +221,10 @@ describe("generateClip: chained jobs", () => {
 
     expect(extractLastFrameUrl).toHaveBeenCalled();
     expect(guardFrame).toHaveBeenCalled();
-    expect(repairFrame).not.toHaveBeenCalled();
+    expect(repairFrame).toHaveBeenCalled();
     expect(result.guard.checked).toBe(true);
-    expect(result.guard.issues).toEqual([
-      "top should be on but frame shows it off",
-    ]);
-    expect(result.seedFrameUrl).toBe("https://example.com/extracted.jpg");
+    expect(result.guard.repaired).toBe(true);
+    expect(result.seedFrameUrl).toBe("https://example.com/repaired.jpg");
   });
 
   it("a settle job (ends the chain) runs the guard", async () => {

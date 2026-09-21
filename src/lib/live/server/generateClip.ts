@@ -44,9 +44,6 @@ export const generateClip = async (
   const videoBackend = renderBackendFor(backend);
   // Only idle loops on the anchor now; greeting chains forward from a real frame like every other job.
   const isAnchoredLoop = job.kind === "idle" && videoBackend.supportsEndFrame;
-  // reply/beat have another render queued right behind them; skip the slow repair there so it
-  // doesn't tax the next beat's start time, and only pay it on the clip that ends the chain.
-  const isIntermediateBeat = job.kind === "reply" || job.kind === "beat";
 
   const renderStarted = Date.now();
   const renderPromise = videoBackend.render({
@@ -136,11 +133,8 @@ export const generateClip = async (
     guardMs = Date.now() - guardStarted;
 
     const repairStarted = Date.now();
-    if (
-      !isIntermediateBeat &&
-      guardOutcome.checked &&
-      guardOutcome.issues.length > 0
-    ) {
+    // Repair on every flagged clip now, mid-chain included — an unrepaired seed carried drift into every clip after it.
+    if (guardOutcome.checked && guardOutcome.issues.length > 0) {
       try {
         seedFrameUrl = await withTimeout(
           repairFrame({

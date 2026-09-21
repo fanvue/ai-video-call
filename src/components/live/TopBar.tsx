@@ -9,6 +9,7 @@ type TopBarProps = {
   displayName: string;
   status: LiveSessionStatus;
   elapsed: string;
+  costUsd: number;
   viewerCount: number;
   privateMode: boolean;
   goal: { current: number; target: number };
@@ -23,6 +24,7 @@ export const TopBar = ({
   displayName,
   status,
   elapsed,
+  costUsd,
   viewerCount,
   privateMode,
   goal,
@@ -50,6 +52,7 @@ export const TopBar = ({
           </span>
           <StatusPill status={status} />
           <span className="text-xs text-white/70">{elapsed}</span>
+          <span className="text-xs text-white/50">${costUsd.toFixed(2)}</span>
         </div>
 
         {privateMode ? (

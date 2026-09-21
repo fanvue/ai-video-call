@@ -298,6 +298,9 @@ type Beat = {
   nextWardrobe: Wardrobe;
   nextBody: Body;
   durationSec: number;
+  // A sexual act that doesn't itself change wardrobe/contact (doggy, spread legs) still needs the
+  // permissive CONTENT_LOCK, or it gets the hold lock telling the model nothing sexual happens here.
+  explicit?: boolean;
 };
 
 const GARMENT_PATTERN: Record<GarmentId, RegExp> = {
@@ -354,6 +357,7 @@ const RE_TOY_ANY = /\b(dildos?|vibrators?|vibes?|wands?|toys?)\b/i;
 const RE_TOY_DILDO = /\bdildos?\b/i;
 const RE_INSERT =
   /\b(insert|inside (her|your|my)|stick it in|in (her|your|my) (pussy|cunt|ass|butt))\b/i;
+const RE_SUCK = /\b(suck|blowjob|blow job)\b/i;
 const RE_TOUCH =
   /\b(touch (yourself|your (pussy|clit))|masturbat\w*|finger\w* yourself|insert (your |a )?fingers?|play with (yourself|your (pussy|clit))|rub (your (pussy|clit)|yourself)|joi|jerk[\s-]?off)\b/i;
 const RE_DANCE = /\b(dance|sway)\b/i;
@@ -715,6 +719,7 @@ const doggyBeats = (
     nextWardrobe: wardrobe,
     nextBody: { ...current, pose: "onAllFours", facing: "away" },
     durationSec: ACTION_BEAT_SEC,
+    explicit: true,
   });
   return beats;
 };
@@ -794,6 +799,7 @@ const spreadLegsBeats = (
     nextWardrobe: wardrobe,
     nextBody: current,
     durationSec: ACTION_BEAT_SEC,
+    explicit: true,
   });
   return beats;
 };
@@ -872,10 +878,11 @@ const toyBeats = (
 ): Beat[] | null => {
   if (!RE_TOY_ANY.test(text)) return null;
   const toy: Prop = RE_TOY_DILDO.test(text) ? "dildo" : "vibrator";
-  // Policy: no insertion, ever. A direct insertion ask redirects to mouth-only; anything else is external use.
-  const useLine = RE_INSERT.test(text)
-    ? "She brings it to her mouth and uses it there instead — mouth only, never lower."
-    : "She holds it against herself and uses it externally against her skin, external contact only, eyes on the lens.";
+  // Policy: no insertion, ever. A direct insertion or suck/mouth ask uses it on/in her mouth only; anything else is external use.
+  const useLine =
+    RE_INSERT.test(text) || RE_SUCK.test(text)
+      ? "She brings it to her mouth and sucks/licks it there, mouth only, never lower."
+      : "She holds it against herself and uses it externally against her skin, external contact only, eyes on the lens.";
   if (body.prop === "none") {
     return [
       {
@@ -1281,8 +1288,10 @@ const resolveBeats = (text: string, wardrobe: Wardrobe, body: Body): Beat[] => {
     // Only negate an undress/toy act it would otherwise cancel, not an unrelated request that
     // happens to sit next to "stop"/"no" with no comma (common in voice transcripts).
     const negatesRealAct =
-      beats?.some((beat) =>
-        isExplicitAct(currentWardrobe, beat.nextWardrobe, beat.nextBody),
+      beats?.some(
+        (beat) =>
+          beat.explicit ||
+          isExplicitAct(currentWardrobe, beat.nextWardrobe, beat.nextBody),
       ) ?? false;
     if (isNegatedClause(clause) && (negatesRealAct || !beats)) {
       for (const beat of negatedBeats(currentWardrobe, currentBody)) {
@@ -1526,10 +1535,9 @@ const planReply = (
     action: `${primaryPhysical} ${END_STILL_LOCK}`,
     nextWardrobe: primaryNextWardrobe,
     nextBody: primaryNextBody,
-    holdOnly: !isExplicitAct(
-      state.wardrobe,
-      primaryNextWardrobe,
-      primaryNextBody,
+    holdOnly: !(
+      firstBeat.explicit ||
+      isExplicitAct(state.wardrobe, primaryNextWardrobe, primaryNextBody)
     ),
     lockBodyOverride,
   });
@@ -1539,6 +1547,7 @@ const planReply = (
     physical: beat.physical,
     durationSec: clampDuration(beat.durationSec),
     nextState: { wardrobe: beat.nextWardrobe, body: beat.nextBody },
+    explicit: beat.explicit ?? false,
   }));
 
   return {
@@ -1571,7 +1580,9 @@ const planBeat = (
     action: `${job.beat.physical} ${END_STILL_LOCK}`,
     nextWardrobe,
     nextBody,
-    holdOnly: !isExplicitAct(state.wardrobe, nextWardrobe, nextBody),
+    holdOnly: !(
+      job.beat.explicit || isExplicitAct(state.wardrobe, nextWardrobe, nextBody)
+    ),
   });
   return {
     prompt,
