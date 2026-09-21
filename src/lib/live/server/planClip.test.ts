@@ -232,6 +232,26 @@ describe("planClip: reply intent catalog", () => {
     expect(plan.prompt).toMatch(/360-degree/i);
   });
 
+  it("a spin is timecoded and restates every untouched garment right beside the turn instruction, not just in the general lock block", () => {
+    const s = session();
+    const plan = reply(s, "can you spin for me");
+    expect(plan.prompt).toMatch(/0-2s:.*2-6s:.*6-8s:/i);
+    expect(plan.prompt).toMatch(
+      /WARDROBE REMINDER for the action below: her top \(.*\) stays on and fully visible; her bottoms \(.*\) stays on and fully visible; her bra \(.*\) stays on and fully visible; her panties \(.*\) stays on and fully visible/i,
+    );
+  });
+
+  it("the wardrobe reminder never claims a garment stays on when this clip's own instruction removes it", () => {
+    const s = session();
+    const plan = reply(s, "take your top off");
+    const reminder = plan.prompt.match(
+      /WARDROBE REMINDER for the action below:[^.]*\./i,
+    )?.[0];
+    expect(reminder).toBeDefined();
+    expect(reminder).not.toMatch(/her top \(/i);
+    expect(reminder).toMatch(/her bottoms \(.*\) stays on/i);
+  });
+
   it("'show me your tits' removes the top and bra across this clip and its follow-up, instead of falling through to a no-clothing-change generic action", () => {
     const s = session();
     const plan = reply(s, "show me your tits");

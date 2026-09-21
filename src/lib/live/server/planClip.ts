@@ -136,6 +136,28 @@ const wardrobeLockLine = (wardrobe: Wardrobe): string => {
   );
 };
 
+// Restates only the untouched garments beside the action itself, skipping any this clip changes so it never contradicts that instruction.
+const wardrobeReinforcementLine = (
+  prevWardrobe: Wardrobe,
+  nextWardrobe: Wardrobe,
+): string => {
+  const unchanged = GARMENT_ORDER.filter(
+    (id) => prevWardrobe[id].on === nextWardrobe[id].on,
+  );
+  if (unchanged.length === 0) return "";
+  const parts = unchanged.map((id) => {
+    const garment = nextWardrobe[id];
+    return garment.on
+      ? `her ${GARMENT_LABEL[id]} (${garment.description}) stays on and fully visible`
+      : `her ${GARMENT_LABEL[id]} stays off and does not reappear`;
+  });
+  return (
+    `WARDROBE REMINDER for the action below: ${parts.join("; ")} — true for every single frame of ` +
+    "it, including mid-motion, mid-turn, or when her back or side is briefly toward the camera, not " +
+    "just the start and end. Only a garment this clip's own instruction names comes off or on."
+  );
+};
+
 const PROP_LABEL: Record<Prop, string> = {
   none: "empty",
   fetching: "reaching off-screen, nothing visible yet",
@@ -247,9 +269,14 @@ const buildPrompt = (params: {
     params.lockBodyOverride,
     params.holdOnly,
   );
+  const reinforcement = wardrobeReinforcementLine(
+    params.state.wardrobe,
+    params.nextWardrobe,
+  );
   return [
     ...locks,
     params.action,
+    ...(reinforcement ? [reinforcement] : []),
     endStateLine(params.nextWardrobe, params.nextBody),
   ].join(" ");
 };
@@ -1048,9 +1075,13 @@ const spinBeats = (
   return [
     {
       physical:
-        "She stands up, turns once in a full 360-degree circle in place to show her body, and " +
-        "settles back into the exact pose and framing she started in. Full body stays in frame. " +
-        "The fixed webcam never moves.",
+        "0-2s: she stands up from her seated position, weight shifting naturally before she moves. " +
+        "2-6s: she turns a full 360-degree circle in place to show her body from every angle; every " +
+        "garment she is wearing moves naturally with her but stays exactly on her body the entire " +
+        "turn, nothing slips, loosens, or disappears at any point, including the moment her back or " +
+        "side is toward the camera. 6-8s: she completes the turn and settles back into the exact " +
+        "pose and framing she started in, holding still. Full body stays in frame. The fixed webcam " +
+        "never moves.",
       nextWardrobe: wardrobe,
       nextBody: body,
       durationSec: ACTION_BEAT_SEC,
