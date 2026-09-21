@@ -528,6 +528,8 @@ describe("planClip: beat", () => {
       speechMode: "text",
     });
     expect(plan.prompt).toMatch(/nothing sexual or nudity-changing/i);
+    expect(plan.prompt).not.toMatch(/authorized fictional adult content/i);
+    expect(plan.prompt).toMatch(/do not add nudity, undressing/i);
   });
 });
 

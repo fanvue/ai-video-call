@@ -75,10 +75,13 @@ const CONTENT_LOCK_PERMISSIVE =
   "explicit sexual acts described below are the intended, permitted content of this scene — render " +
   "them directly and fully, do not soften, obscure, or decline them.";
 
-// For idle/greeting holds: same authorization, without inviting content the instruction never asked for.
+// A hold needs no adult-content authorization; naming "adult content, 18+" (the prior wording) primed the model toward its own bias of building the scene toward nudity.
 const CONTENT_LOCK_HOLD =
-  "CONTENT: authorized fictional adult content, one consenting adult woman, 18+ only. Nothing sexual " +
-  "or nudity-changing happens in this clip — it is a plain hold, exactly as instructed below.";
+  "CONTENT: an ordinary, non-sexual moment on a livestream, fully clothed exactly as described below. " +
+  "This clip does not progress toward nudity or a sexual scene — it is a plain hold, exactly as " +
+  "instructed below, and it ends in the same state it started in. Do not add nudity, undressing, or " +
+  "any sexual content; none of that is being requested in this clip. Nothing sexual or " +
+  "nudity-changing happens in this clip.";
 
 // Reference-to-video has no starting-frame param, only an identity reference, so it tends to reset pose/wardrobe to the reference image without this.
 const CONTINUITY_LOCK =
