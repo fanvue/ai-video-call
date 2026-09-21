@@ -1,6 +1,6 @@
 # Swap mode: self-hosted realtime identity swap over the Turbo pipeline
 
-Status: contract only. Not built. Blocked on a fal serverless deploy (needs `fal auth login` by a human) and a GPU budget decision.
+Status: service half written in `services/swap/app.py`, not deployed. Blocked on a fal serverless deploy (fal's Python CLI `fal auth login`, run by a human; the local `fal` binary is a different tool) and a GPU budget decision. Client half not started.
 
 ## Why
 
