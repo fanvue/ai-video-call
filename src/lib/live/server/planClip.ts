@@ -582,6 +582,14 @@ const doggyBeats = (
     nextBody: { ...current, pose: "onAllFours", facing: "away" },
     durationSec: ACTION_BEAT_SEC,
   });
+  beats.push({
+    physical:
+      "Staying on her hands and knees, back still arched, she rocks and grinds her hips in a slow, " +
+      "steady rhythm toward the webcam, ass moving with each motion — external movement only, no insertion.",
+    nextWardrobe: wardrobe,
+    nextBody: { ...current, pose: "onAllFours", facing: "away" },
+    durationSec: ACTION_BEAT_SEC,
+  });
   return beats;
 };
 
@@ -600,17 +608,18 @@ const bendOverBeats = (
       : body.facing === "side"
         ? "camera"
         : body.facing;
+  const swayBeat: Beat = {
+    physical:
+      `Bent over, ${FACING_TRANSITION_LABEL[targetFacing]}, she sways and arches her back, hips ` +
+      "rocking slowly. No clothing changes.",
+    nextWardrobe: wardrobe,
+    nextBody: { ...body, pose: "bentOver", facing: targetFacing },
+    durationSec: ACTION_BEAT_SEC,
+  };
   if (body.pose === "bentOver" && body.facing === targetFacing) {
-    return [
-      {
-        physical: `She holds her bent-over pose, ${FACING_TRANSITION_LABEL[targetFacing]}. No clothing changes.`,
-        nextWardrobe: wardrobe,
-        nextBody: body,
-        durationSec: ACTION_BEAT_SEC,
-      },
-    ];
+    return [swayBeat];
   }
-  return [transitionBeat(wardrobe, body, "bentOver", targetFacing)];
+  return [transitionBeat(wardrobe, body, "bentOver", targetFacing), swayBeat];
 };
 
 const crawlBeats = (
@@ -1186,14 +1195,15 @@ const planIdle = (session: LiveSessionSnapshot): ClipPlan => {
         ? "The current prop stays held still in her hand; she does not use it this clip."
         : "";
   const action = [
-    "IDLE, between requests. Hold this exact state — only small grounded life: breathing, blinking, " +
-      "a glance at the chat, a slow shift of weight, a tuck of her hair.",
-    "FORBIDDEN this clip: no clothing change, no new prop, no sexual act starting or continuing, " +
-      "no standing up, no leaving frame.",
+    `IDLE, between requests. She stays ${nextBody.pose}, exactly as she is right now, for the entire clip — ` +
+      "only small grounded life on top of that fixed pose: breathing, blinking, a glance at the chat, a tiny " +
+      "weight shift, a tuck of her hair. This is a static hold, not a scene with a beginning and an end.",
+    `FORBIDDEN this clip: no change of pose category (if she is ${nextBody.pose} now, she never sits, stands, ` +
+      "kneels, or lies down — she stays exactly that way start to finish), no clothing change, no new prop, " +
+      "no sexual act starting or continuing, no leaving frame.",
     pauseLine,
-    "LOOP: the clip must END in exactly the starting pose, framing, expression baseline, and hand " +
-      "position it started in, so it can loop seamlessly. Treat the motion as a small excursion and " +
-      "return — a breath, a glance to the chat, a small weight shift — always back to the exact start.",
+    "The clip must END in the same pose, framing, expression baseline, and hand position it started in — " +
+      "treat any motion as a small excursion that always returns to the exact start.",
   ]
     .filter(Boolean)
     .join(" ");

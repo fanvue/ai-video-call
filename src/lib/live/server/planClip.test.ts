@@ -107,15 +107,18 @@ describe("planClip: idle", () => {
     expect(plan.prompt).toMatch(/stays held still/i);
   });
 
-  it("instructs the clip to end back in its starting pose so it can loop", () => {
+  it("instructs the clip to end back in its starting pose, with no pose-category switching", () => {
     const s = session();
     const plan = planClip({
       session: s,
       job: { kind: "idle" },
       speechMode: "text",
     });
-    expect(plan.prompt).toMatch(/end in exactly the starting pose/i);
-    expect(plan.prompt).toMatch(/loop seamlessly/i);
+    expect(plan.prompt).toMatch(/must end in the same pose/i);
+    expect(plan.prompt).toMatch(/no change of pose category/i);
+    expect(plan.prompt).toMatch(
+      /she never sits, stands, kneels, or lies down/i,
+    );
   });
 });
 
@@ -470,14 +473,17 @@ describe("planClip: act catalog additions", () => {
     expect(finalState.body.facing).toBe("away");
   });
 
-  it("doggy style from an already-kneeling pose skips the transition beat", () => {
+  it("doggy style from an already-kneeling pose skips the transition beat but keeps the continuing motion", () => {
     const s = session({
       state: state({ body: body({ pose: "kneeling" }) }),
     });
     const plan = reply(s, "doggy style");
-    expect(plan.followUps).toHaveLength(0);
-    expect(plan.expectedState.body.pose).toBe("onAllFours");
-    expect(plan.expectedState.body.facing).toBe("away");
+    expect(plan.followUps).toHaveLength(1);
+    const finalState =
+      plan.followUps[plan.followUps.length - 1]?.nextState ??
+      plan.expectedState;
+    expect(finalState.body.pose).toBe("onAllFours");
+    expect(finalState.body.facing).toBe("away");
   });
 
   it("bend over sets the bentOver pose", () => {

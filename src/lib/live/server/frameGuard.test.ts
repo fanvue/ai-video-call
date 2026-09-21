@@ -195,6 +195,57 @@ describe("guardFrame", () => {
     ).toBe(true);
   });
 
+  it("flags a garment whose color drifted even though it is still on", async () => {
+    createGroqVisionCompletion.mockResolvedValue(
+      completionWith(
+        JSON.stringify({
+          topOn: true,
+          topColor: "red",
+          bottomOn: true,
+          braOn: true,
+          pantiesOn: true,
+          visibleProps: [],
+          extraPeople: false,
+          extraLimbs: false,
+        }),
+      ),
+    );
+    const result = await guardFrame({
+      frameUrl: "https://x/frame.jpg",
+      expected,
+    });
+    expect(
+      result.issues.some(
+        (issue) =>
+          issue.includes("top color drifted") &&
+          issue.includes("expected black") &&
+          issue.includes("showing red"),
+      ),
+    ).toBe(true);
+  });
+
+  it("does not flag color when it matches expected", async () => {
+    createGroqVisionCompletion.mockResolvedValue(
+      completionWith(
+        JSON.stringify({
+          topOn: true,
+          topColor: "Black",
+          bottomOn: true,
+          braOn: true,
+          pantiesOn: true,
+          visibleProps: [],
+          extraPeople: false,
+          extraLimbs: false,
+        }),
+      ),
+    );
+    const result = await guardFrame({
+      frameUrl: "https://x/frame.jpg",
+      expected,
+    });
+    expect(result.issues).toEqual([]);
+  });
+
   it("does not flag a synonym for the expected prop as wrong", async () => {
     createGroqVisionCompletion.mockResolvedValue(
       completionWith(
@@ -245,6 +296,21 @@ describe("repairFrame instructions", () => {
     };
     expect(call.prompt).toMatch(
       /replace the drink in her hand with the vibrator/i,
+    );
+  });
+
+  it("asks to correct a garment's color back to its described color", async () => {
+    await repairFrame({
+      frameUrl: "https://x/frame.jpg",
+      anchorFrameUrl: "https://x/anchor.jpg",
+      expected,
+      issues: ["top color drifted: expected black, showing red"],
+    });
+    const call = correctFrameIdentityDrift.mock.calls[0]?.[0] as {
+      prompt: string;
+    };
+    expect(call.prompt).toMatch(
+      /correct her top back to its original color: black tank top/i,
     );
   });
 });

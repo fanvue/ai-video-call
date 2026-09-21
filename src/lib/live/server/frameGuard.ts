@@ -7,6 +7,10 @@ type VisionReport = {
   bottomOn?: boolean;
   braOn?: boolean;
   pantiesOn?: boolean;
+  topColor?: string;
+  bottomColor?: string;
+  braColor?: string;
+  pantiesColor?: string;
   visibleProps?: string[];
   extraPeople?: boolean;
   extraLimbs?: boolean;
@@ -14,10 +18,38 @@ type VisionReport = {
 
 const GUARD_PROMPT =
   "Look at this single frame from an adult webcam stream. Return ONLY JSON describing exactly what is visible: " +
-  '{"topOn":bool,"bottomOn":bool,"braOn":bool,"pantiesOn":bool,"visibleProps":["..."],"extraPeople":bool,"extraLimbs":bool}. ' +
-  "topOn/bottomOn/braOn/pantiesOn describe whether that garment is currently worn and visible. visibleProps lists any " +
-  'handheld object (e.g. "vibrator", "drink"), empty array if hands are empty. extraPeople is true only if more than ' +
-  "one person is visible. extraLimbs is true only if the body shows extra or malformed limbs.";
+  '{"topOn":bool,"bottomOn":bool,"braOn":bool,"pantiesOn":bool,"topColor":"...","bottomColor":"...",' +
+  '"braColor":"...","pantiesColor":"...","visibleProps":["..."],"extraPeople":bool,"extraLimbs":bool}. ' +
+  "topOn/bottomOn/braOn/pantiesOn describe whether that garment is currently worn and visible. For each garment " +
+  'that is on, give its ONE main color as a single common color word (e.g. "black", "red", "blue"); omit or use ' +
+  '"" for a garment that is off. visibleProps lists any handheld object (e.g. "vibrator", "drink"), empty array ' +
+  "if hands are empty. extraPeople is true only if more than one person is visible. extraLimbs is true only if " +
+  "the body shows extra or malformed limbs.";
+
+// Common garment colors, longest-first so "light blue" wins over a bare "blue" scan if ever extended.
+const COLOR_WORDS = [
+  "black",
+  "white",
+  "red",
+  "pink",
+  "purple",
+  "blue",
+  "green",
+  "yellow",
+  "orange",
+  "brown",
+  "beige",
+  "nude",
+  "gold",
+  "silver",
+  "grey",
+  "gray",
+];
+
+const expectedColor = (description: string): string | null =>
+  COLOR_WORDS.find((color) =>
+    new RegExp(`\\b${color}\\b`, "i").test(description),
+  ) ?? null;
 
 const parseVisionReport = (raw: string): VisionReport | null => {
   const cleaned = raw.replace(/^```json\s*|\s*```$/g, "").trim();
@@ -34,6 +66,13 @@ const GARMENT_SEEN: Record<GarmentId, keyof VisionReport> = {
   bottom: "bottomOn",
   bra: "braOn",
   panties: "pantiesOn",
+};
+
+const GARMENT_COLOR_SEEN: Record<GarmentId, keyof VisionReport> = {
+  top: "topColor",
+  bottom: "bottomColor",
+  bra: "braColor",
+  panties: "pantiesColor",
 };
 
 // Synonyms the vision model might use for a held prop (e.g. it says "toy" for a vibrator).
@@ -60,6 +99,21 @@ const compareToExpected = (
       issues.push(`${id} should be on but frame shows it off`);
     if (!wanted && seen)
       issues.push(`${id} should be off but frame shows it on`);
+
+    if (wanted && seen) {
+      const seenColor = report[GARMENT_COLOR_SEEN[id]];
+      const wantedColor = expectedColor(expected.wardrobe[id].description);
+      if (
+        typeof seenColor === "string" &&
+        seenColor &&
+        wantedColor &&
+        seenColor.toLowerCase() !== wantedColor.toLowerCase()
+      ) {
+        issues.push(
+          `${id} color drifted: expected ${wantedColor}, showing ${seenColor.toLowerCase()}`,
+        );
+      }
+    }
   }
 
   const expectedProp = expected.body.prop;
@@ -134,6 +188,9 @@ const repairInstructionFor = (issue: string, expected: LiveState): string => {
   }
   if (garment && issue.includes("should be off")) {
     return `remove her ${garment}, it should not be visible`;
+  }
+  if (garment && issue.includes("color drifted")) {
+    return `correct her ${garment} back to its original color: ${expected.wardrobe[garment].description}`;
   }
   if (issue.includes("unexpected object")) {
     return "remove the object in her hand, her hands should be empty";
