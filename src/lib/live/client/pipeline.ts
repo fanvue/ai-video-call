@@ -32,6 +32,9 @@ export type ClipPipelineOptions = {
 
 export type SnapshotSource = () => LiveSessionSnapshot;
 
+// Extra idle render per beat while a chain runs; flip off to save spend.
+const BRIDGE_IDLES = true;
+
 type AnchorPoint = { frameUrl: string; state: LiveState };
 
 export type BufferStats = {
@@ -312,6 +315,8 @@ export class ClipPipeline {
 
     this.chainedReady.push(result);
     this.chainTail = { frameUrl: result.seedFrameUrl, state: result.state };
+    // Bridge idles from the new tail can start rendering right away, alongside the next beat.
+    this.fillIdleStockpile();
     this.onEvent({ type: "clipReady", result, lane: "chained" });
     this.announceIfRecovered();
     this.tryAdvanceChain();
@@ -330,11 +335,17 @@ export class ClipPipeline {
 
   // ---- Idle lane ----
 
-  // Only current-anchor stock counts toward the buffer target; stale ones stay playable until consumed.
-  private currentAnchorIdleReadyCount(): number {
+  // While a chain runs, bridge idles seed from its tail instead of the (stale) display anchor.
+  private idleLaneTarget(): AnchorPoint {
+    return BRIDGE_IDLES ? (this.chainTail ?? this.anchor) : this.anchor;
+  }
+
+  // Only stock seeded from the idle lane target counts toward the buffer target; others stay
+  // playable until consumed (an old-anchor idle) or promoted (a bridge idle once its tail lands).
+  private idleLaneTargetReadyCount(): number {
+    const target = this.idleLaneTarget();
     return this.idleReady.filter(
-      (clip) =>
-        this.idleAnchorByClipId.get(clip.clipId) === this.anchor.frameUrl,
+      (clip) => this.idleAnchorByClipId.get(clip.clipId) === target.frameUrl,
     ).length;
   }
 
@@ -348,11 +359,11 @@ export class ClipPipeline {
       return;
     }
     while (
-      this.currentAnchorIdleReadyCount() + this.idleInflightCount <
+      this.idleLaneTargetReadyCount() + this.idleInflightCount <
         LIVE_TUNABLES.IDLE_BUFFER_TARGET &&
       this.idleInflightCount < LIVE_TUNABLES.IDLE_MAX_INFLIGHT
     ) {
-      this.submitIdleJob(this.anchor, 0);
+      this.submitIdleJob(this.idleLaneTarget(), 0);
     }
   }
 
@@ -403,8 +414,11 @@ export class ClipPipeline {
       return;
     }
 
-    if (anchorAtSubmit.frameUrl !== this.anchor.frameUrl) {
-      // Anchor moved on while this idle render was in flight; log the cost and drop it.
+    const stillCurrent =
+      anchorAtSubmit.frameUrl === this.anchor.frameUrl ||
+      anchorAtSubmit.frameUrl === this.chainTail?.frameUrl;
+    if (!stillCurrent) {
+      // Neither the anchor nor a bridge idle's chain tail matches anymore; log the cost and drop it.
       this.onEvent({
         type: "clipDiscarded",
         result,

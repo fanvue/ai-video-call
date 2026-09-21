@@ -62,6 +62,14 @@ The chain therefore has two modes:
   seeded from the frame currently on the anchor and chain frame to frame. Their last frame
   (guarded, repaired) becomes the new anchor. When the anchor changes, buffered idle loops from
   the old anchor are discarded and new ones are rendered from the new anchor immediately.
+- **Bridge idles.** While a multi-beat chain is running, the idle lane targets the chain tail
+  instead of the (stale) anchor, so an idle rendered from that tail is already playable the
+  moment its chained clip is displayed, instead of holding a still frame for the next beat's
+  render latency. Idles already sitting in the pool from an older anchor stay playable but stop
+  counting toward the buffer target once the tail moves past them. When the tail is promoted to
+  the anchor, its bridge idles are simply current-anchor stock from then on. Gated by
+  `pipeline.ts`'s module-level `BRIDGE_IDLES` flag (on by default; off saves one idle render per
+  beat).
 
 Invariants:
 

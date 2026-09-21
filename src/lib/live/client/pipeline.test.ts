@@ -52,7 +52,7 @@ const snapshot: LiveSessionSnapshot = {
 
 let resultCounter = 0;
 let frameCounter = 0;
-// A chain job (greeting/reply/beat/settle/...) always moves to a fresh frame; an idle loop always
+// A chain job (greeting/reply/beat/checkIn) always moves to a fresh frame; an idle loop always
 // returns to the frame it started from (that's what makes it a loop).
 const freshFrame = () => `https://example.com/frame-${++frameCounter}.jpg`;
 
@@ -73,6 +73,7 @@ const makeResult = (
     reply: null,
     followUps: [],
     guard: { checked: true, issues: [], repaired: false },
+    observed: null,
     timings: { planMs: 1, renderMs: 1, frameMs: 1, guardMs: 1, repairMs: 1 },
     costUsd: 0.02,
     ...overrides,
@@ -275,17 +276,12 @@ describe("ClipPipeline", () => {
     expect(events.some((e) => e.type === "anchorChanged")).toBe(true);
   });
 
-  it("chains followUps and settle in order, each seeded from the previous result", async () => {
+  it("chains follow-up beats in order, each seeded from the previous result", async () => {
     const seeds: string[] = [];
     const queue = makeJobQueue();
     const beat: ClipJob = {
       kind: "beat",
-      beat: {
-        id: "b1",
-        physical: "she waves",
-        durationSec: 10,
-        nextState: { wardrobe: liveState.wardrobe, body: baseBody },
-      },
+      beat: { id: "b1", intent: { type: "act", act: "gesture" }, attempt: 0 },
     };
     const pipeline = trackedPipeline({
       now: nowFn,
@@ -297,8 +293,12 @@ describe("ClipPipeline", () => {
         }
         if (req.job.kind === "reply") {
           queue.push(beat);
-        } else if (req.job.kind === "beat") {
-          queue.push({ kind: "settle" });
+        } else if (req.job.kind === "beat" && req.job.beat.id === "b1") {
+          // A second follow-up beat (as the director's rest stage would queue), chained once only.
+          queue.push({
+            kind: "beat",
+            beat: { id: "rest-1", intent: { type: "rest" }, attempt: 0 },
+          });
         }
         return delayed(() => chainAdvancingResult(req));
       },
@@ -311,7 +311,7 @@ describe("ClipPipeline", () => {
     pipeline.onRequestEnqueued();
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // reply
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // beat
-    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // settle
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // rest beat
 
     // greeting loops on the initial anchor so the reply seeds from it too; each later step seeds
     // from the previous step's own freshly-rendered frame.
@@ -424,12 +424,7 @@ describe("ClipPipeline", () => {
     const queue = makeJobQueue();
     const beat: ClipJob = {
       kind: "beat",
-      beat: {
-        id: "b1",
-        physical: "she waves",
-        durationSec: 10,
-        nextState: { wardrobe: liveState.wardrobe, body: baseBody },
-      },
+      beat: { id: "b1", intent: { type: "act", act: "gesture" }, attempt: 0 },
     };
     const pipeline = trackedPipeline({
       now: nowFn,
@@ -537,6 +532,181 @@ describe("ClipPipeline", () => {
 
     replyDeferred.resolve(makeResult("reply", freshFrame()));
     await vi.advanceTimersByTimeAsync(0);
+  });
+
+  it("bridges idles from the chain tail while the next beat renders", async () => {
+    const idleRequests: ClipRequest[] = [];
+    const queue = makeJobQueue();
+    const beat: ClipJob = {
+      kind: "beat",
+      beat: { id: "b1", intent: { type: "act", act: "gesture" }, attempt: 0 },
+    };
+    const beatDeferred = defer<ClipResult>();
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        if (req.job.kind === "idle") {
+          idleRequests.push(req);
+          return delayed(() => chainAdvancingResult(req));
+        }
+        if (req.job.kind === "reply") {
+          queue.push(beat); // as the director would, before the reply resolves
+          return delayed(() => chainAdvancingResult(req));
+        }
+        if (req.job.kind === "beat") {
+          return beatDeferred.promise; // held open so the tail stays active
+        }
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting -> A1
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // initial idle stockpile fills against A1
+    const idleRequestsBeforeReply = idleRequests.length;
+
+    queue.push(REPLY_JOB);
+    pipeline.onRequestEnqueued();
+    // reply resolves -> chain tail A2; the beat it kicks off is held pending, so bridge idles
+    // should be submitted from the tail alongside it rather than waiting for the beat to finish.
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+
+    const bridgeRequests = idleRequests.slice(idleRequestsBeforeReply);
+    expect(bridgeRequests.length).toBeGreaterThan(0);
+    const tailSeed = bridgeRequests[0]?.session.seedFrameUrl;
+    expect(tailSeed).not.toBe(ANCHOR_0);
+    for (const req of bridgeRequests) {
+      expect(req.job.kind).toBe("idle");
+      expect(req.session.seedFrameUrl).toBe(tailSeed);
+    }
+  });
+
+  it("returns a bridge idle from nextClip instead of null while the next beat still renders", async () => {
+    const events: PipelineEvent[] = [];
+    const queue = makeJobQueue();
+    const beat: ClipJob = {
+      kind: "beat",
+      beat: { id: "b1", intent: { type: "act", act: "gesture" }, attempt: 0 },
+    };
+    const beatDeferred = defer<ClipResult>();
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: (e) => events.push(e),
+      render: async (req) => {
+        if (req.job.kind === "reply") {
+          queue.push(beat);
+          return delayed(() => chainAdvancingResult(req));
+        }
+        if (req.job.kind === "beat") {
+          return beatDeferred.promise;
+        }
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting -> A1
+    pipeline.nextClip(); // consume the greeting; displayAnchor = A1
+
+    queue.push(REPLY_JOB);
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // reply resolves -> tail A2; beat pending; bridge idles submitted from A2
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // bridge idles resolve
+
+    const reply = pipeline.nextClip();
+    expect(reply?.jobKind).toBe("reply");
+
+    // Before the fix, no idle was ever seeded from the tail, so this would be null (a still-frame
+    // hold) until the beat's own render finished.
+    const bridgeIdle = pipeline.nextClip();
+    expect(bridgeIdle).not.toBeNull();
+    expect(bridgeIdle?.jobKind).toBe("idle");
+    expect(events.some((e) => e.type === "bufferEmpty")).toBe(false);
+  });
+
+  it("keeps old-anchor idles playable without counting them toward the tail's buffer target", async () => {
+    const events: PipelineEvent[] = [];
+    const queue = makeJobQueue();
+    const beat: ClipJob = {
+      kind: "beat",
+      beat: { id: "b1", intent: { type: "act", act: "gesture" }, attempt: 0 },
+    };
+    const beatDeferred = defer<ClipResult>();
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: (e) => events.push(e),
+      render: async (req) => {
+        if (req.job.kind === "reply") {
+          queue.push(beat);
+          return delayed(() => chainAdvancingResult(req));
+        }
+        if (req.job.kind === "beat") {
+          return beatDeferred.promise;
+        }
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting -> A1
+    pipeline.nextClip(); // consume greeting; displayAnchor = A1
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // initial idles (seeded A1) ready
+    expect(pipeline.getBufferStats().idleReady).toBe(
+      LIVE_TUNABLES.IDLE_BUFFER_TARGET,
+    );
+
+    queue.push(REPLY_JOB);
+    pipeline.onRequestEnqueued();
+    // reply resolves -> tail A2; the A1 idles are still sitting in the pool, unmatched by the new
+    // target, so a fresh round of bridge idles is submitted for A2 alongside them.
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+
+    expect(events.filter((e) => e.type === "clipDiscarded")).toHaveLength(0);
+    expect(pipeline.getBufferStats().idleReady).toBe(
+      LIVE_TUNABLES.IDLE_BUFFER_TARGET,
+    );
+    expect(pipeline.getBufferStats().idleInflight).toBe(
+      LIVE_TUNABLES.IDLE_MAX_INFLIGHT,
+    );
+
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // bridge idles (seeded A2) resolve too
+
+    // The pool now holds both the untouched A1 stock and the new A2 stock: old stock was never
+    // evicted just because it stopped matching the idle lane's current target.
+    expect(pipeline.getBufferStats().idleReady).toBe(
+      LIVE_TUNABLES.IDLE_BUFFER_TARGET * 2,
+    );
+  });
+
+  it("counts tail-seeded bridge idles as current-anchor stock once the tail is promoted", async () => {
+    const events: PipelineEvent[] = [];
+    const queue = makeJobQueue();
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: (e) => events.push(e),
+      render: async (req) => delayed(() => chainAdvancingResult(req)),
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting -> A1
+    pipeline.nextClip(); // consume greeting; displayAnchor = A1
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // initial idles from A1 ready
+
+    queue.push(REPLY_JOB);
+    pipeline.onRequestEnqueued();
+    // reply resolves; the queue is empty so the tail is promoted to anchor A2 in the same tick,
+    // and the bridge idles it kicked off keep rendering against what is now the current anchor.
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // those bridge idles resolve
+
+    expect(events.filter((e) => e.type === "clipDiscarded")).toHaveLength(0);
+
+    const reply = pipeline.nextClip();
+    expect(reply?.jobKind).toBe("reply");
+    const bridgeIdle = pipeline.nextClip();
+    expect(bridgeIdle?.jobKind).toBe("idle");
+    expect(bridgeIdle?.seedFrameUrl).toBe(reply?.seedFrameUrl);
   });
 
   it("discards a late result after dispose", async () => {
