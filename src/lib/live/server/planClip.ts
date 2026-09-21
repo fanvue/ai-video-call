@@ -1225,7 +1225,14 @@ const resolveBeats = (text: string, wardrobe: Wardrobe, body: Body): Beat[] => {
       currentBody = beat.nextBody;
     }
 
-    if (isNegatedClause(clause)) {
+    const beats = matchBeats(clause, currentWardrobe, currentBody);
+    // Only negate an undress/toy act it would otherwise cancel, not an unrelated request that
+    // happens to sit next to "stop"/"no" with no comma (common in voice transcripts).
+    const negatesRealAct =
+      beats?.some((beat) =>
+        isExplicitAct(currentWardrobe, beat.nextWardrobe, beat.nextBody),
+      ) ?? false;
+    if (isNegatedClause(clause) && (negatesRealAct || !beats)) {
       for (const beat of negatedBeats(currentWardrobe, currentBody)) {
         allBeats.push(beat);
         currentWardrobe = beat.nextWardrobe;
@@ -1234,7 +1241,6 @@ const resolveBeats = (text: string, wardrobe: Wardrobe, body: Body): Beat[] => {
       continue;
     }
 
-    const beats = matchBeats(clause, currentWardrobe, currentBody);
     if (!beats) continue;
     for (const beat of beats) {
       allBeats.push(beat);

@@ -158,6 +158,21 @@ describe("generateClip: anchored idle loop", () => {
 });
 
 describe("generateClip: chained jobs", () => {
+  it("greeting chains forward from its real last frame instead of looping back to the anchor", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    const req = clipRequest({ job: { kind: "greeting" } });
+
+    const result = await generateClip(req);
+
+    expect(render).toHaveBeenCalledWith(
+      expect.objectContaining({ endFrameUrl: undefined }),
+    );
+    expect(extractLastFrameUrl).toHaveBeenCalled();
+    expect(guardFrame).toHaveBeenCalled();
+    expect(result.loops).toBe(false);
+    expect(result.seedFrameUrl).toBe("https://example.com/extracted.jpg");
+  });
+
   it("a reply job extracts the last frame and guards it (drift compounds mid-chain), but does not loop", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
     writeReply.mockResolvedValue({ text: "mmm okay", nextWorld: "w" });

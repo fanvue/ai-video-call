@@ -750,6 +750,12 @@ describe("planClip: negation", () => {
     expect(plan.expectedState.wardrobe.bottom.on).toBe(false);
     expect(plan.expectedState.wardrobe.top.on).toBe(true);
   });
+
+  it("a filler word ('stop'/'no') beside an unrelated request, with no comma, still performs it", () => {
+    const s = session();
+    expect(reply(s, "stop and spin around").prompt).toMatch(/360-degree turn/i);
+    expect(reply(s, "no wait spin around").prompt).toMatch(/360-degree turn/i);
+  });
 });
 
 describe("planClip: multi-act requests", () => {
