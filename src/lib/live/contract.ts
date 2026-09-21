@@ -206,9 +206,6 @@ export const liveSessionSnapshotSchema = z.object({
   seedFrameUrl: z.url(),
   // Untouched upload. Identity anchor for drift correction and repair.
   anchorFrameUrl: z.url(),
-  // False when the reference photo doesn't show her torso, so there's nothing in it to copy wardrobe
-  // pixels from — the greeting clip must describe the outfit instead of pointing at the seed frame.
-  anchorHasBody: z.boolean().default(true),
   elapsedSec: z
     .number()
     .int()

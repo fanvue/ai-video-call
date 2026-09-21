@@ -40,8 +40,6 @@ export type ReferenceUploadResult = {
   // Actual crop of the photo, captured by vision; undefined falls back to a "medium" guess.
   framing?: "wider" | "medium" | "torso";
   captured: boolean;
-  // False when the photo doesn't show her torso — nothing there for the greeting clip to copy wardrobe pixels from.
-  bodyVisible: boolean;
 };
 
 export type LiveSessionStatus =
@@ -536,7 +534,6 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       const director = new LiveDirector({
         creator,
         anchorFrameUrl: reference.anchorFrameUrl,
-        anchorHasBody: reference.bodyVisible,
         seedFrameUrl: reference.anchorFrameUrl,
         liveState: initialLiveState,
         now: Date.now(),

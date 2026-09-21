@@ -53,7 +53,6 @@ const session = (
   state: state(),
   seedFrameUrl: "https://example.com/seed.jpg",
   anchorFrameUrl: "https://example.com/anchor.jpg",
-  anchorHasBody: true,
   elapsedSec: 30,
   transcript: [],
   ...overrides,

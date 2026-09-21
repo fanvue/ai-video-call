@@ -45,7 +45,6 @@ const snapshot: LiveSessionSnapshot = {
   state: liveState,
   seedFrameUrl: ANCHOR_0,
   anchorFrameUrl: ANCHOR_0,
-  anchorHasBody: true,
   elapsedSec: 0,
   transcript: [],
 };

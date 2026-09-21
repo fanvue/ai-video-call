@@ -24,11 +24,10 @@ const DEFAULT_WARDROBE: Wardrobe = {
 // She always starts a session in lingerie, so this only needs bra/panties descriptions plus identity/scene facts — not an on/off judgment for outer garments.
 const CAPTURE_PROMPT =
   "Look at this reference photo of an adult woman, who is starting this session in lingerie. Describe " +
-  'her bra and panties, surroundings, and camera framing. Return ONLY JSON: {"torsoVisible":bool,' +
-  '"bra":{"description":"..."},"panties":{"description":"..."},"lookLock":"...","surroundings":"...",' +
-  '"framing":"wider|medium|torso"}. torsoVisible is false when the photo is cropped to face/head/' +
-  "shoulders only and does not show enough of her chest or waist to judge lingerie — in that case still " +
-  "give a best-guess bra/panties description, since torsoVisible:false is what actually matters here. " +
+  "her bra and panties, surroundings, and camera framing. Return ONLY JSON: " +
+  '{"bra":{"description":"..."},"panties":{"description":"..."},"lookLock":"...","surroundings":"...",' +
+  '"framing":"wider|medium|torso"}. If the photo is cropped to face/head/shoulders only and does not ' +
+  "show enough of her chest or waist to judge lingerie, still give a best-guess bra/panties description. " +
   "Each description is a short exact phrase (color, fabric, style) if visible, or a generic phrase if " +
   "not. lookLock describes hair, skin tone, and build only — never a real person's identity. " +
   "surroundings is a short factual description of the actual room and camera setup visible in the " +
@@ -38,7 +37,6 @@ const CAPTURE_PROMPT =
   "closer crop — match the actual crop of this photo, not a guess.";
 
 type WardrobeCapture = {
-  torsoVisible?: boolean;
   bra?: { description?: string };
   panties?: { description?: string };
   lookLock?: string;
@@ -122,6 +120,5 @@ export async function POST(request: Request) {
       ? (capture?.framing as "wider" | "medium" | "torso")
       : undefined,
     captured,
-    bodyVisible: capture !== null && capture.torsoVisible !== false,
   });
 }
