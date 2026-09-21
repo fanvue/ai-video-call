@@ -12,11 +12,11 @@ const bodySchema = z.object({
   contentType: z.union([z.literal("image/jpeg"), z.literal("image/png")]),
 });
 
-// Falls back only when vision capture fails outright. Assumes lingerie rather than full outerwear —
-// claiming an outer garment that isn't in the photo is the failure mode that actually got reported.
+// Assume normally clothed when capture fails or the photo doesn't show her torso — assuming lingerie
+// here was why she was already undressed in clip one on a face-only reference photo.
 const DEFAULT_WARDROBE: Wardrobe = {
-  top: { on: false, description: "top" },
-  bottom: { on: false, description: "bottoms" },
+  top: { on: true, description: "casual top" },
+  bottom: { on: true, description: "casual bottoms" },
   bra: { on: true, description: "bra" },
   panties: { on: true, description: "panties" },
   removedOrder: [],
@@ -24,13 +24,18 @@ const DEFAULT_WARDROBE: Wardrobe = {
 
 const CAPTURE_PROMPT =
   "Look at this reference photo of an adult woman. Describe her current outfit, surroundings, and camera " +
-  'framing for a video generation prompt library. Return ONLY JSON: {"top":{"on":bool,"description":"..."},' +
-  '"bottom":{"on":bool,"description":"..."},"bra":{"on":bool,"description":"..."},' +
-  '"panties":{"on":bool,"description":"..."},"lookLock":"...","surroundings":"...","framing":"wider|medium|torso"}. ' +
-  "top/bottom are outer garments only (shirt, dress, pants, skirt) — a bra or panties never counts as a top or " +
-  "bottom. If she is in lingerie only, with no separate outer garment visible over the bra or panties, set " +
-  "top.on and bottom.on to false. Set on:true for a garment only if you can actually see it worn in the photo; " +
-  "never guess a garment is on because a woman would typically be wearing one. Each description is a short exact " +
+  'framing for a video generation prompt library. Return ONLY JSON: {"torsoVisible":bool,' +
+  '"top":{"on":bool,"description":"..."},"bottom":{"on":bool,"description":"..."},' +
+  '"bra":{"on":bool,"description":"..."},"panties":{"on":bool,"description":"..."},' +
+  '"lookLock":"...","surroundings":"...","framing":"wider|medium|torso"}. ' +
+  "torsoVisible is false when the photo is cropped to face/head/shoulders only and does not show enough " +
+  "of her chest or waist to judge what she is wearing — in that case still fill top/bottom/bra/panties " +
+  "with your best guess, but torsoVisible:false is what matters, since the caller will ignore the guess " +
+  "and assume ordinary clothing instead. top/bottom are outer garments only (shirt, dress, pants, skirt) " +
+  "— a bra or panties never counts as a top or bottom. If torsoVisible is true and she is in lingerie " +
+  "only, with no separate outer garment visible over the bra or panties, set top.on and bottom.on to " +
+  "false. Set on:true for a garment only if you can actually see it worn in the photo; never guess a " +
+  "garment is on because a woman would typically be wearing one. Each description is a short exact " +
   "phrase (color, fabric, style) of that garment as it is visible now, or a generic phrase if it is off. lookLock " +
   "describes hair, skin tone, and build only — never a real person's identity. surroundings is a short factual " +
   "description of the actual room and camera setup visible in the background of THIS photo (furniture, lighting, " +
@@ -39,6 +44,7 @@ const CAPTURE_PROMPT =
   'waist-up, "torso" for a tight chest-up or closer crop — match the actual crop of this photo, not a guess.';
 
 type WardrobeCapture = {
+  torsoVisible?: boolean;
   top?: { on?: boolean; description?: string };
   bottom?: { on?: boolean; description?: string };
   bra?: { on?: boolean; description?: string };
@@ -62,7 +68,8 @@ const parseCapture = (raw: string): WardrobeCapture | null => {
 
 const toWardrobe = (capture: WardrobeCapture | null): Wardrobe => {
   if (!capture) return DEFAULT_WARDROBE;
-  // Never guess an outer garment is on when the model omits `on` — that's the misreported-lingerie bug.
+  // With no torso in frame the model has nothing to base a guess on, so ignore whatever it returned.
+  if (capture.torsoVisible === false) return DEFAULT_WARDROBE;
   const garment = (
     id: keyof WardrobeCapture,
     fallback: string,
@@ -76,8 +83,8 @@ const toWardrobe = (capture: WardrobeCapture | null): Wardrobe => {
       ) || fallback,
   });
   return {
-    top: garment("top", "top", false),
-    bottom: garment("bottom", "bottoms", false),
+    top: garment("top", "top", true),
+    bottom: garment("bottom", "bottoms", true),
     bra: garment("bra", "bra", true),
     panties: garment("panties", "panties", true),
     removedOrder: [],
