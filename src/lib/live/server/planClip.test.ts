@@ -65,7 +65,14 @@ const inRange = (sec: number) =>
 const replyPlan = (text: string, s: LiveSessionSnapshot = session()) =>
   planClip({
     session: s,
-    job: { kind: "reply", requestId: "r1", text, channel: "chat", from: "fan" },
+    job: {
+      kind: "reply",
+      requestId: "r1",
+      text,
+      channel: "chat",
+      from: "fan",
+      precededByIdle: false,
+    },
     speechMode: "text",
   });
 
@@ -733,5 +740,117 @@ describe("planClip: compound multi-act request", () => {
       { type: "act", act: "spread", detail: "ass" },
       { type: "act", act: "boobPlay" },
     ]);
+  });
+});
+
+describe("planClip: idle variety", () => {
+  it("rotates the idle life-line deterministically with elapsed time, without changing pose/clothing/props", () => {
+    const prompts = [0, 1, 2, 3, 4, 5].map(
+      (i) =>
+        planClip({
+          session: session({ elapsedSec: i * LIVE_TUNABLES.IDLE_CLIP_SEC }),
+          job: { kind: "idle" },
+          speechMode: "text",
+        }).prompt,
+    );
+    // Same cadence repeats every 5 slots (the catalogue length), so slot 0 and slot 5 match.
+    expect(prompts[0]).toBe(prompts[5]);
+    // At least two distinct life-lines appear across a full cycle.
+    expect(new Set(prompts.slice(0, 5)).size).toBeGreaterThan(1);
+    for (const plan of prompts) {
+      expect(plan).toMatch(/must END in the same pose/i);
+    }
+  });
+
+  it("uses the phone variant instead of the rotation when she's already holding her phone", () => {
+    const s = session({
+      state: state({ body: body({ prop: "phone", hands: "holdingProp" }) }),
+    });
+    const plan = planClip({
+      session: s,
+      job: { kind: "idle" },
+      speechMode: "text",
+    });
+    expect(plan.prompt).toMatch(/phone already in her hand/i);
+  });
+});
+
+describe("planBeatIntent: rest restores the full baseline, not just free hands", () => {
+  it("restores pose/facing/framing back to baseline when they've drifted", () => {
+    const baselineBody = body({ pose: "sitting", facing: "camera" });
+    const s: LiveState = {
+      ...state({ body: body({ pose: "onAllFours", facing: "away" }) }),
+      baselineBody,
+    };
+    const plan = planBeatIntent({ type: "rest" }, s);
+    expect(plan.nextBody).toEqual(baselineBody);
+    expect(plan.physical).toMatch(/settles back into/i);
+  });
+
+  it("adds no settling line when the current pose already matches baseline", () => {
+    const s = state();
+    const plan = planBeatIntent({ type: "rest" }, s);
+    expect(plan.nextBody).toEqual(s.baselineBody);
+    expect(plan.physical).not.toMatch(/settles back into/i);
+  });
+});
+
+describe("planClip: typing lead-in only after a genuine idle stretch", () => {
+  const replyWithIdleFlag = (
+    precededByIdle: boolean,
+    channel: "chat" | "voice" = "chat",
+  ) =>
+    planClip({
+      session: session(),
+      job: {
+        kind: "reply",
+        requestId: "r1",
+        text: "hey there",
+        channel,
+        from: "fan",
+        precededByIdle,
+      },
+      speechMode: "text",
+    });
+
+  it("opens on typing when the reply follows a genuine idle stretch", () => {
+    const plan = replyWithIdleFlag(true);
+    expect(plan.prompt).toMatch(/types a quick reply/i);
+  });
+
+  it("does not open on typing for a fast back-to-back reply", () => {
+    const plan = replyWithIdleFlag(false);
+    expect(plan.prompt).not.toMatch(/types a quick reply/i);
+  });
+
+  it("does not open on typing for a voice reply even after idle", () => {
+    const plan = replyWithIdleFlag(true, "voice");
+    expect(plan.prompt).not.toMatch(/types a quick reply/i);
+  });
+});
+
+describe("planClip: referenceRefresh", () => {
+  it("holds the current wardrobe/pose still, seeded conceptually from the anchor, with no wardrobe change", () => {
+    const s = session();
+    const plan = planClip({
+      session: s,
+      job: { kind: "referenceRefresh" },
+      speechMode: "text",
+    });
+    expect(plan.expectedState.wardrobe).toEqual(s.state.wardrobe);
+    expect(plan.expectedState.body).toEqual(s.state.body);
+    expect(plan.wardrobeIntent).toBeNull();
+    expect(plan.needsReplyText).toBe(false);
+    expect(plan.durationSec).toBe(LIVE_TUNABLES.IDLE_CLIP_SEC);
+  });
+
+  it("always carries the CONTINUITY_LOCK clause, even on the turbo backend", () => {
+    const plan = planClip({
+      session: session(),
+      job: { kind: "referenceRefresh" },
+      speechMode: "text",
+      backend: "turbo",
+    });
+    expect(plan.prompt).toMatch(/CONTINUITY/);
   });
 });

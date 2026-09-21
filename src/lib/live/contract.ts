@@ -180,6 +180,8 @@ export type PlannedBeat = z.infer<typeof plannedBeatSchema>;
 export const clipJobSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("greeting") }),
   z.object({ kind: z.literal("idle") }),
+  // Periodic re-anchor to the original upload, to stop the last-frame chain's drift from compounding.
+  z.object({ kind: z.literal("referenceRefresh") }),
   z.object({ kind: z.literal("checkIn"), channel: inputChannelSchema }),
   z.object({
     kind: z.literal("reply"),
@@ -190,6 +192,9 @@ export const clipJobSchema = z.discriminatedUnion("kind", [
     // Who asked: the fan on this device, or another viewer in the room.
     from: z.enum(["fan", "viewer"]).default("fan"),
     handle: z.string().max(24).optional(),
+    // True when this reply follows a genuine idle stretch, not a rapid back-to-back request —
+    // gates the typing lead-in so she isn't shown "typing" before every message in a fast exchange.
+    precededByIdle: z.boolean().default(false),
   }),
   z.object({ kind: z.literal("beat"), beat: plannedBeatSchema }),
 ]);
@@ -252,7 +257,14 @@ export type ObservedState = z.infer<typeof observedStateSchema>;
 
 export const clipResultSchema = z.object({
   clipId: z.string().min(1),
-  jobKind: z.enum(["greeting", "idle", "checkIn", "reply", "beat"]),
+  jobKind: z.enum([
+    "greeting",
+    "idle",
+    "checkIn",
+    "reply",
+    "beat",
+    "referenceRefresh",
+  ]),
   videoUrl: z.url(),
   durationSec: z.number().int().min(10).max(15),
   // Guarded last frame. The client MUST use this as the next seed.
@@ -314,6 +326,10 @@ export const LIVE_TUNABLES = {
   ABANDON_INFLIGHT_MS: 3_000,
   REST_AFTER_IDLE_MS: 20_000,
   CHECK_IN_AFTER_IDLE_MS: 90_000,
+  // Below this gap since the last activity, a reply is treated as part of a fast back-and-forth and skips the typing lead-in; at or above it, she was genuinely idling and opens on typing.
+  TYPING_LEAD_AFTER_IDLE_MS: 8_000,
+  // How often, during a genuinely idle stretch, to re-anchor against the original upload instead of the drifting last-frame chain.
+  REFERENCE_REFRESH_INTERVAL_MS: 60_000,
   TRANSCRIPT_WINDOW: 40,
   // Spend cap: every session auto-ends here regardless of activity.
   MAX_SESSION_MS: 180_000,

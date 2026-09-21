@@ -93,6 +93,7 @@ describe("LiveDirector", () => {
       text: "hey",
       channel: "chat",
       from: "fan",
+      precededByIdle: false,
     });
     expect(director.getState().jobQueue[0]).toEqual(job);
   });
@@ -284,8 +285,10 @@ describe("LiveDirector", () => {
     const director = makeDirector(dressedState, 0);
     director.nextJob();
     director.tick(90_000, { busy: false });
+    // Also picks up the reference-refresh interval (60s), which fires independently of checkIn/rest.
     expect(director.getState().jobQueue).toEqual([
       { kind: "checkIn", channel: "chat" },
+      { kind: "referenceRefresh" },
     ]);
   });
 
@@ -336,6 +339,7 @@ describe("LiveDirector", () => {
       channel: "chat",
       from: "viewer",
       handle: "nightowl_92",
+      precededByIdle: false,
     });
     expect(director.getState().jobQueue[0]).toEqual(job);
   });
@@ -386,11 +390,15 @@ describe("LiveDirector", () => {
     const director = makeDirector(dressedState, 0);
     director.nextJob();
     director.tick(90_000, { busy: false });
-    director.nextJob();
+    director.nextJob(); // consumes the checkIn scheduled above
     director.fanRequest({ text: "hi", channel: "chat" }, 91_000);
-    director.nextJob();
+    director.nextJob(); // consumes the reply
     director.tick(91_500, { busy: false });
-    expect(director.getState().jobQueue).toEqual([]);
+    // Rest/checkIn timers reset on the request, but the reference-refresh already queued at 90s
+    // (interval-based, independent of fan activity) is still pending — not re-triggered.
+    expect(director.getState().jobQueue).toEqual([
+      { kind: "referenceRefresh" },
+    ]);
   });
 
   it("runs three fan requests that arrive during one render in FIFO order", () => {
@@ -562,5 +570,64 @@ describe("LiveDirector", () => {
     director.clipCompleted(result, 1000);
     director.clipCompleted(result, 1000);
     expect(director.getState().jobQueue).toEqual([{ kind: "beat", beat }]);
+  });
+
+  it("schedules a referenceRefresh once idle for at least the refresh interval", () => {
+    const director = makeDirector(dressedState, 0);
+    director.nextJob();
+    director.tick(60_000, { busy: false });
+    expect(director.getState().jobQueue).toEqual([
+      { kind: "referenceRefresh" },
+    ]);
+  });
+
+  it("does not schedule a referenceRefresh before the interval has elapsed", () => {
+    const director = makeDirector(dressedState, 0);
+    director.nextJob();
+    director.tick(59_000, { busy: false });
+    expect(director.getState().jobQueue).toEqual([]);
+  });
+
+  it("does not schedule a referenceRefresh while busy or mid-queue (only fires when genuinely idle)", () => {
+    const director = makeDirector(dressedState, 0);
+    director.nextJob();
+    director.tick(60_000, { busy: true });
+    expect(director.getState().jobQueue).toEqual([]);
+  });
+
+  it("marks a fan reply as precededByIdle once the gap since the last activity clears the threshold", () => {
+    const director = makeDirector(dressedState, 0);
+    director.nextJob();
+    const fast = director.fanRequest({ text: "hi", channel: "chat" }, 1_000);
+    expect(fast.job).toMatchObject({ precededByIdle: false });
+
+    const slowDirector = makeDirector(dressedState, 0);
+    slowDirector.nextJob();
+    const slow = slowDirector.fanRequest(
+      { text: "hi", channel: "chat" },
+      8_000,
+    );
+    expect(slow.job).toMatchObject({ precededByIdle: true });
+  });
+
+  it("marks a viewer reply as precededByIdle the same way as a fan reply", () => {
+    const director = makeDirector(dressedState, 0);
+    director.nextJob();
+    const { job } = director.viewerRequest(
+      { handle: "kdub", text: "wave at me" },
+      8_000,
+    );
+    expect(job).toMatchObject({ precededByIdle: true });
+  });
+
+  it("does not mark a second reply as precededByIdle when it follows quickly after the first", () => {
+    const director = makeDirector(dressedState, 0);
+    director.nextJob();
+    director.fanRequest({ text: "hi", channel: "chat" }, 8_000);
+    const { job } = director.fanRequest(
+      { text: "how are you", channel: "chat" },
+      9_000,
+    );
+    expect(job).toMatchObject({ precededByIdle: false });
   });
 });

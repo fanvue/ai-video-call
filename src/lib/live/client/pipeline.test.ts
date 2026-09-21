@@ -157,6 +157,7 @@ const REPLY_JOB: ClipJob = {
   text: "hi",
   channel: "chat",
   from: "fan",
+  precededByIdle: false,
 };
 
 describe("ClipPipeline", () => {
@@ -573,6 +574,7 @@ describe("ClipPipeline", () => {
       text: "a",
       channel: "chat",
       from: "fan",
+      precededByIdle: false,
     };
     const requestB: ClipJob = {
       kind: "reply",
@@ -580,6 +582,7 @@ describe("ClipPipeline", () => {
       text: "b",
       channel: "chat",
       from: "fan",
+      precededByIdle: false,
     };
     const beatForA: ClipJob = {
       kind: "beat",

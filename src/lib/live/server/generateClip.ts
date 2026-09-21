@@ -16,7 +16,7 @@ import {
 import { guardFrame } from "./frameGuard";
 import { planClip, typingLeadSecFor } from "./planClip";
 import { reconcilePose, reconcileWardrobe } from "./reconcileState";
-import { renderBackendFor } from "./renderClip";
+import { referenceBackend, renderBackendFor } from "./renderClip";
 import { writeCheckIn, writeReply } from "./writeReply";
 
 const ANATOMY_ISSUE_RE = /extra person|extra or malformed limbs/;
@@ -256,7 +256,12 @@ export const generateClip = async (
   const plan = planClip({ session, job, speechMode, backend });
   const planMs = Date.now() - planStarted;
 
-  const videoBackend = renderBackendFor(backend);
+  // referenceRefresh always renders through the identity-conditioned model against the untouched
+  // upload, regardless of the session's own backend — that's the whole point of the re-anchor.
+  const isReferenceRefresh = job.kind === "referenceRefresh";
+  const videoBackend = isReferenceRefresh
+    ? referenceBackend
+    : renderBackendFor(backend);
   // Only idle loops on the anchor; every other job chains forward from a real generated frame, single-image-seed style — pinning a hold's end frame to the seed never stopped it from drifting mid-clip, it only masked the seam for the next clip.
   const isAnchoredLoop = job.kind === "idle" && videoBackend.supportsEndFrame;
   // Hold clip (idle/greeting/checkIn/non-wardrobe act/hold/pose transition) — must be verified before it can play; see checkFrame below.
@@ -267,7 +272,9 @@ export const generateClip = async (
   const renderStarted = Date.now();
   const renderPromise = videoBackend.render({
     prompt: plan.prompt,
-    seedFrameUrl: session.seedFrameUrl,
+    seedFrameUrl: isReferenceRefresh
+      ? session.anchorFrameUrl
+      : session.seedFrameUrl,
     durationSec: plan.durationSec,
     endFrameUrl: isAnchoredLoop ? session.seedFrameUrl : undefined,
   });

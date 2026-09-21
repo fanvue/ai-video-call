@@ -642,6 +642,7 @@ const planBeatIntentCore = (
   intent: BeatIntent,
   wardrobe: Wardrobe,
   body: Body,
+  baselineBody: Body,
 ): BeatPlan => {
   switch (intent.type) {
     case "removeGarment":
@@ -708,10 +709,18 @@ const planBeatIntentCore = (
         : "";
       const handLine =
         body.hands === "onBody" ? "Her hand eases off her own body. " : "";
+      // Rest settles all the way back to her baseline resting pose, not just free hands — otherwise
+      // "resting" could still leave her kneeling or bent over from whatever she was just doing.
+      const poseChanged =
+        body.pose !== baselineBody.pose || body.facing !== baselineBody.facing;
+      const poseLine = poseChanged
+        ? `She settles back into ${POSE_DESCRIPTION[baselineBody.pose]}, turning to end up ` +
+          `${FACING_TRANSITION_LABEL[baselineBody.facing]}. `
+        : "";
       return {
-        physical: `${propLine}${handLine}Her hands come to rest, empty, still.`,
+        physical: `${propLine}${handLine}${poseLine}Her hands come to rest, empty, still.`,
         nextWardrobe: wardrobe,
-        nextBody: { ...body, prop: "none", hands: "free", contact: "none" },
+        nextBody: { ...baselineBody },
         durationSec: ACTION_BEAT_SEC,
         explicit: false,
       };
@@ -769,7 +778,7 @@ export const planBeatIntent = (
   intent: BeatIntent,
   state: LiveState,
 ): BeatPlan => {
-  const { wardrobe, body } = state;
+  const { wardrobe, body, baselineBody } = state;
 
   if (
     isHoldingRealProp(body) &&
@@ -784,7 +793,7 @@ export const planBeatIntent = (
       hands: "free",
       contact: "none",
     };
-    const base = planBeatIntentCore(intent, wardrobe, freedBody);
+    const base = planBeatIntentCore(intent, wardrobe, freedBody, baselineBody);
     return {
       ...base,
       physical: `${propSetDownLine(prop)} ${shiftChoreoTimes(base.physical, PROP_SETDOWN_SEC, base.durationSec)}`,
@@ -797,14 +806,19 @@ export const planBeatIntent = (
     NEEDS_SITUP_POSES.has(body.pose)
   ) {
     const sittingBody: Body = { ...body, pose: "sitting" };
-    const base = planBeatIntentCore(intent, wardrobe, sittingBody);
+    const base = planBeatIntentCore(
+      intent,
+      wardrobe,
+      sittingBody,
+      baselineBody,
+    );
     return {
       ...base,
       physical: `${SIT_UP_LINE} ${shiftChoreoTimes(base.physical, SIT_UP_SEC, base.durationSec)}`,
     };
   }
 
-  return planBeatIntentCore(intent, wardrobe, body);
+  return planBeatIntentCore(intent, wardrobe, body, baselineBody);
 };
 
 // --- Reply intent catalog ---------------------------------------------------
@@ -1406,6 +1420,26 @@ const planGreeting = (
   };
 };
 
+// Rotates so idle clips don't all read as the identical frozen loop; picked from elapsed time so it stays deterministic/testable, and never changes pose/clothing/props (idle clips loop start=end).
+const IDLE_LIFE_VARIANTS: readonly string[] = [
+  "breathing, blinking, a glance at the chat, a tiny weight shift, a tuck of her hair",
+  "glancing over at her screen as if reading something in the chat, a small smile, then her eyes back on the lens",
+  "a slow blink, rolling her shoulders once in a small stretch, then settling back still",
+  "glancing down and to the side for a moment as if thinking, then back up at the lens with a smile",
+  "adjusting her hair or glasses with one hand, her eyes flicking to the chat and back",
+];
+// If she's already holding her phone, reading it in place is more natural than the generic catalogue.
+const IDLE_PHONE_VARIANT =
+  "glancing down at the phone already in her hand, thumb moving briefly like she's reading something, then looking back up at the lens";
+
+const idleLifeLine = (elapsedSec: number, hasPhone: boolean): string => {
+  if (hasPhone) return IDLE_PHONE_VARIANT;
+  const index =
+    Math.floor(elapsedSec / LIVE_TUNABLES.IDLE_CLIP_SEC) %
+    IDLE_LIFE_VARIANTS.length;
+  return IDLE_LIFE_VARIANTS[index] ?? (IDLE_LIFE_VARIANTS[0] as string);
+};
+
 const planIdle = (session: LiveSessionSnapshot): ClipPlan => {
   const { state, creator } = session;
   // Idle never advances an act, even mid-act: a self-touch pauses; a held prop stays put.
@@ -1423,10 +1457,11 @@ const planIdle = (session: LiveSessionSnapshot): ClipPlan => {
       : state.body.hands === "holdingProp"
         ? "The current prop stays held still in her hand; she does not use it this clip."
         : "";
+  const lifeLine = idleLifeLine(session.elapsedSec, nextBody.prop === "phone");
   const action = [
     `IDLE, between requests. She stays ${nextBody.pose}, exactly as she is right now, for the entire clip — ` +
-      "only small grounded life on top of that fixed pose: breathing, blinking, a glance at the chat, a tiny " +
-      "weight shift, a tuck of her hair. This is a static hold, not a scene with a beginning and an end.",
+      `only small grounded life on top of that fixed pose: ${lifeLine}. This is a static hold, not a scene ` +
+      "with a beginning and an end.",
     `FORBIDDEN this clip: no change of pose category (if she is ${nextBody.pose} now, she never sits, stands, ` +
       "kneels, or lies down — she stays exactly that way start to finish), no clothing change, no new prop, " +
       "no sexual act starting or continuing, no leaving frame.",
@@ -1453,6 +1488,36 @@ const planIdle = (session: LiveSessionSnapshot): ClipPlan => {
     prompt,
     durationSec,
     expectedState,
+    followUps: [],
+    replyDraft: null,
+    needsReplyText: false,
+    fixedReplyText: null,
+    wardrobeIntent: null,
+    explicit: false,
+  };
+};
+
+// Same static-hold contract as planIdle, but generateClip.ts renders it from the untouched anchor photo instead of the drifting last-frame chain.
+const planReferenceRefresh = (session: LiveSessionSnapshot): ClipPlan => {
+  const { state, creator } = session;
+  const action =
+    `She holds ${describeState(state.wardrobe, state.body)}, still, breathing, eyes on the lens — ` +
+    "no change of pose, clothing, or props for the entire clip.";
+  const durationSec = LIVE_TUNABLES.IDLE_CLIP_SEC;
+  const prompt = buildPrompt({
+    state,
+    speechMode: "text",
+    creator,
+    action,
+    nextWardrobe: state.wardrobe,
+    nextBody: state.body,
+    explicit: false,
+    durationSec,
+  });
+  return {
+    prompt,
+    durationSec,
+    expectedState: state,
     followUps: [],
     replyDraft: null,
     needsReplyText: false,
@@ -1495,6 +1560,12 @@ const planCheckIn = (
   };
 };
 
+// Laptop lead-in from her chair with a free hand, her phone otherwise; eats into the beat's own time window like the prop-setdown/sit-up lead-ins above rather than growing it.
+const typingLeadLine = (device: "laptop" | "phone", leadSec: number): string =>
+  device === "laptop"
+    ? `0-${leadSec}s: she glances at the chat and types a quick reply on her laptop, eyes flicking between the screen and the lens.`
+    : `0-${leadSec}s: she glances at the chat, picks up her phone, types a quick reply, then sets it back down.`;
+
 const planReply = (
   session: LiveSessionSnapshot,
   job: Extract<ClipJob, { kind: "reply" }>,
@@ -1511,9 +1582,21 @@ const planReply = (
   const restIntents = allSatisfied ? [] : intents.slice(dropped + 1);
 
   const beatPlan = planBeatIntent(first, state);
-  const preface =
-    job.channel === "chat" ? "She glances at the chat, then: " : "";
   const durationSec = clampDuration(beatPlan.durationSec);
+
+  let physical = beatPlan.physical;
+  // Only the first reply after a genuine idle stretch opens on typing — a rapid back-to-back
+  // exchange would show her "typing" before every single message, which reads as slow, not real.
+  if (job.channel === "chat" && job.precededByIdle) {
+    const leadSec = Math.max(1, Math.round(typingLeadSecFor(job.text)));
+    const device: "laptop" | "phone" =
+      state.body.pose === "sitting" && state.body.hands === "free"
+        ? "laptop"
+        : "phone";
+    physical =
+      `${typingLeadLine(device, leadSec)} ` +
+      shiftChoreoTimes(beatPlan.physical, leadSec, durationSec);
+  }
 
   const expectedState: LiveState = {
     ...state,
@@ -1524,7 +1607,7 @@ const planReply = (
     state,
     speechMode,
     creator,
-    action: `${preface}${beatPlan.physical}`,
+    action: physical,
     nextWardrobe: beatPlan.nextWardrobe,
     nextBody: beatPlan.nextBody,
     explicit: beatPlan.explicit,
@@ -1646,11 +1729,13 @@ export const planClip = ({
         return planReply(session, job, speechMode);
       case "beat":
         return planBeat(session, job);
+      case "referenceRefresh":
+        return planReferenceRefresh(session);
     }
   })();
-  // Greeting has no "earlier moment" yet — the reference image IS its starting frame, so telling
-  // the model to ignore it (which is what this lock does for every later clip) is wrong here.
-  return backend === "reference" && job.kind !== "greeting"
+  // Greeting has no "earlier moment" yet (the reference image IS its starting frame); referenceRefresh always renders through the identity-conditioned model regardless of `backend` (see generateClip.ts), so it always needs the lock.
+  return (backend === "reference" && job.kind !== "greeting") ||
+    job.kind === "referenceRefresh"
     ? { ...plan, prompt: `${CONTINUITY_LOCK} ${plan.prompt}` }
     : plan;
 };

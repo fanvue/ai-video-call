@@ -683,6 +683,7 @@ describe("generateClip: non-hold clips (requested wardrobe change or explicit ac
         text: "take off your top",
         channel: "voice",
         from: "fan",
+        precededByIdle: false,
       },
     });
 
@@ -830,6 +831,7 @@ describe("generateClip: world state (item 3)", () => {
         text: "take off your top",
         channel: "voice",
         from: "fan",
+        precededByIdle: false,
       },
     });
 
@@ -857,6 +859,7 @@ describe("generateClip: world state (item 3)", () => {
         text: "take off your top",
         channel: "voice",
         from: "fan",
+        precededByIdle: false,
       },
     });
 

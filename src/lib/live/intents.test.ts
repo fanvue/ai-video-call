@@ -22,10 +22,13 @@ const body = (overrides: Partial<Body> = {}): Body => ({
 });
 
 const state = (
-  overrides: Partial<Pick<LiveState, "wardrobe" | "body">> = {},
-): Pick<LiveState, "wardrobe" | "body"> => ({
+  overrides: Partial<
+    Pick<LiveState, "wardrobe" | "body" | "baselineBody">
+  > = {},
+): Pick<LiveState, "wardrobe" | "body" | "baselineBody"> => ({
   wardrobe: wardrobe(),
   body: body(),
+  baselineBody: body(),
   ...overrides,
 });
 
@@ -117,6 +120,42 @@ describe("isIntentSatisfied", () => {
         state({ body: body({ contact: "self", hands: "onBody" }) }),
       ),
     ).toBe(false);
+  });
+
+  it("rest is not satisfied by free hands alone when pose has drifted from baseline", () => {
+    // Free hands but still kneeling from an earlier act, with the baseline pose being "sitting".
+    expect(
+      isIntentSatisfied(
+        { type: "rest" },
+        state({ body: body({ pose: "kneeling" }) }),
+      ),
+    ).toBe(false);
+    expect(
+      isIntentSatisfied(
+        { type: "rest" },
+        state({ body: body({ facing: "away" }) }),
+      ),
+    ).toBe(false);
+    expect(
+      isIntentSatisfied(
+        { type: "rest" },
+        state({ body: body({ framing: "torso" }) }),
+      ),
+    ).toBe(false);
+    // Satisfied once body pose/facing/framing matches a non-default baseline too.
+    expect(
+      isIntentSatisfied(
+        { type: "rest" },
+        state({
+          body: body({ pose: "kneeling", facing: "away", framing: "torso" }),
+          baselineBody: body({
+            pose: "kneeling",
+            facing: "away",
+            framing: "torso",
+          }),
+        }),
+      ),
+    ).toBe(true);
   });
 
   it("action-only intents are never already satisfied", () => {

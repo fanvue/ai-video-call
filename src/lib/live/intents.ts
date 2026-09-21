@@ -12,7 +12,7 @@ export const HELD_OBJECTS: ReadonlySet<Prop> = new Set([
 // True when the intent's target state already holds; action-only intents are never "satisfied".
 export const isIntentSatisfied = (
   intent: BeatIntent,
-  state: Pick<LiveState, "wardrobe" | "body">,
+  state: Pick<LiveState, "wardrobe" | "body" | "baselineBody">,
 ): boolean => {
   switch (intent.type) {
     case "removeGarment":
@@ -28,10 +28,15 @@ export const isIntentSatisfied = (
     case "fetchProp":
       return state.body.prop === intent.prop;
     case "rest":
+      // Also require the baseline pose/facing/framing, not just free hands — otherwise a rest beat
+      // is treated as already satisfied while she's still kneeling, bent over, etc. from an earlier act.
       return (
         state.body.prop === "none" &&
         state.body.contact === "none" &&
-        (state.body.hands === "free" || state.body.hands === "typing")
+        (state.body.hands === "free" || state.body.hands === "typing") &&
+        state.body.pose === state.baselineBody.pose &&
+        state.body.facing === state.baselineBody.facing &&
+        state.body.framing === state.baselineBody.framing
       );
     case "useProp":
     case "touch":

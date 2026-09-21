@@ -8,6 +8,8 @@ import type {
 const ACT_LABEL: Record<ClipJobKind, string> = {
   greeting: "Saying hi",
   idle: "Just chatting",
+  // Internal idle-triggered re-anchor; never fan-initiated, but still needs a non-technical label.
+  referenceRefresh: "Just chatting",
   checkIn: "Checking in",
   reply: "Replying",
   beat: "Following through",

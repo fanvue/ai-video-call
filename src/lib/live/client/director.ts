@@ -39,6 +39,8 @@ export type DirectorState = {
   // The last job handed out by nextJob(), so clipCompleted can inspect a beat's own intent/attempt
   // without changing its signature (idle jobs are synthesized and never recorded here).
   lastDispatchedJob: ClipJob | null;
+  // Last time a referenceRefresh job was scheduled; ticks past REFERENCE_REFRESH_INTERVAL_MS.
+  lastReferenceRefreshAtMs: number;
 };
 
 export type DirectorInit = {
@@ -85,6 +87,7 @@ export class LiveDirector {
       checkedInSinceLastRequest: false,
       restScheduledSinceLastRequest: false,
       lastDispatchedJob: null,
+      lastReferenceRefreshAtMs: init.now,
     };
   }
 
@@ -105,6 +108,9 @@ export class LiveDirector {
     payload: { text: string; channel: InputChannel; paid?: boolean },
     now: number,
   ): { entry: TranscriptEntry; job: ClipJob } {
+    const precededByIdle =
+      now - this.state.lastActivityAt >=
+      LIVE_TUNABLES.TYPING_LEAD_AFTER_IDLE_MS;
     const entry: TranscriptEntry = {
       id: this.nextId("fan"),
       role: "fan",
@@ -119,6 +125,7 @@ export class LiveDirector {
       text: payload.text,
       channel: payload.channel,
       from: "fan",
+      precededByIdle,
       ...(payload.paid !== undefined ? { paid: payload.paid } : {}),
     };
     const queue = [...this.state.jobQueue];
@@ -142,6 +149,9 @@ export class LiveDirector {
     now: number,
   ): { entry: TranscriptEntry; job: ClipJob } {
     const paid = payload.tipCents !== undefined;
+    const precededByIdle =
+      now - this.state.lastActivityAt >=
+      LIVE_TUNABLES.TYPING_LEAD_AFTER_IDLE_MS;
     const entry: TranscriptEntry = {
       id: this.nextId("viewer"),
       role: "viewer",
@@ -158,6 +168,7 @@ export class LiveDirector {
       channel: "chat",
       from: "viewer",
       handle: payload.handle,
+      precededByIdle,
       ...(paid ? { paid } : {}),
     };
     // Lower priority than the fan: always appended, never ahead of anything already queued. A
@@ -321,11 +332,23 @@ export class LiveDirector {
       checkedIn = true;
     }
 
+    // Only fires during a genuinely idle stretch (this whole method returns early otherwise), so
+    // the re-anchor is never visible as a cut mid-conversation.
+    let lastReferenceRefreshAtMs = this.state.lastReferenceRefreshAtMs;
+    if (
+      now - lastReferenceRefreshAtMs >=
+      LIVE_TUNABLES.REFERENCE_REFRESH_INTERVAL_MS
+    ) {
+      queue.push({ kind: "referenceRefresh" });
+      lastReferenceRefreshAtMs = now;
+    }
+
     this.state = {
       ...this.state,
       jobQueue: queue,
       checkedInSinceLastRequest: checkedIn,
       restScheduledSinceLastRequest: restScheduled,
+      lastReferenceRefreshAtMs,
     };
   }
 
