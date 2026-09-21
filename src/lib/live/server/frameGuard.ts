@@ -1,6 +1,12 @@
 import { correctFrameIdentityDrift } from "@/lib/fal/requestFrameIdentityCorrection";
 import { createGroqVisionCompletion } from "@/lib/groq";
-import type { FrameGuardReport, GarmentId, LiveState, Prop } from "../contract";
+import type {
+  FrameGuardReport,
+  GarmentId,
+  LiveState,
+  ObservedState,
+  Prop,
+} from "../contract";
 
 type VisionReport = {
   topOn?: boolean;
@@ -141,13 +147,30 @@ const compareToExpected = (
   return issues;
 };
 
+const observedWardrobeFrom = (
+  report: VisionReport,
+): ObservedState["wardrobe"] => {
+  const wardrobe: ObservedState["wardrobe"] = {};
+  for (const id of Object.keys(GARMENT_SEEN) as GarmentId[]) {
+    const seen = report[GARMENT_SEEN[id]];
+    if (typeof seen === "boolean") {
+      wardrobe[id] = seen;
+    }
+  }
+  return wardrobe;
+};
+
 export const guardFrame = async ({
   frameUrl,
   expected,
 }: {
   frameUrl: string;
   expected: LiveState;
-}): Promise<Pick<FrameGuardReport, "checked" | "issues">> => {
+}): Promise<
+  Pick<FrameGuardReport, "checked" | "issues"> & {
+    observed: ObservedState | null;
+  }
+> => {
   try {
     const completion = await createGroqVisionCompletion({
       imageUrl: frameUrl,
@@ -161,18 +184,19 @@ export const guardFrame = async ({
       console.warn(
         "guardFrame: vision model returned unparseable JSON, skipping check",
       );
-      return { checked: false, issues: [] };
+      return { checked: false, issues: [], observed: null };
     }
     return {
       checked: true,
       issues: compareToExpected(report, expected).slice(0, 12),
+      observed: { wardrobe: observedWardrobeFrom(report) },
     };
   } catch (error) {
     console.warn(
       "guardFrame: vision call failed or refused, skipping check",
       error,
     );
-    return { checked: false, issues: [] };
+    return { checked: false, issues: [], observed: null };
   }
 };
 

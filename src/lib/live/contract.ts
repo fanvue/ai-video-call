@@ -41,16 +41,18 @@ export const garmentStateSchema = z.object({
 });
 export type GarmentState = z.infer<typeof garmentStateSchema>;
 
+export const garmentIdSchema = z.enum(["top", "bottom", "bra", "panties"]);
+export type GarmentId = z.infer<typeof garmentIdSchema>;
+
 export const wardrobeSchema = z.object({
   top: garmentStateSchema,
   bottom: garmentStateSchema,
   bra: garmentStateSchema,
   panties: garmentStateSchema,
-  // Removal order, most recent last. Redress reverses it.
-  removedOrder: z.array(z.enum(["top", "bottom", "bra", "panties"])).max(4),
+  // Removal order, most recent last. Putting garments back on reverses it.
+  removedOrder: z.array(garmentIdSchema).max(4),
 });
 export type Wardrobe = z.infer<typeof wardrobeSchema>;
-export type GarmentId = keyof Omit<Wardrobe, "removedOrder">;
 
 export const poseSchema = z.enum([
   "sitting",
@@ -116,16 +118,57 @@ export type TranscriptEntry = z.infer<typeof transcriptEntrySchema>;
 
 // Jobs
 
+// A beat says WHAT to do; planBeat/planBeatIntent decide HOW when it actually runs.
+export const beatIntentSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("removeGarment"), garment: garmentIdSchema }),
+  z.object({ type: z.literal("addGarment"), garment: garmentIdSchema }),
+  z.object({
+    type: z.literal("pose"),
+    pose: poseSchema,
+    facing: bodySchema.shape.facing,
+  }),
+  z.object({ type: z.literal("framing"), framing: bodySchema.shape.framing }),
+  // Only these three are fetchable props; a drink/phone-only prop never gets used in an act.
+  z.object({
+    type: z.literal("fetchProp"),
+    prop: z.enum(["vibrator", "dildo", "drink"]),
+  }),
+  z.object({
+    type: z.literal("useProp"),
+    mode: z.enum(["mouth", "external"]),
+  }),
+  // Puts a held object down and takes hands off her body.
+  z.object({ type: z.literal("rest") }),
+  z.object({ type: z.literal("touch") }),
+  z.object({
+    type: z.literal("act"),
+    act: z.enum([
+      "twerk",
+      "grind",
+      "bounce",
+      "spread",
+      "sway",
+      "crawl",
+      "spin",
+      "gesture",
+      "tongue",
+      "tease",
+      "dance",
+    ]),
+    detail: z.string().max(200).optional(),
+  }),
+  // Small talk, negation, "already off/already dressed" — a spoken/held line, not a physical change.
+  z.object({ type: z.literal("hold"), line: z.string().min(1).max(300) }),
+  // An unrecognized but plainly physical request, played through near-verbatim.
+  z.object({ type: z.literal("verbatim"), text: z.string().min(1).max(300) }),
+]);
+export type BeatIntent = z.infer<typeof beatIntentSchema>;
+
 export const plannedBeatSchema = z.object({
   id: z.string().min(1),
-  // Grounded physical direction for one clip.
-  physical: z.string().min(1).max(1200),
-  durationSec: z.number().int().min(10).max(15),
-  // State after this beat completes.
-  nextState: liveStateSchema.pick({ wardrobe: true, body: true }),
-  // A sexual act that doesn't itself change wardrobe/contact (doggy, spread legs), so CONTENT_LOCK
-  // gating can't infer it from nextState alone.
-  explicit: z.boolean().optional(),
+  intent: beatIntentSchema,
+  // Bounded retry: 0 is the first attempt, 1 is the one allowed re-attempt. Never more.
+  attempt: z.number().int().min(0).max(1),
 });
 export type PlannedBeat = z.infer<typeof plannedBeatSchema>;
 
@@ -144,11 +187,6 @@ export const clipJobSchema = z.discriminatedUnion("kind", [
     handle: z.string().max(24).optional(),
   }),
   z.object({ kind: z.literal("beat"), beat: plannedBeatSchema }),
-  z.object({ kind: z.literal("settle") }),
-  z.object({
-    kind: z.literal("redress"),
-    garment: z.enum(["top", "bottom", "bra", "panties"]),
-  }),
 ]);
 export type ClipJob = z.infer<typeof clipJobSchema>;
 export type ClipJobKind = ClipJob["kind"];
@@ -196,17 +234,21 @@ export const frameGuardReportSchema = z.object({
 });
 export type FrameGuardReport = z.infer<typeof frameGuardReportSchema>;
 
+// What the guard saw, for the director's retry decision and the studio overlay. Props are not
+// reconciled this phase (vision misses small toys), so only wardrobe is reported here.
+export const observedStateSchema = z.object({
+  wardrobe: z.object({
+    top: z.boolean().optional(),
+    bottom: z.boolean().optional(),
+    bra: z.boolean().optional(),
+    panties: z.boolean().optional(),
+  }),
+});
+export type ObservedState = z.infer<typeof observedStateSchema>;
+
 export const clipResultSchema = z.object({
   clipId: z.string().min(1),
-  jobKind: z.enum([
-    "greeting",
-    "idle",
-    "checkIn",
-    "reply",
-    "beat",
-    "settle",
-    "redress",
-  ]),
+  jobKind: z.enum(["greeting", "idle", "checkIn", "reply", "beat"]),
   videoUrl: z.url(),
   durationSec: z.number().int().min(10).max(15),
   // Guarded, repaired last frame. The client MUST use this as the next seed.
@@ -224,9 +266,10 @@ export const clipResultSchema = z.object({
       typingLeadSec: z.number().min(0).max(15),
     })
     .nullable(),
-  // Further beats to run in order after this clip (only from reply / checkIn jobs).
+  // Further beats to run in order after this clip (from reply / checkIn / beat jobs).
   followUps: z.array(plannedBeatSchema).max(6),
   guard: frameGuardReportSchema,
+  observed: observedStateSchema.nullable(),
   timings: z.object({
     planMs: z.number().int().min(0),
     renderMs: z.number().int().min(0),
@@ -256,7 +299,7 @@ export const LIVE_TUNABLES = {
   // Swap to the next clip this far before the current one ends, to hide the decode gap.
   SWAP_LEAD_SEC: 0.12,
   ABANDON_INFLIGHT_MS: 3_000,
-  REDRESS_AFTER_IDLE_MS: 120_000,
+  REST_AFTER_IDLE_MS: 20_000,
   CHECK_IN_AFTER_IDLE_MS: 90_000,
   TRANSCRIPT_WINDOW: 40,
   // Spend cap: every session auto-ends here regardless of activity.

@@ -61,6 +61,7 @@ const clipResult = (overrides: Partial<ClipResult>): ClipResult => ({
   reply: null,
   followUps: [],
   guard: { checked: true, issues: [], repaired: false },
+  observed: null,
   timings: { planMs: 0, renderMs: 0, frameMs: 0, guardMs: 0, repairMs: 0 },
   costUsd: 0.01,
   ...overrides,
@@ -92,14 +93,44 @@ describe("LiveDirector", () => {
     expect(director.getState().jobQueue[0]).toEqual(job);
   });
 
-  it("inserts a new reply behind running beats but ahead of an already-queued settle", () => {
+  it("puts a completed clip's follow-ups at the FRONT of the queue, ahead of a request that arrived mid-render", () => {
+    const director = makeDirector();
+    director.nextJob(); // consume greeting, dispatches it as lastDispatchedJob
+    const beat: PlannedBeat = {
+      id: "b1",
+      intent: { type: "removeGarment", garment: "panties" },
+      attempt: 0,
+    };
+    // A request arrives while the reply clip (with this follow-up) is still "rendering".
+    const { job: midRenderRequest } = director.fanRequest(
+      { text: "suck the dildo", channel: "chat" },
+      500,
+    );
+    expect(director.getState().jobQueue).toEqual([midRenderRequest]);
+
+    director.clipCompleted(
+      clipResult({
+        jobKind: "reply",
+        followUps: [beat],
+        state: dressedState,
+      }),
+      1000,
+    );
+
+    // The follow-up from the just-completed clip must run before the request that arrived mid-render.
+    expect(director.getState().jobQueue).toEqual([
+      { kind: "beat", beat },
+      midRenderRequest,
+    ]);
+  });
+
+  it("inserts a new reply behind running beats", () => {
     const director = makeDirector();
     director.nextJob();
     const beat: PlannedBeat = {
       id: "b1",
-      physical: "she waves",
-      durationSec: 10,
-      nextState: { wardrobe: dressedState.wardrobe, body: baseBody },
+      intent: { type: "act", act: "gesture" },
+      attempt: 0,
     };
     director.clipCompleted(
       clipResult({
@@ -118,58 +149,130 @@ describe("LiveDirector", () => {
     expect(director.getState().jobQueue).toEqual([{ kind: "beat", beat }, job]);
   });
 
-  it("pushes settle once the beat chain ends away from baseline body", () => {
+  it("drops a satisfied beat from nextJob without ever returning it", () => {
     const director = makeDirector();
-    director.nextJob();
-    const movedState: LiveState = {
-      ...dressedState,
-      body: { ...baseBody, pose: "kneeling" },
+    director.nextJob(); // consume greeting -> lastDispatchedJob is greeting
+    const satisfiedBeat: PlannedBeat = {
+      id: "b1",
+      // panties are already on in dressedState, so addGarment is already satisfied.
+      intent: { type: "addGarment", garment: "panties" },
+      attempt: 0,
+    };
+    const realBeat: PlannedBeat = {
+      id: "b2",
+      intent: { type: "act", act: "gesture" },
+      attempt: 0,
     };
     director.clipCompleted(
-      clipResult({ jobKind: "reply", followUps: [], state: movedState }),
+      clipResult({
+        jobKind: "reply",
+        followUps: [satisfiedBeat, realBeat],
+        state: dressedState,
+      }),
       1000,
     );
-    expect(director.getState().jobQueue).toEqual([{ kind: "settle" }]);
-  });
-
-  it("does not push settle when the body already matches baseline", () => {
-    const director = makeDirector();
-    director.nextJob();
-    director.clipCompleted(
-      clipResult({ jobKind: "reply", followUps: [], state: dressedState }),
-      1000,
-    );
-    expect(director.getState().jobQueue).toEqual([]);
-  });
-
-  it("schedules redress in reverse removal order after the idle threshold, only once", () => {
-    const undressedState: LiveState = {
-      ...dressedState,
-      wardrobe: {
-        ...dressedState.wardrobe,
-        top: garmentOff("tank top"),
-        bra: garmentOff("bra"),
-        removedOrder: ["top", "bra"],
-      },
-    };
-    const director = makeDirector(undressedState, 0);
-    director.nextJob();
-    director.tick(120_000);
     expect(director.getState().jobQueue).toEqual([
-      { kind: "redress", garment: "bra" },
-      { kind: "redress", garment: "top" },
+      { kind: "beat", beat: satisfiedBeat },
+      { kind: "beat", beat: realBeat },
     ]);
 
-    director.nextJob();
-    director.nextJob();
-    director.tick(130_000);
+    // nextJob must silently skip the satisfied beat and hand out the real one.
+    expect(director.nextJob()).toEqual({ kind: "beat", beat: realBeat });
     expect(director.getState().jobQueue).toEqual([]);
   });
 
-  it("does not schedule redress when nothing is off", () => {
+  it("re-queues a removeGarment beat once (attempt 1) when the guarded result shows it unmet, then stops", () => {
+    const director = makeDirector();
+    director.nextJob(); // consume greeting -> lastDispatchedJob is greeting
+    const beat: PlannedBeat = {
+      id: "b1",
+      intent: { type: "removeGarment", garment: "bra" },
+      attempt: 0,
+    };
+    director.clipCompleted(
+      clipResult({ jobKind: "reply", followUps: [beat], state: dressedState }),
+      500,
+    );
+    expect(director.getState().jobQueue).toEqual([{ kind: "beat", beat }]);
+    expect(director.nextJob()).toEqual({ kind: "beat", beat });
+
+    // Bra is still on in the result state -> the target was not met -> one retry at attempt 1.
+    director.clipCompleted(
+      clipResult({ jobKind: "beat", followUps: [], state: dressedState }),
+      1000,
+    );
+    const retried = { ...beat, attempt: 1 };
+    expect(director.getState().jobQueue).toEqual([
+      { kind: "beat", beat: retried },
+    ]);
+    expect(director.nextJob()).toEqual({ kind: "beat", beat: retried });
+
+    // Second attempt also comes back unmet: no further retry (attempt is already 1).
+    director.clipCompleted(
+      clipResult({ jobKind: "beat", followUps: [], state: dressedState }),
+      1500,
+    );
+    expect(director.getState().jobQueue).toEqual([]);
+  });
+
+  it("does not retry once the guarded result shows the removal actually happened", () => {
+    const director = makeDirector();
+    director.nextJob(); // consume greeting -> lastDispatchedJob is greeting
+    const beat: PlannedBeat = {
+      id: "b1",
+      intent: { type: "removeGarment", garment: "bra" },
+      attempt: 0,
+    };
+    director.clipCompleted(
+      clipResult({ jobKind: "reply", followUps: [beat], state: dressedState }),
+      500,
+    );
+    director.nextJob();
+
+    const braOffState: LiveState = {
+      ...dressedState,
+      wardrobe: { ...dressedState.wardrobe, bra: garmentOff("bra") },
+    };
+    director.clipCompleted(
+      clipResult({ jobKind: "beat", followUps: [], state: braOffState }),
+      1000,
+    );
+    expect(director.getState().jobQueue).toEqual([]);
+  });
+
+  it("queues a rest beat after REST_AFTER_IDLE_MS when holding a prop, never redress", () => {
+    const holdingPropState: LiveState = {
+      ...dressedState,
+      body: { ...baseBody, hands: "holdingProp", prop: "vibrator" },
+    };
+    const director = makeDirector(holdingPropState, 0);
+    director.nextJob();
+    director.tick(20_000);
+    expect(director.getState().jobQueue).toEqual([
+      {
+        kind: "beat",
+        beat: { id: "rest-1", intent: { type: "rest" }, attempt: 0 },
+      },
+    ]);
+  });
+
+  it("does not schedule rest again once already scheduled in this idle window", () => {
+    const holdingPropState: LiveState = {
+      ...dressedState,
+      body: { ...baseBody, hands: "holdingProp", prop: "vibrator" },
+    };
+    const director = makeDirector(holdingPropState, 0);
+    director.nextJob();
+    director.tick(20_000);
+    director.nextJob();
+    director.tick(21_000);
+    expect(director.getState().jobQueue).toEqual([]);
+  });
+
+  it("does not schedule rest when hands are already free", () => {
     const director = makeDirector(dressedState, 0);
     director.nextJob();
-    director.tick(120_000);
+    director.tick(20_000);
     expect(director.getState().jobQueue).toEqual([]);
   });
 

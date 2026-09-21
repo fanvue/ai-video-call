@@ -78,6 +78,39 @@ describe("guardFrame", () => {
     });
     expect(result.checked).toBe(true);
     expect(result.issues).toEqual([]);
+    expect(result.observed).toEqual({
+      wardrobe: { top: true, bottom: true, bra: true, panties: true },
+    });
+  });
+
+  it("returns observed wardrobe booleans even when they disagree with expected", async () => {
+    createGroqVisionCompletion.mockResolvedValue(
+      completionWith(
+        JSON.stringify({
+          topOn: false,
+          bottomOn: true,
+          braOn: true,
+          pantiesOn: true,
+          visibleProps: [],
+          extraPeople: false,
+          extraLimbs: false,
+        }),
+      ),
+    );
+    const result = await guardFrame({
+      frameUrl: "https://x/frame.jpg",
+      expected,
+    });
+    expect(result.observed?.wardrobe.top).toBe(false);
+  });
+
+  it("returns observed:null when the vision call fails or is unparseable", async () => {
+    createGroqVisionCompletion.mockRejectedValue(new Error("refused"));
+    const failed = await guardFrame({
+      frameUrl: "https://x/frame.jpg",
+      expected,
+    });
+    expect(failed.observed).toBeNull();
   });
 
   it("flags a garment that drifted off when it should be on", async () => {

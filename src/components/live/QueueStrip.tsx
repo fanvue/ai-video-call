@@ -10,8 +10,6 @@ const ACT_LABEL: Record<ClipJobKind, string> = {
   checkIn: "Checking in",
   reply: "Replying",
   beat: "Following through",
-  settle: "Settling back",
-  redress: "Getting dressed",
 };
 
 const ownerLabel = (owner: QueueOwner): string | null => {

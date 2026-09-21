@@ -112,7 +112,7 @@ beforeEach(() => {
     videoUrl: "https://example.com/out.mp4",
     costUsd: 0.25,
   });
-  guardFrame.mockResolvedValue({ checked: false, issues: [] });
+  guardFrame.mockResolvedValue({ checked: false, issues: [], observed: null });
   extractLastFrameUrl.mockResolvedValue("https://example.com/extracted.jpg");
 });
 
@@ -135,6 +135,7 @@ describe("generateClip: anchored idle loop", () => {
     expect(correctFrameIdentityDrift).not.toHaveBeenCalled();
     expect(result.loops).toBe(true);
     expect(result.seedFrameUrl).toBe(req.session.seedFrameUrl);
+    expect(result.observed).toBeNull();
     expect(result.timings.frameMs).toBe(0);
     expect(result.timings.guardMs).toBe(0);
     expect(result.timings.repairMs).toBe(0);
@@ -199,20 +200,20 @@ describe("generateClip: chained jobs", () => {
     expect(result.loops).toBe(false);
   });
 
-  it("a beat job (mid-chain) guards but skips repair even when flagged, so the next queued beat isn't held up by it", async () => {
+  it("a beat job (mid-chain) guards but skips repair even for an anatomy issue, so the next queued beat isn't held up by it", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
     guardFrame.mockResolvedValue({
       checked: true,
-      issues: ["top should be on but frame shows it off"],
+      issues: ["extra or malformed limbs visible"],
+      observed: null,
     });
     const req = clipRequest({
       job: {
         kind: "beat",
         beat: {
           id: "b1",
-          physical: "she stands up",
-          durationSec: 15,
-          nextState: { wardrobe: wardrobe(), body: body({ pose: "standing" }) },
+          intent: { type: "pose", pose: "standing", facing: "camera" },
+          attempt: 0,
         },
       },
     });
@@ -223,10 +224,33 @@ describe("generateClip: chained jobs", () => {
     expect(guardFrame).toHaveBeenCalled();
     expect(repairFrame).not.toHaveBeenCalled();
     expect(result.guard.checked).toBe(true);
-    expect(result.guard.issues).toEqual([
-      "top should be on but frame shows it off",
-    ]);
+    expect(result.guard.issues).toEqual(["extra or malformed limbs visible"]);
     expect(result.seedFrameUrl).toBe("https://example.com/extracted.jpg");
+  });
+
+  it("a beat whose guard observes bra on while expected off commits the observed state, no repair", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    guardFrame.mockResolvedValue({
+      checked: true,
+      issues: ["bra should be off but frame shows it on"],
+      observed: { wardrobe: { bra: true } },
+    });
+    const req = clipRequest({
+      job: {
+        kind: "beat",
+        beat: {
+          id: "b1",
+          intent: { type: "removeGarment", garment: "bra" },
+          attempt: 0,
+        },
+      },
+    });
+
+    const result = await generateClip(req);
+
+    expect(repairFrame).not.toHaveBeenCalled();
+    expect(result.observed).toEqual({ wardrobe: { bra: true } });
+    expect(result.state.wardrobe.bra.on).toBe(true);
   });
 
   it("a beat job whose plan is a no-op hold still renders without an end frame and goes through extract/guard — pinning never stopped mid-clip drift, only the prompt itself can", async () => {
@@ -234,12 +258,7 @@ describe("generateClip: chained jobs", () => {
     const req = clipRequest({
       job: {
         kind: "beat",
-        beat: {
-          id: "b1",
-          physical: "she chats, nothing changes",
-          durationSec: 15,
-          nextState: { wardrobe: wardrobe(), body: body() },
-        },
+        beat: { id: "b1", intent: { type: "act", act: "gesture" }, attempt: 0 },
       },
     });
 
@@ -277,41 +296,45 @@ describe("generateClip: chained jobs", () => {
     expect(result.loops).toBe(false);
   });
 
-  it("a settle job (ends the chain) runs the guard", async () => {
-    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
-    const req = clipRequest({ job: { kind: "settle" } });
-
-    await generateClip(req);
-
-    expect(guardFrame).toHaveBeenCalled();
-  });
-
-  it("skips the periodic identity correction on a clip the guard already repaired", async () => {
+  it("a checkIn job (not intermediate) runs the guard and repairs an anatomy issue", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
     guardFrame.mockResolvedValue({
       checked: true,
-      issues: ["top should be on but frame shows it off"],
+      issues: ["extra person visible in frame"],
+      observed: null,
     });
     repairFrame.mockResolvedValue("https://example.com/repaired.jpg");
-    // elapsedSec 40 + a 15s clip crosses the 45s identity-anchor cadence, so correction would
-    // otherwise be due this clip. settle ends the chain, so it runs the full guard.
-    const req = clipRequest({
-      job: { kind: "settle" },
-      session: session({ elapsedSec: 40 }),
-    });
+    const req = clipRequest({ job: { kind: "checkIn", channel: "chat" } });
 
     const result = await generateClip(req);
 
-    expect(repairFrame).toHaveBeenCalled();
+    expect(repairFrame).toHaveBeenCalledWith(
+      expect.objectContaining({ issues: ["extra person visible in frame"] }),
+    );
     expect(correctFrameIdentityDrift).not.toHaveBeenCalled();
     expect(result.guard.repaired).toBe(true);
     expect(result.seedFrameUrl).toBe("https://example.com/repaired.jpg");
   });
 
-  it("never runs blind periodic identity correction on either backend, even at a long elapsed time — only issue-scoped repairFrame can touch the seed", async () => {
+  it("a checkIn job never repairs a wardrobe/prop-only issue, only anatomy issues", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    guardFrame.mockResolvedValue({
+      checked: true,
+      issues: ["top should be on but frame shows it off"],
+      observed: { wardrobe: { top: false } },
+    });
+    const req = clipRequest({ job: { kind: "checkIn", channel: "chat" } });
+
+    const result = await generateClip(req);
+
+    expect(repairFrame).not.toHaveBeenCalled();
+    expect(result.guard.repaired).toBe(false);
+  });
+
+  it("never runs blind periodic identity correction, even at a long elapsed time — only issue-scoped repairFrame can touch the seed", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
     const req = clipRequest({
-      job: { kind: "settle" },
+      job: { kind: "checkIn", channel: "chat" },
       session: session({ elapsedSec: 400 }),
     });
 
@@ -325,7 +348,7 @@ describe("generateClip: chained jobs", () => {
   it("never runs blind periodic identity correction on the reference backend either", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: false, render });
     const req = clipRequest({
-      job: { kind: "settle" },
+      job: { kind: "checkIn", channel: "chat" },
       backend: "reference",
       session: session({ elapsedSec: 400 }),
     });

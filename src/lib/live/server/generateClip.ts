@@ -1,10 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { extractLastFrameUrl } from "@/lib/fal/extractLastFrame";
-import type { ClipRequest, ClipResult, FrameGuardReport } from "../contract";
+import type {
+  ClipRequest,
+  ClipResult,
+  FrameGuardReport,
+  ObservedState,
+} from "../contract";
 import { guardFrame, repairFrame } from "./frameGuard";
 import { planClip, typingLeadSecFor } from "./planClip";
+import { reconcileWardrobe } from "./reconcileState";
 import { renderBackendFor } from "./renderClip";
 import { writeCheckIn, writeReply } from "./writeReply";
+
+// Only anatomy issues get pixel-repaired; wardrobe/prop drift is fixed by reconciling state instead.
+const ANATOMY_ISSUE_RE = /extra person|extra or malformed limbs/;
 
 // Hard per-step budgets on the chained critical path. A step that blows its budget degrades
 // (keeps the best frame it has so far) instead of stalling the whole clip.
@@ -89,10 +98,14 @@ export const generateClip = async (
   let guardMs = 0;
   let repairMs = 0;
   let repaired = false;
-  let guardOutcome: Pick<FrameGuardReport, "checked" | "issues"> = {
+  let guardOutcome: Pick<FrameGuardReport, "checked" | "issues"> & {
+    observed: ObservedState | null;
+  } = {
     checked: false,
     issues: [],
+    observed: null,
   };
+  let expectedState = plan.expectedState;
 
   if (isAnchoredLoop) {
     // Loops start and end on the same anchor frame by construction — nothing to extract or guard.
@@ -134,19 +147,34 @@ export const generateClip = async (
     }
     guardMs = Date.now() - guardStarted;
 
+    // State follows the frame: whatever the guard actually saw becomes canon, not the prediction.
+    if (guardOutcome.checked && guardOutcome.observed) {
+      expectedState = {
+        ...expectedState,
+        wardrobe: reconcileWardrobe(
+          expectedState.wardrobe,
+          guardOutcome.observed.wardrobe,
+        ),
+      };
+    }
+
+    // Repair is reserved for anatomy failures; wardrobe/prop drift is fixed by reconciling state above.
+    const anatomyIssues = guardOutcome.issues.filter((issue) =>
+      ANATOMY_ISSUE_RE.test(issue),
+    );
     const repairStarted = Date.now();
     if (
       !isIntermediateBeat &&
       guardOutcome.checked &&
-      guardOutcome.issues.length > 0
+      anatomyIssues.length > 0
     ) {
       try {
         seedFrameUrl = await withTimeout(
           repairFrame({
             frameUrl: seedFrameUrl,
             anchorFrameUrl: session.anchorFrameUrl,
-            expected: plan.expectedState,
-            issues: guardOutcome.issues,
+            expected: expectedState,
+            issues: anatomyIssues,
           }),
           REPAIR_BUDGET_MS,
           "repairFrame",
@@ -164,8 +192,8 @@ export const generateClip = async (
 
   const replyOutcome = await replyTextPromise;
   const finalState = replyOutcome?.nextWorld
-    ? { ...plan.expectedState, world: replyOutcome.nextWorld.slice(0, 420) }
-    : plan.expectedState;
+    ? { ...expectedState, world: replyOutcome.nextWorld.slice(0, 420) }
+    : expectedState;
 
   const reply: ClipResult["reply"] = plan.fixedReplyText
     ? {
@@ -201,6 +229,7 @@ export const generateClip = async (
     reply,
     followUps: plan.followUps,
     guard,
+    observed: guardOutcome.observed,
     timings: { planMs, renderMs, frameMs, guardMs, repairMs },
     costUsd: rendered.costUsd,
   };
