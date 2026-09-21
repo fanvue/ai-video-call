@@ -181,6 +181,38 @@ describe("planClip: settle", () => {
     });
     expect(plan.prompt).toMatch(/settle to a still, stable end pose/i);
   });
+
+  it("tells the model the prior act is over so it doesn't just keep rendering it from the seed frame", () => {
+    const s = session({
+      state: state({
+        body: body({
+          pose: "onAllFours",
+          facing: "away",
+          contact: "self",
+        }),
+      }),
+    });
+    const plan = planClip({
+      session: s,
+      job: { kind: "settle" },
+      speechMode: "text",
+    });
+    expect(plan.prompt).toMatch(
+      /SCENE CHANGE: whatever she was doing before this clip is now over and does not continue, repeat, or restart/i,
+    );
+  });
+
+  it("timecodes the rise when a big pose delta needs it, instead of one vague sentence", () => {
+    const s = session({
+      state: state({ body: body({ pose: "lying", facing: "away" }) }),
+    });
+    const plan = planClip({
+      session: s,
+      job: { kind: "settle" },
+      speechMode: "text",
+    });
+    expect(plan.prompt).toMatch(/0-3s:.*3-11s:/i);
+  });
 });
 
 describe("planClip: redress", () => {

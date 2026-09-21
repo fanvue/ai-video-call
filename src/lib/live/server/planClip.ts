@@ -1652,14 +1652,22 @@ const planSettle = (session: LiveSessionSnapshot): ClipPlan => {
   const putDownLine = propToPutDown
     ? `She sets the ${propToPutDown} down, out of frame but within reach, before settling.`
     : "";
+  // The seed frame still shows the prior act's pose; the model tends to just continue that rather
+  // than transition out of it unless told explicitly, in plain words, that the act is over.
+  const actIsOverLine =
+    "SCENE CHANGE: whatever she was doing before this clip is now over and does not continue, " +
+    "repeat, or restart at any point in this clip — this is a new, separate moment.";
   const action = bigDelta
     ? [
-        `She rises from ${POSE_DESCRIPTION[state.body.pose]} and moves back to ${POSE_DESCRIPTION[nextBody.pose]}, one grounded step at a time.`,
+        actIsOverLine,
+        `0-3s: she rises from ${POSE_DESCRIPTION[state.body.pose]}, one grounded step at a time. ` +
+          `3-${ACTION_BEAT_SEC}s: she moves back to ${POSE_DESCRIPTION[nextBody.pose]} and settles there, still.`,
         putDownLine,
       ]
         .filter(Boolean)
         .join(" ")
     : [
+        actIsOverLine,
         putDownLine,
         `She settles back into ${POSE_DESCRIPTION[nextBody.pose]}, hands returning to the keyboard. Wardrobe stays exactly as it is.`,
       ]
