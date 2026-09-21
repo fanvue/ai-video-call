@@ -10,6 +10,10 @@ import type {
   DirectorMetrics,
   DirectorRealtimeState,
 } from "@/lib/live/client/directorStream";
+import type {
+  LucyMetrics,
+  LucyRealtimeState,
+} from "@/lib/live/client/lucyStream";
 
 type StudioOverlayProps = {
   liveState: LiveState | null;
@@ -22,6 +26,9 @@ type StudioOverlayProps = {
   // Director-only; absent (null) for turbo/reference sessions.
   directorMetrics?: DirectorMetrics | null;
   directorStreamState?: DirectorRealtimeState | null;
+  // Lucy-only; absent (null) outside lucy mode.
+  lucyMetrics?: LucyMetrics | null;
+  lucyStreamState?: LucyRealtimeState | null;
 };
 
 const wardrobeSummary = (liveState: LiveState): string =>
@@ -41,6 +48,8 @@ export const StudioOverlay = ({
   nowMs,
   directorMetrics,
   directorStreamState,
+  lucyMetrics,
+  lucyStreamState,
 }: StudioOverlayProps) => {
   const anchorAgeSec =
     anchorChangedAtMs !== null
@@ -68,6 +77,17 @@ export const StudioOverlay = ({
         <p className="m-0">
           Session p50/p95: {phases} · Spent $
           {directorMetrics.costUsd.toFixed(2)}
+        </p>
+      </div>
+    );
+  }
+
+  if (lucyMetrics) {
+    return (
+      <div className="flex flex-col gap-1 rounded-xl bg-black/60 px-3 py-2 text-[11px] text-white/80">
+        <p className="m-0">
+          Lucy stream: {lucyStreamState ?? "-"} · Spent $
+          {lucyMetrics.costUsd.toFixed(2)}
         </p>
       </div>
     );

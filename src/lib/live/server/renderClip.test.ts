@@ -18,7 +18,8 @@ vi.mock("@/lib/fal/requestH3MaxVideo", () => ({
     pollH3MaxVideoUntilComplete(...args),
 }));
 
-const { referenceBackend, turboBackend } = await import("./renderClip");
+const { referenceBackend, renderBackendFor, turboBackend } =
+  await import("./renderClip");
 
 describe("referenceBackend.render", () => {
   beforeEach(() => {
@@ -102,5 +103,20 @@ describe("turboBackend.render", () => {
     const call = submitH3MaxVideoGeneration.mock.calls[0][0];
     expect(call.image_url).toBe("https://example.com/seed.jpg");
     expect(call.prompt).toBe("she waves");
+  });
+});
+
+describe("renderBackendFor", () => {
+  it("routes lucy to the turbo clip backend — lucy only restyles turbo's own output", () => {
+    expect(renderBackendFor("lucy")).toBe(turboBackend);
+  });
+
+  it("routes turbo and reference to themselves", () => {
+    expect(renderBackendFor("turbo")).toBe(turboBackend);
+    expect(renderBackendFor("reference")).toBe(referenceBackend);
+  });
+
+  it("throws for director — it never reaches the clip pipeline", () => {
+    expect(() => renderBackendFor("director")).toThrow(/live-stream backend/);
   });
 });

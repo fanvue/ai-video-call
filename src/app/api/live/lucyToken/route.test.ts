@@ -14,7 +14,7 @@ beforeEach(() => {
   vi.mocked(getCurrentUser).mockReset();
 });
 
-describe("POST /api/live/directorToken", () => {
+describe("POST /api/live/lucyToken", () => {
   it("rejects unauthenticated requests without ever calling fal", async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(null as never);
 
@@ -24,7 +24,7 @@ describe("POST /api/live/directorToken", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("scopes the minted token to only the director app alias, never the real FAL_KEY", async () => {
+  it("scopes the minted token to only the lucy app alias, never the real FAL_KEY", async () => {
     vi.mocked(getCurrentUser).mockResolvedValue({ id: "user-1" } as never);
     fetchMock.mockResolvedValue({
       ok: true,
@@ -42,7 +42,7 @@ describe("POST /api/live/directorToken", () => {
       allowed_apps: string[];
       token_expiration: number;
     };
-    expect(body.allowed_apps).toEqual(["h3-max"]);
+    expect(body.allowed_apps).toEqual(["lucy-2-5"]);
     expect(body.token_expiration).toBe(120);
   });
 
@@ -62,6 +62,28 @@ describe("POST /api/live/directorToken", () => {
   it("fails closed (502) on an unexpected response shape rather than leaking it as a token", async () => {
     vi.mocked(getCurrentUser).mockResolvedValue({ id: "user-1" } as never);
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({}) });
+
+    const response = await POST();
+
+    expect(response.status).toBe(502);
+  });
+
+  it("fails closed (502) when fal is unreachable", async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue({ id: "user-1" } as never);
+    fetchMock.mockRejectedValue(new Error("network down"));
+
+    const response = await POST();
+
+    expect(response.status).toBe(502);
+  });
+
+  it("fails closed (502) when fal rejects the mint request", async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue({ id: "user-1" } as never);
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 403,
+      json: async () => ({}),
+    });
 
     const response = await POST();
 

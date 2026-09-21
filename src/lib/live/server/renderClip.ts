@@ -119,5 +119,7 @@ export const renderBackendFor = (backend: RenderBackend): VideoBackend => {
       "renderBackendFor: 'director' is a live-stream backend, not a clip backend",
     );
   }
+  // Lucy is a live restyle over the turbo clip backend's own output (see client/lucyStream.ts),
+  // so its clips render exactly like turbo's.
   return backend === "reference" ? referenceBackend : turboBackend;
 };

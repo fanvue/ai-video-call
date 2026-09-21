@@ -146,6 +146,10 @@ export const SetupScreen = ({ busy, error, onSubmit }: SetupScreenProps) => {
                   { value: "turbo", label: "Turbo" },
                   { value: "reference", label: "Reference (recommended)" },
                   { value: "director", label: "Director (live stream, alpha)" },
+                  {
+                    value: "lucy",
+                    label: "Lucy (identity lock over Turbo, alpha)",
+                  },
                 ] as const
               ).map((option) => (
                 <label
@@ -163,6 +167,12 @@ export const SetupScreen = ({ busy, error, onSubmit }: SetupScreenProps) => {
                 </label>
               ))}
             </div>
+            {backend === "lucy" ? (
+              <p className="text-xs text-[var(--muted)]">
+                Turbo clips restyled live onto the reference photo; strongest
+                face consistency, adds $0.02/s.
+              </p>
+            ) : null}
           </div>
         ) : null}
       </div>

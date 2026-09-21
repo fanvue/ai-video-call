@@ -12,6 +12,12 @@ import {
   type DirectorMetrics,
   type DirectorRealtimeState,
 } from "@/lib/live/client/directorStream";
+import {
+  LucySession,
+  openRealtimeWithFalLucy,
+  type LucyMetrics,
+  type LucyRealtimeState,
+} from "@/lib/live/client/lucyStream";
 import { ClipPipeline, type PipelineEvent } from "@/lib/live/client/pipeline";
 import {
   GaplessPlayer,
@@ -76,8 +82,6 @@ export type UseLiveSessionDeps = {
   upscaleSeed?: (
     frameUrl: string,
   ) => Promise<{ url: string | null; costUsd: number }>;
-  // Director mode only (backend === "director"); unused by turbo/reference.
-  fetchDirectorToken: () => Promise<string>;
   composeDirectorPrompt: (input: {
     creator: CreatorProfile;
     transcript: TranscriptEntry[];
@@ -86,6 +90,8 @@ export type UseLiveSessionDeps = {
     channel: InputChannel;
     speechMode: SpeechMode;
   }) => Promise<{ prompt: string; reply: string }>;
+  // Lucy mode only (backend === "lucy"); unused otherwise.
+  fetchLucyToken: () => Promise<string>;
 };
 
 const EMPTY_BUFFER_DEPTH: BufferDepth = {
@@ -205,18 +211,33 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     useState<DirectorMetrics | null>(null);
   const [directorStreamState, setDirectorStreamState] =
     useState<DirectorRealtimeState | null>(null);
+  // Lucy-only readout for StudioOverlay; null outside lucy mode.
+  const [lucyMetrics, setLucyMetrics] = useState<LucyMetrics | null>(null);
+  const [lucyStreamState, setLucyStreamState] =
+    useState<LucyRealtimeState | null>(null);
 
   const directorRef = useRef<LiveDirector | null>(null);
   const pipelineRef = useRef<ClipPipeline | null>(null);
   const roomRef = useRef<RoomSim | null>(null);
   // Which engine `send`/`end`/mute-toggle route to for the active session.
-  const modeRef = useRef<"clip" | "director">("clip");
+  const modeRef = useRef<"clip" | "director" | "lucy">("clip");
   const directorSessionRef = useRef<DirectorSession | null>(null);
   const directorMediaStreamRef = useRef<MediaStream | null>(null);
   // Desired sound state for the director video element; mirrors `soundOn` in LiveStudio.
   const directorSoundOnRef = useRef(true);
   const videoARef = useRef<HTMLVideoElement | null>(null);
   const videoBRef = useRef<HTMLVideoElement | null>(null);
+  const lucySessionRef = useRef<LucySession | null>(null);
+  const lucyMediaStreamRef = useRef<MediaStream | null>(null);
+  // Video-only in lucy mode (no audio track on the canvas capture), so nothing to mute per se —
+  // kept for parity with directorSoundOnRef and a possible future audio pass-through.
+  const lucySoundOnRef = useRef(true);
+  // The turbo pipeline's hidden output driving Lucy's restyle; created programmatically (not via JSX) because it must exist and be playing before lucySession.open() runs, which is before "live" mounts LiveStudio's video elements.
+  const lucyHiddenARef = useRef<HTMLVideoElement | null>(null);
+  const lucyHiddenBRef = useRef<HTMLVideoElement | null>(null);
+  const lucyCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const lucyRafRef = useRef<number | null>(null);
+  const lucyStreamCostBaseRef = useRef(0);
   const speechModeRef = useRef<SpeechMode>("text");
   const tickIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const greetingPlayedRef = useRef(false);
@@ -669,9 +690,31 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     });
   }, []);
 
+  // Lucy mode's visible video shows the restyled stream, same reuse-videoA pattern as director's.
+  const attachLucyStream = useCallback(() => {
+    const el = videoARef.current;
+    const stream = lucyMediaStreamRef.current;
+    if (!el || !stream) return;
+    if (el.srcObject !== stream) {
+      el.srcObject = stream;
+    }
+    el.muted = !lucySoundOnRef.current;
+    el.play().catch(() => {
+      el.muted = true;
+      setNeedsTap(true);
+      el.play().catch(() => {});
+    });
+  }, []);
+
   const attachVideoElements = useCallback(() => {
     if (modeRef.current === "director") {
       attachDirectorStream();
+      return;
+    }
+    if (modeRef.current === "lucy") {
+      // The hidden pipeline pair is attached separately in start(); the visible pair only ever
+      // shows Lucy's own restyled stream here.
+      attachLucyStream();
       return;
     }
     const a = videoARef.current;
@@ -680,22 +723,81 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       player.attach(a, b);
       player.start();
     }
-  }, [player, attachDirectorStream]);
+  }, [player, attachDirectorStream, attachLucyStream]);
+
+  // Off-DOM hidden video element for the lucy driving pipeline; see lucyHiddenARef.
+  const createHiddenVideoElement = (): HTMLVideoElement => {
+    const el = document.createElement("video");
+    el.playsInline = true;
+    el.muted = true;
+    el.setAttribute("aria-hidden", "true");
+    el.style.position = "fixed";
+    el.style.width = "2px";
+    el.style.height = "2px";
+    el.style.opacity = "0";
+    el.style.pointerEvents = "none";
+    document.body.appendChild(el);
+    return el;
+  };
+
+  const teardownLucyPipelineSurface = useCallback(() => {
+    if (lucyRafRef.current !== null) {
+      cancelAnimationFrame(lucyRafRef.current);
+      lucyRafRef.current = null;
+    }
+    lucyHiddenARef.current?.remove();
+    lucyHiddenBRef.current?.remove();
+    lucyHiddenARef.current = null;
+    lucyHiddenBRef.current = null;
+    lucyCanvasRef.current = null;
+  }, []);
+
+  // Draws whichever hidden element the gapless player currently has active into the capture
+  // canvas every frame, so canvas.captureStream() sees a continuous feed across A/B swaps.
+  const startLucyCanvasDrawLoop = useCallback(() => {
+    const canvas = lucyCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const draw = () => {
+      const active =
+        player.getActiveSlot() === "a"
+          ? lucyHiddenARef.current
+          : lucyHiddenBRef.current;
+      if (active && active.videoWidth > 0 && active.videoHeight > 0) {
+        if (
+          canvas.width !== active.videoWidth ||
+          canvas.height !== active.videoHeight
+        ) {
+          canvas.width = active.videoWidth;
+          canvas.height = active.videoHeight;
+        }
+        ctx.drawImage(active, 0, 0, canvas.width, canvas.height);
+      }
+      lucyRafRef.current = requestAnimationFrame(draw);
+    };
+    lucyRafRef.current = requestAnimationFrame(draw);
+  }, [player]);
 
   useEffect(
     () => () => {
       player.dispose();
       pipelineRef.current?.dispose();
       directorSessionRef.current?.close();
+      lucySessionRef.current?.close();
+      teardownLucyPipelineSurface();
       if (tickIntervalRef.current) {
         clearInterval(tickIntervalRef.current);
       }
     },
-    [player],
+    [player, teardownLucyPipelineSurface],
   );
 
   useEffect(() => {
-    const handleUnload = () => directorSessionRef.current?.close();
+    const handleUnload = () => {
+      directorSessionRef.current?.close();
+      lucySessionRef.current?.close();
+    };
     window.addEventListener("pagehide", handleUnload);
     return () => window.removeEventListener("pagehide", handleUnload);
   }, []);
@@ -764,7 +866,12 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         reference.framing,
       );
 
-      modeRef.current = options.backend === "director" ? "director" : "clip";
+      modeRef.current =
+        options.backend === "director"
+          ? "director"
+          : options.backend === "lucy"
+            ? "lucy"
+            : "clip";
       if (modeRef.current === "director") {
         applyLiveState(initialLiveState);
         setTranscript([]);
@@ -891,6 +998,73 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       });
       pipelineRef.current = pipeline;
 
+      if (modeRef.current === "lucy") {
+        teardownLucyPipelineSurface();
+        lucyHiddenARef.current = createHiddenVideoElement();
+        lucyHiddenBRef.current = createHiddenVideoElement();
+        player.attach(lucyHiddenARef.current, lucyHiddenBRef.current);
+        player.start();
+        const canvas = document.createElement("canvas");
+        // 9:16 default until the first decoded frame's actual dimensions land in the draw loop.
+        canvas.width = 720;
+        canvas.height = 1280;
+        lucyCanvasRef.current = canvas;
+        startLucyCanvasDrawLoop();
+        const captureCanvas = canvas as HTMLCanvasElement & {
+          webkitCaptureStream?: (frameRate?: number) => MediaStream;
+        };
+        const drivingStream =
+          captureCanvas.captureStream?.(30) ??
+          captureCanvas.webkitCaptureStream?.(30) ??
+          new MediaStream();
+
+        setLucyMetrics(null);
+        setLucyStreamState("opening");
+        lucyMediaStreamRef.current = null;
+        lucySoundOnRef.current = true;
+        lucyStreamCostBaseRef.current = 0;
+
+        const lucySession = new LucySession({
+          fetchToken: deps.fetchLucyToken,
+          openRealtime: openRealtimeWithFalLucy,
+          now: () => Date.now(),
+          onStreamState: (state) => {
+            setLucyStreamState(state);
+            if (state === "live") {
+              setConnectStage("primingBuffer");
+              setStatus((current) =>
+                current === "connecting" ? "live" : current,
+              );
+            }
+          },
+          onMedia: (stream) => {
+            lucyMediaStreamRef.current = stream;
+            attachLucyStream();
+          },
+          onError: (message) => {
+            setError(message);
+            if (errorTimeoutRef.current) {
+              clearTimeout(errorTimeoutRef.current);
+            }
+            errorTimeoutRef.current = setTimeout(() => setError(null), 6000);
+          },
+          onEnded: (reason) => {
+            if (reason === "stopped") return;
+            setEndReason(
+              reason === "maxDuration" ? "maxDuration" : "streamEnded",
+            );
+            setStatus("ended");
+          },
+        });
+        lucySessionRef.current = lucySession;
+
+        await lucySession.open({
+          referenceImageUrl: reference.anchorFrameUrl,
+          prompt: `${creator.lookLock} Live webcam stream, restyled to match her exactly.`,
+          drivingStream,
+        });
+      }
+
       setConnectStage("renderingFirstClip");
       pipeline.start(director.nextJob(), snapshotSource, () =>
         director.nextJob(),
@@ -913,6 +1087,17 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         currentDirector?.tick(Date.now(), { busy: isBusy() });
         pipelineRef.current?.pollChain();
         tickRoom();
+        if (modeRef.current === "lucy") {
+          const metrics = lucySessionRef.current?.getMetricsWithCost();
+          if (metrics) {
+            const delta = metrics.costUsd - lucyStreamCostBaseRef.current;
+            lucyStreamCostBaseRef.current = metrics.costUsd;
+            if (delta > 0) {
+              setCostTotal((total) => total + delta);
+            }
+            setLucyMetrics(metrics);
+          }
+        }
       }, 1000);
     },
     [
@@ -924,6 +1109,9 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       isBusy,
       tickRoom,
       attachDirectorStream,
+      attachLucyStream,
+      teardownLucyPipelineSurface,
+      startLucyCanvasDrawLoop,
     ],
   );
 
@@ -985,11 +1173,15 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     directorSessionRef.current?.close();
     directorSessionRef.current = null;
     directorMediaStreamRef.current = null;
+    lucySessionRef.current?.close();
+    lucySessionRef.current = null;
+    lucyMediaStreamRef.current = null;
+    teardownLucyPipelineSurface();
     if (videoARef.current) {
       videoARef.current.srcObject = null;
     }
     setStatus("ended");
-  }, [clearPendingReveal, player]);
+  }, [clearPendingReveal, player, teardownLucyPipelineSurface]);
 
   useEffect(() => {
     endRef.current = end;
@@ -1007,7 +1199,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   }, []);
 
   const resumeAfterTap = useCallback(() => {
-    if (modeRef.current === "director") {
+    if (modeRef.current === "director" || modeRef.current === "lucy") {
+      // The visible element shows a live-stream MediaStream, not a GaplessPlayer clip; tap it directly.
       const el = videoARef.current;
       setNeedsTap(false);
       el?.play().catch(() => {});
@@ -1020,6 +1213,15 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     (muted: boolean) => {
       if (modeRef.current === "director") {
         directorSoundOnRef.current = !muted;
+        if (videoARef.current) {
+          videoARef.current.muted = muted;
+        }
+        return;
+      }
+      if (modeRef.current === "lucy") {
+        // Lucy's output is video-only (canvas.captureStream carries no audio track); tracked for
+        // parity with director and a possible future audio pass-through.
+        lucySoundOnRef.current = !muted;
         if (videoARef.current) {
           videoARef.current.muted = muted;
         }
@@ -1077,6 +1279,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       privateMode,
       directorMetrics,
       directorStreamState,
+      lucyMetrics,
+      lucyStreamState,
       start,
       send,
       end,
@@ -1113,6 +1317,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       privateMode,
       directorMetrics,
       directorStreamState,
+      lucyMetrics,
+      lucyStreamState,
       start,
       send,
       end,

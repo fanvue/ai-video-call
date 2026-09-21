@@ -4,17 +4,14 @@ import { getCurrentUser } from "@/lib/fanvue";
 
 export const maxDuration = 30;
 
-// The one endpoint director mode is ever allowed to open a live session against.
-const DIRECTOR_ENDPOINT_ID = "minimax/h3-max/director";
+// Unlike director's wma.fal.run bridge, lucy only calls context.connect (token rides the WS URL query param), so a real fal.run temp token works and no proxy is needed — see lucyStream.ts.
+const LUCY_ENDPOINT_ID = "decart/lucy-2-5/realtime";
 
-// Per the installed SDK's own getTemporaryAuthToken (src/auth.js / src/utils.js parseEndpointId),
-// allowed_apps takes only the middle "alias" segment ("h3-max"), not the full three-part id.
-const directorAppAlias =
-  DIRECTOR_ENDPOINT_ID.split("/")[1] ?? DIRECTOR_ENDPOINT_ID;
+// Per the SDK's own parseEndpointId (node_modules/@fal-ai/client/src/utils.js), allowed_apps takes only the middle "alias" segment of a 3-part endpoint id ("lucy-2-5"), not the full id.
+const LUCY_APP_ALIAS = LUCY_ENDPOINT_ID.split("/")[1] ?? LUCY_ENDPOINT_ID;
 
 const FAL_TOKENS_URL = "https://rest.fal.ai/tokens/";
-// fal's realtime tokens are short-lived by design; the WebRTC session itself stays up long after
-// the handshake that consumes this token.
+// Short-lived by design; only the handshake needs it, not the whole WebRTC session.
 const TOKEN_EXPIRATION_SECONDS = 120;
 
 export async function POST() {
@@ -28,31 +25,30 @@ export async function POST() {
     res = await fetch(FAL_TOKENS_URL, {
       method: "POST",
       headers: {
-        // The only place the real FAL_KEY is ever used for director mode; it never reaches the client.
+        // The only place the real FAL_KEY is ever used for lucy mode; it never reaches the client.
         Authorization: `Key ${env.FAL_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        allowed_apps: [directorAppAlias],
+        allowed_apps: [LUCY_APP_ALIAS],
         token_expiration: TOKEN_EXPIRATION_SECONDS,
       }),
     });
   } catch (error) {
-    console.warn("live/directorToken: fal token request failed", error);
+    console.warn("live/lucyToken: fal token request failed", error);
     return NextResponse.json({ error: "Could not reach fal" }, { status: 502 });
   }
 
   const data: unknown = await res.json().catch(() => null);
   if (!res.ok) {
-    console.warn("live/directorToken: fal token mint rejected", res.status);
+    console.warn("live/lucyToken: fal token mint rejected", res.status);
     return NextResponse.json(
-      { error: "Could not mint director token" },
+      { error: "Could not mint lucy token" },
       { status: 502 },
     );
   }
 
-  // Same unwrap the SDK's own getTemporaryAuthToken performs: older proxies wrap the bare token
-  // string in { detail: string }.
+  // Same unwrap the SDK's getTemporaryAuthToken performs: some proxies wrap the token in { detail }.
   const token =
     typeof data === "string"
       ? data
@@ -64,9 +60,9 @@ export async function POST() {
         : null;
 
   if (!token) {
-    console.warn("live/directorToken: unexpected token response shape");
+    console.warn("live/lucyToken: unexpected token response shape");
     return NextResponse.json(
-      { error: "Could not mint director token" },
+      { error: "Could not mint lucy token" },
       { status: 502 },
     );
   }

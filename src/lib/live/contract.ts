@@ -199,9 +199,13 @@ export const clipJobSchema = z.discriminatedUnion("kind", [
 export type ClipJob = z.infer<typeof clipJobSchema>;
 export type ClipJobKind = ClipJob["kind"];
 
-// "director" is a live WebRTC stream (fal minimax/h3-max/director), not a clip-render backend —
-// it never reaches clipRequestSchema/renderClip; see src/lib/live/client/directorStream.ts.
-export const renderBackendSchema = z.enum(["turbo", "reference", "director"]);
+// "director" and "lucy" are live WebRTC streams, not clip-render backends; see directorStream.ts / lucyStream.ts.
+export const renderBackendSchema = z.enum([
+  "turbo",
+  "reference",
+  "director",
+  "lucy",
+]);
 export type RenderBackend = z.infer<typeof renderBackendSchema>;
 
 export const speechModeSchema = z.enum(["text", "native"]);
@@ -337,4 +341,6 @@ export const LIVE_TUNABLES = {
   // Director (minimax/h3-max/director) bills per second of live stream, promo rate; list price is
   // $0.08/sec. There is also a $1.20 session minimum charge regardless of duration.
   DIRECTOR_COST_PER_SEC_USD: 0.02,
+  // Lucy (decart/lucy-2-5/realtime) bills per second live; no documented session minimum, unlike director.
+  LUCY_COST_PER_SEC_USD: 0.02,
 } as const;

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   composeDirectorPrompt,
-  fetchDirectorToken,
+  fetchLucyToken,
   renderClip,
   uploadReference,
   upscaleSeed,
@@ -72,8 +72,8 @@ export const LiveStudio = () => {
     renderClip,
     uploadReference,
     upscaleSeed,
-    fetchDirectorToken,
     composeDirectorPrompt,
+    fetchLucyToken,
   });
   const { bindVideoA, bindVideoB } = videoRefs;
 
@@ -396,6 +396,8 @@ export const LiveStudio = () => {
               nowMs={now}
               directorMetrics={session.directorMetrics}
               directorStreamState={session.directorStreamState}
+              lucyMetrics={session.lucyMetrics}
+              lucyStreamState={session.lucyStreamState}
             />
           </div>
         ) : null}

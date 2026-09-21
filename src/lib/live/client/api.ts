@@ -64,10 +64,10 @@ export const uploadReference = async (
   });
 };
 
-// Mints a short-lived, single-app-scoped fal token for the browser's director WebRTC session.
-export const fetchDirectorToken = async (): Promise<string> => {
+// Mints a short-lived, lucy-app-scoped fal token for the browser's lucy WebRTC session.
+export const fetchLucyToken = async (): Promise<string> => {
   const { token } = await postJson<{ token: string }>(
-    "/api/live/directorToken",
+    "/api/live/lucyToken",
     {},
   );
   return token;
