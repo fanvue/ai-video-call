@@ -23,6 +23,14 @@ import {
   type LucyMetrics,
   type LucyRealtimeState,
 } from "@/lib/live/client/lucyStream";
+import {
+  openBrowserSwapSocket,
+  SWAP_INPUT,
+  SWAP_JPEG_QUALITY,
+  SwapSession,
+  type SwapMetrics,
+  type SwapStreamState,
+} from "@/lib/live/client/swapStream";
 import { ClipPipeline, type PipelineEvent } from "@/lib/live/client/pipeline";
 import {
   GaplessPlayer,
@@ -97,6 +105,8 @@ export type UseLiveSessionDeps = {
   }) => Promise<{ prompt: string; reply: string }>;
   // Lucy mode only (backend === "lucy"); unused otherwise.
   fetchLucyToken: () => Promise<string>;
+  // Swap mode only (backend === "swap"); resolves to the service WebSocket URL.
+  fetchSwapSession: () => Promise<string>;
 };
 
 const EMPTY_BUFFER_DEPTH: BufferDepth = {
@@ -220,12 +230,16 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   const [lucyMetrics, setLucyMetrics] = useState<LucyMetrics | null>(null);
   const [lucyStreamState, setLucyStreamState] =
     useState<LucyRealtimeState | null>(null);
+  // Swap-only readout for StudioOverlay; null outside swap mode.
+  const [swapMetrics, setSwapMetrics] = useState<SwapMetrics | null>(null);
+  const [swapStreamState, setSwapStreamState] =
+    useState<SwapStreamState | null>(null);
 
   const directorRef = useRef<LiveDirector | null>(null);
   const pipelineRef = useRef<ClipPipeline | null>(null);
   const roomRef = useRef<RoomSim | null>(null);
   // Which engine `send`/`end`/mute-toggle route to for the active session.
-  const modeRef = useRef<"clip" | "director" | "lucy">("clip");
+  const modeRef = useRef<"clip" | "director" | "lucy" | "swap">("clip");
   const directorSessionRef = useRef<DirectorSession | null>(null);
   const directorMediaStreamRef = useRef<MediaStream | null>(null);
   // Desired sound state for the director video element; mirrors `soundOn` in LiveStudio.
@@ -243,6 +257,11 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   const lucyCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const lucyRafRef = useRef<number | null>(null);
   const lucyStreamCostBaseRef = useRef(0);
+  // Frames the driving canvas has drawn so far; Swap's grab returns null until the first one.
+  const lucyDrawnFramesRef = useRef(0);
+  // Swap mode reuses the Lucy driving surface and the Lucy attach path (its output canvas capture goes into lucyMediaStreamRef).
+  const swapSessionRef = useRef<SwapSession | null>(null);
+  const swapStreamCostBaseRef = useRef(0);
   const speechModeRef = useRef<SpeechMode>("text");
   const tickIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const greetingPlayedRef = useRef(false);
@@ -747,9 +766,9 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       attachDirectorStream();
       return;
     }
-    if (modeRef.current === "lucy") {
+    if (modeRef.current === "lucy" || modeRef.current === "swap") {
       // The hidden pipeline pair is attached separately in start(); the visible pair only ever
-      // shows Lucy's own restyled stream here.
+      // shows Lucy's own restyled stream (or Swap's output canvas) here.
       attachLucyStream();
       return;
     }
@@ -788,6 +807,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     lucyHiddenARef.current = null;
     lucyHiddenBRef.current = null;
     lucyCanvasRef.current = null;
+    lucyDrawnFramesRef.current = 0;
   }, []);
 
   // Draws whichever hidden element the gapless player currently has active into the capture
@@ -821,6 +841,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
           drawHeight,
         );
         drawnFrames += 1;
+        lucyDrawnFramesRef.current = drawnFrames;
         if (drawnFrames === 1) {
           console.info(
             `lucy driving: first frame clip ${active.videoWidth}x${active.videoHeight} -> canvas ${canvas.width}x${canvas.height} paused=${active.paused} readyState=${active.readyState}`,
@@ -847,6 +868,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       pipelineRef.current?.dispose();
       directorSessionRef.current?.close();
       lucySessionRef.current?.close();
+      swapSessionRef.current?.close();
       teardownLucyPipelineSurface();
       if (tickIntervalRef.current) {
         clearInterval(tickIntervalRef.current);
@@ -859,6 +881,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     const handleUnload = () => {
       directorSessionRef.current?.close();
       lucySessionRef.current?.close();
+      swapSessionRef.current?.close();
     };
     window.addEventListener("pagehide", handleUnload);
     return () => window.removeEventListener("pagehide", handleUnload);
@@ -933,7 +956,9 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
           ? "director"
           : options.backend === "lucy"
             ? "lucy"
-            : "clip";
+            : options.backend === "swap"
+              ? "swap"
+              : "clip";
       if (modeRef.current === "director") {
         applyLiveState(initialLiveState);
         setTranscript([]);
@@ -1066,7 +1091,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         );
       };
 
-      if (modeRef.current === "lucy") {
+      if (modeRef.current === "lucy" || modeRef.current === "swap") {
         teardownLucyPipelineSurface();
         lucyHiddenARef.current = createHiddenVideoElement();
         lucyHiddenBRef.current = createHiddenVideoElement();
@@ -1077,63 +1102,42 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         canvas.height = LUCY_INPUT.height;
         lucyCanvasRef.current = canvas;
         startLucyCanvasDrawLoop();
-        const captureCanvas = canvas as HTMLCanvasElement & {
-          webkitCaptureStream?: (frameRate?: number) => MediaStream;
-        };
-        const drivingStream =
-          captureCanvas.captureStream?.(LUCY_INPUT.fps) ??
-          captureCanvas.webkitCaptureStream?.(LUCY_INPUT.fps) ??
-          new MediaStream();
+        if (modeRef.current === "swap") {
+          setSwapMetrics(null);
+          setSwapStreamState("opening");
+          swapStreamCostBaseRef.current = 0;
+          lucySoundOnRef.current = true;
 
-        setLucyMetrics(null);
-        setLucyStreamState("opening");
-        lucyMediaStreamRef.current = null;
-        lucySoundOnRef.current = true;
-        lucyStreamCostBaseRef.current = 0;
+          // Swapped frames are painted here and this canvas's capture stream is what the visible video shows, so the Lucy attach path is reused unchanged.
+          const outputCanvas = document.createElement("canvas");
+          outputCanvas.width = SWAP_INPUT.width;
+          outputCanvas.height = SWAP_INPUT.height;
+          const outputCtx = outputCanvas.getContext("2d");
+          const outputCapture = outputCanvas as HTMLCanvasElement & {
+            webkitCaptureStream?: (frameRate?: number) => MediaStream;
+          };
+          lucyMediaStreamRef.current =
+            outputCapture.captureStream?.(SWAP_INPUT.fps) ??
+            outputCapture.webkitCaptureStream?.(SWAP_INPUT.fps) ??
+            new MediaStream();
 
-        const lucyInput = {
-          referenceImageUrl: await fetchAsDataUri(reference.anchorFrameUrl),
-          prompt: buildLucyPrompt(creator.lookLock),
-          drivingStream,
-        };
-        let lucyReopens = 0;
-
-        // fal's gateway closes the idle signalling socket cleanly about a minute in (we send no controls after negotiation) and the SDK ends the WebRTC session with it. Reopen the same way Decart's own SDK reconnects; the cost readout keeps counting across sessions via lucyStreamCostBaseRef.
-        const openLucy = (): LucySession => {
-          const lucySession = new LucySession({
-            fetchToken: deps.fetchLucyToken,
-            openRealtime: openRealtimeWithFalLucy,
+          const swapSession = new SwapSession({
+            fetchSessionUrl: deps.fetchSwapSession,
+            openSocket: openBrowserSwapSocket,
+            setInterval: (fn, ms) => window.setInterval(fn, ms),
+            clearInterval: (handle) => window.clearInterval(handle as number),
             now: () => Date.now(),
             onStreamState: (state) => {
-              setLucyStreamState(state);
+              setSwapStreamState(state);
               if (state === "live") {
                 setConnectStage("primingBuffer");
                 setStatus((current) =>
                   current === "connecting" ? "live" : current,
                 );
+                attachLucyStream();
               }
             },
-            onMedia: (stream) => {
-              for (const track of stream.getTracks()) {
-                // A remote track that stays muted means Lucy connected but is not sending frames.
-                console.info(
-                  `lucy media: ${track.kind} readyState=${track.readyState} muted=${track.muted}`,
-                );
-                track.addEventListener("unmute", () =>
-                  console.info(
-                    `lucy media: ${track.kind} unmuted, frames flowing`,
-                  ),
-                );
-                track.addEventListener("mute", () =>
-                  console.info(
-                    `lucy media: ${track.kind} muted, frames stopped`,
-                  ),
-                );
-              }
-              lucyMediaStreamRef.current = stream;
-              attachLucyStream();
-            },
-            onDiagnostic: (line) => console.info(`lucy transport: ${line}`),
+            onDiagnostic: (line) => console.info(`swap transport: ${line}`),
             onError: (message) => {
               setError(message);
               if (errorTimeoutRef.current) {
@@ -1143,37 +1147,150 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
             },
             onEnded: (reason) => {
               if (reason === "stopped") return;
-              if (
-                lucySessionRef.current === lucySession &&
-                shouldReopenLucy(reason, lucyReopens)
-              ) {
-                lucyReopens += 1;
-                console.info(
-                  `lucy reopen: attempt ${lucyReopens}/${LUCY_MAX_REOPENS} after ${reason}`,
-                );
-                lucyStreamCostBaseRef.current = 0;
-                setLucyStreamState("opening");
-                const next = openLucy();
-                lucySessionRef.current = next;
-                // Failures inside open() already flow through this session's onError/onEnded.
-                next.open(lucyInput).catch(() => undefined);
-                return;
-              }
-              setEndReason(
-                reason === "maxDuration" ? "maxDuration" : "streamEnded",
-              );
+              setEndReason("streamEnded");
               setStatus("ended");
             },
           });
-          return lucySession;
-        };
+          swapSessionRef.current = swapSession;
 
-        const lucySession = openLucy();
-        lucySessionRef.current = lucySession;
+          const source = {
+            grab: () =>
+              new Promise<Blob | null>((resolve) => {
+                if (lucyDrawnFramesRef.current === 0) {
+                  resolve(null);
+                  return;
+                }
+                canvas.toBlob(
+                  (blob) => resolve(blob),
+                  "image/jpeg",
+                  SWAP_JPEG_QUALITY,
+                );
+              }),
+          };
+          const sink = {
+            draw: async (frame: Blob) => {
+              if (!outputCtx) return;
+              const bitmap = await createImageBitmap(frame);
+              outputCtx.drawImage(
+                bitmap,
+                0,
+                0,
+                outputCanvas.width,
+                outputCanvas.height,
+              );
+              bitmap.close();
+            },
+          };
 
-        // Driving frames must already be flowing when Lucy negotiates, so the turbo pipeline starts first.
-        startPipeline();
-        await lucySession.open(lucyInput);
+          // Driving frames must already be flowing before the service gets its first grab.
+          startPipeline();
+          await swapSession.open({
+            referenceImageUrl: await fetchAsDataUri(reference.anchorFrameUrl),
+            source,
+            sink,
+          });
+        } else {
+          const captureCanvas = canvas as HTMLCanvasElement & {
+            webkitCaptureStream?: (frameRate?: number) => MediaStream;
+          };
+          const drivingStream =
+            captureCanvas.captureStream?.(LUCY_INPUT.fps) ??
+            captureCanvas.webkitCaptureStream?.(LUCY_INPUT.fps) ??
+            new MediaStream();
+
+          setLucyMetrics(null);
+          setLucyStreamState("opening");
+          lucyMediaStreamRef.current = null;
+          lucySoundOnRef.current = true;
+          lucyStreamCostBaseRef.current = 0;
+
+          const lucyInput = {
+            referenceImageUrl: await fetchAsDataUri(reference.anchorFrameUrl),
+            prompt: buildLucyPrompt(creator.lookLock),
+            drivingStream,
+          };
+          let lucyReopens = 0;
+
+          // fal's gateway closes the idle signalling socket cleanly about a minute in (we send no controls after negotiation) and the SDK ends the WebRTC session with it. Reopen the same way Decart's own SDK reconnects; the cost readout keeps counting across sessions via lucyStreamCostBaseRef.
+          const openLucy = (): LucySession => {
+            const lucySession = new LucySession({
+              fetchToken: deps.fetchLucyToken,
+              openRealtime: openRealtimeWithFalLucy,
+              now: () => Date.now(),
+              onStreamState: (state) => {
+                setLucyStreamState(state);
+                if (state === "live") {
+                  setConnectStage("primingBuffer");
+                  setStatus((current) =>
+                    current === "connecting" ? "live" : current,
+                  );
+                }
+              },
+              onMedia: (stream) => {
+                for (const track of stream.getTracks()) {
+                  // A remote track that stays muted means Lucy connected but is not sending frames.
+                  console.info(
+                    `lucy media: ${track.kind} readyState=${track.readyState} muted=${track.muted}`,
+                  );
+                  track.addEventListener("unmute", () =>
+                    console.info(
+                      `lucy media: ${track.kind} unmuted, frames flowing`,
+                    ),
+                  );
+                  track.addEventListener("mute", () =>
+                    console.info(
+                      `lucy media: ${track.kind} muted, frames stopped`,
+                    ),
+                  );
+                }
+                lucyMediaStreamRef.current = stream;
+                attachLucyStream();
+              },
+              onDiagnostic: (line) => console.info(`lucy transport: ${line}`),
+              onError: (message) => {
+                setError(message);
+                if (errorTimeoutRef.current) {
+                  clearTimeout(errorTimeoutRef.current);
+                }
+                errorTimeoutRef.current = setTimeout(
+                  () => setError(null),
+                  6000,
+                );
+              },
+              onEnded: (reason) => {
+                if (reason === "stopped") return;
+                if (
+                  lucySessionRef.current === lucySession &&
+                  shouldReopenLucy(reason, lucyReopens)
+                ) {
+                  lucyReopens += 1;
+                  console.info(
+                    `lucy reopen: attempt ${lucyReopens}/${LUCY_MAX_REOPENS} after ${reason}`,
+                  );
+                  lucyStreamCostBaseRef.current = 0;
+                  setLucyStreamState("opening");
+                  const next = openLucy();
+                  lucySessionRef.current = next;
+                  // Failures inside open() already flow through this session's onError/onEnded.
+                  next.open(lucyInput).catch(() => undefined);
+                  return;
+                }
+                setEndReason(
+                  reason === "maxDuration" ? "maxDuration" : "streamEnded",
+                );
+                setStatus("ended");
+              },
+            });
+            return lucySession;
+          };
+
+          const lucySession = openLucy();
+          lucySessionRef.current = lucySession;
+
+          // Driving frames must already be flowing when Lucy negotiates, so the turbo pipeline starts first.
+          startPipeline();
+          await lucySession.open(lucyInput);
+        }
       } else {
         startPipeline();
       }
@@ -1204,6 +1321,17 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
               setCostTotal((total) => total + delta);
             }
             setLucyMetrics(metrics);
+          }
+        }
+        if (modeRef.current === "swap") {
+          const metrics = swapSessionRef.current?.getMetricsWithCost();
+          if (metrics) {
+            const delta = metrics.costUsd - swapStreamCostBaseRef.current;
+            swapStreamCostBaseRef.current = metrics.costUsd;
+            if (delta > 0) {
+              setCostTotal((total) => total + delta);
+            }
+            setSwapMetrics(metrics);
           }
         }
       }, 1000);
@@ -1283,6 +1411,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     directorMediaStreamRef.current = null;
     lucySessionRef.current?.close();
     lucySessionRef.current = null;
+    swapSessionRef.current?.close();
+    swapSessionRef.current = null;
     lucyMediaStreamRef.current = null;
     teardownLucyPipelineSurface();
     if (videoARef.current) {
@@ -1389,6 +1519,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       directorStreamState,
       lucyMetrics,
       lucyStreamState,
+      swapMetrics,
+      swapStreamState,
       start,
       send,
       end,
@@ -1427,6 +1559,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       directorStreamState,
       lucyMetrics,
       lucyStreamState,
+      swapMetrics,
+      swapStreamState,
       start,
       send,
       end,

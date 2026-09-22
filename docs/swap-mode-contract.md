@@ -1,6 +1,6 @@
 # Swap mode: self-hosted realtime identity swap over the Turbo pipeline
 
-Status: service half live on Modal for the POC (see `services/swap/README.md`); fal host written but blocked on serverless access for the Fanvue team. Client half not started.
+Status: service half live on Modal for the POC (see `services/swap/README.md`); fal host written but blocked on serverless access for the Fanvue team. Client half shipped: `swap` render backend, `/api/live/swapSession` (auth-gated URL + token), `swapStream.ts` (JPEG frames over WebSocket, at most two in flight, output canvas captured into the visible video), Swap option in setup.
 
 ## Why
 

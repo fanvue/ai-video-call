@@ -200,11 +200,13 @@ export type ClipJob = z.infer<typeof clipJobSchema>;
 export type ClipJobKind = ClipJob["kind"];
 
 // "director" and "lucy" are live WebRTC streams, not clip-render backends; see directorStream.ts / lucyStream.ts.
+// "swap" is our self-hosted identity swap over the turbo pipeline's output; see swapStream.ts.
 export const renderBackendSchema = z.enum([
   "turbo",
   "reference",
   "director",
   "lucy",
+  "swap",
 ]);
 export type RenderBackend = z.infer<typeof renderBackendSchema>;
 
@@ -343,4 +345,6 @@ export const LIVE_TUNABLES = {
   DIRECTOR_COST_PER_SEC_USD: 0.02,
   // Lucy (decart/lucy-2-5/realtime) bills per second live; no documented session minimum, unlike director.
   LUCY_COST_PER_SEC_USD: 0.02,
+  // Swap runs on our own Modal A10G at $1.10/hr, billed while the container is warm.
+  SWAP_COST_PER_SEC_USD: 1.1 / 3600,
 } as const;

@@ -18,6 +18,9 @@ export const env = createEnv({
     API_BASE_URL: z.url().default("https://api.fanvue.com"),
     FAL_KEY: z.string().min(1),
     GROQ_API_KEY: z.string().min(1),
+    // Self-hosted Swap service (services/swap); both unset disables the mode with a clear error.
+    SWAP_WS_URL: z.url().optional(),
+    SWAP_TOKEN: z.string().min(16).optional(),
   },
   runtimeEnv: {
     OAUTH_CLIENT_ID: process.env.OAUTH_CLIENT_ID,
@@ -34,6 +37,8 @@ export const env = createEnv({
     API_BASE_URL: process.env.API_BASE_URL,
     FAL_KEY: process.env.FAL_KEY,
     GROQ_API_KEY: process.env.GROQ_API_KEY,
+    SWAP_WS_URL: process.env.SWAP_WS_URL,
+    SWAP_TOKEN: process.env.SWAP_TOKEN,
   },
   emptyStringAsUndefined: true,
 });

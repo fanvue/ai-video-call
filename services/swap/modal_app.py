@@ -31,6 +31,7 @@ image = (
 @app.cls(
     image=image,
     gpu="A10G",
+    secrets=[modal.Secret.from_name("ai-video-swap-token")],
     scaledown_window=120,
     max_containers=2,
     timeout=600,

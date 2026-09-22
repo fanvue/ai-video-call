@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import time
 import traceback
 from typing import Any, Protocol
@@ -27,6 +28,8 @@ REQUIREMENTS = [
 
 
 class WebSocketLike(Protocol):
+    query_params: Any
+
     async def accept(self) -> None: ...
     async def receive(self) -> dict[str, Any]: ...
     async def send_text(self, data: str) -> None: ...
@@ -89,9 +92,19 @@ class SwapEngine:
         return restored if restored is not None else out
 
 
+def token_allowed(websocket: WebSocketLike) -> bool:
+    # Fail closed: no SWAP_TOKEN configured means nobody gets in, not everybody.
+    expected = os.environ.get("SWAP_TOKEN")
+    supplied = websocket.query_params.get("token")
+    return bool(expected) and supplied == expected
+
+
 async def serve_ws(engine: SwapEngine, websocket: WebSocketLike) -> None:
     # Protocol: first text frame is {"type":"reference","image":"<data uri>"}; then binary JPEG
     # frames (720x1280) in, swapped JPEG frames out, in order; {"type":"stop"} ends the session.
+    if not token_allowed(websocket):
+        await websocket.close(code=1008, reason="unauthorized")
+        return
     await websocket.accept()
     source_face = None
     last_faces: list[Any] = []

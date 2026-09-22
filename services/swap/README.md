@@ -10,7 +10,7 @@ Deployed to the `jamal-77992` personal workspace on 2026-09-22; move to a Fanvue
 .venv-fal/bin/modal deploy services/swap/modal_app.py
 ```
 
-WebSocket: `wss://jamal-77992--ai-video-swap-swapservice-web.modal.run/ws`. A code-only redeploy can leave old containers serving for a while; `modal app stop -y ai-video-swap` first when a route change does not show up.
+WebSocket: `wss://jamal-77992--ai-video-swap-swapservice-web.modal.run/ws?token=<SWAP_TOKEN>`. The token lives in the Modal secret `ai-video-swap-token` and in Vercel as `SWAP_TOKEN` (with `SWAP_WS_URL`); the service refuses connections without it (1008) and refuses everything if the secret is missing. A code-only redeploy can leave old containers serving for a while; `modal app stop -y ai-video-swap` first when a route change does not show up.
 
 Smoke test (`scratchpad/swap_smoke.py`, 720x1280 JPEG frames, London to Modal): first frame 3.2s (detector warm-up), then 330 to 570 ms per round trip. Cold start about 25s. No restorer yet (gfpgan's basicsr build is broken), so faces are inswapper_128 raw.
 

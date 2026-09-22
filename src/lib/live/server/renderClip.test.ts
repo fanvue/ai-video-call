@@ -111,6 +111,10 @@ describe("renderBackendFor", () => {
     expect(renderBackendFor("lucy")).toBe(turboBackend);
   });
 
+  it("routes swap to the turbo clip backend for the same reason", () => {
+    expect(renderBackendFor("swap")).toBe(turboBackend);
+  });
+
   it("routes turbo and reference to themselves", () => {
     expect(renderBackendFor("turbo")).toBe(turboBackend);
     expect(renderBackendFor("reference")).toBe(referenceBackend);

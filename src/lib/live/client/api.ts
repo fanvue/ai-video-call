@@ -73,6 +73,11 @@ export const fetchLucyToken = async (): Promise<string> => {
   return token;
 };
 
+export const fetchSwapSession = async (): Promise<string> => {
+  const { url } = await postJson<{ url: string }>("/api/live/swapSession", {});
+  return url;
+};
+
 export const composeDirectorPrompt = async (input: {
   creator: CreatorProfile;
   transcript: TranscriptEntry[];

@@ -153,6 +153,10 @@ export const SetupScreen = ({ busy, error, onSubmit }: SetupScreenProps) => {
                     value: "lucy",
                     label: "Lucy (SFW only, identity lock over Turbo, alpha)",
                   },
+                  {
+                    value: "swap",
+                    label: "Swap (self-hosted identity lock over Turbo, alpha)",
+                  },
                 ] as const
               ).map((option) => (
                 <label
@@ -175,6 +179,13 @@ export const SetupScreen = ({ busy, error, onSubmit }: SetupScreenProps) => {
                 Turbo clips restyled live onto the reference photo; strongest
                 face consistency, adds $0.02/s. Decart closes the stream on
                 explicit content.
+              </p>
+            ) : null}
+            {backend === "swap" ? (
+              <p className="text-xs text-[var(--muted)]">
+                Turbo clips with the reference face swapped in on our own GPU
+                (about $1.10/hr while live). Open-source model, no restorer yet,
+                expect a few frames per second.
               </p>
             ) : null}
             {backend === "director" ? (
