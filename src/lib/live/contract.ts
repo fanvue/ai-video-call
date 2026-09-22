@@ -373,6 +373,10 @@ export const LIVE_TUNABLES = {
   SWAP_GREETING_CLIP_SEC: 15,
   // Two-phase swap: the server swaps only the clip's last frame (about 1.5 s) so the next chain clip renders at once, and the client swaps the full clip in parallel before playing it. Off, the render call waits for the whole swap (about 7 s) before the chain can move.
   SWAP_DEFER_CLIP: true,
+  // Swap-mode replies, beats and check-ins render on reference-to-video with the upload as image 1: raw ArcFace to the upload held 0.60 to 0.68 over an 11 s reply against turbo's 0.43 to 0.57, so the tail that seeds the next clip no longer drifts a generation per act. Idles stay on turbo: they need its end frame to loop.
+  SWAP_CHAIN_FROM_REFERENCE: true,
+  // h3-max render resolution for every clip backend. 768P rendered in 19 s against 9 s at 480P for a raw ArcFace gain of 0.02, and costs $0.04/s against $0.025/s.
+  RENDER_RESOLUTION: "480P" as "480P" | "768P" | "1080P",
   // Pose bank (see stateFrames): off falls back to chaining every clip from its own last frame.
   SWAP_STATE_FRAMES: true,
   // Bounds the snapshot; states past this chain as before.

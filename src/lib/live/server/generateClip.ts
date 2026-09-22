@@ -271,7 +271,15 @@ export const generateClip = async (
     backend === "swap" &&
     job.kind === "greeting" &&
     session.seedFrameUrl === session.anchorFrameUrl;
-  const videoBackend = renderBackendFor(backend, { greetingFromReference });
+  const chainFromReference =
+    backend === "swap" &&
+    LIVE_TUNABLES.SWAP_CHAIN_FROM_REFERENCE &&
+    job.kind !== "idle" &&
+    job.kind !== "greeting";
+  const videoBackend = renderBackendFor(backend, {
+    greetingFromReference,
+    chainFromReference,
+  });
   // Only idle loops on the anchor; every other job chains forward from a real generated frame, single-image-seed style — pinning a hold's end frame to the seed never stopped it from drifting mid-clip, it only masked the seam for the next clip.
   // The greeting also loops when its seed is a staged in-scene still (seed differs from the identity photo), so the idles pre-stocked from that frame stay playable after it. On the raw upload it chains: the photo's clothes and room contradict the prompt and every loop back to it popped.
   const greetingLoops =
@@ -295,8 +303,10 @@ export const generateClip = async (
       ? session.stateFrames?.[stateFrameKey(plan.expectedState)]
       : undefined;
 
+  // A reference-rendered chain clip always carries the upload: identity is the reason it left turbo.
   const identityReferenceUrl =
-    videoBackend.supportsIdentityReference && useIdentityReference
+    videoBackend.supportsIdentityReference &&
+    (useIdentityReference || chainFromReference)
       ? session.anchorFrameUrl
       : undefined;
 

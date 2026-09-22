@@ -295,21 +295,24 @@ describe("generateClip on the swap backend", () => {
     });
     expect(renderBackendFor).toHaveBeenLastCalledWith("swap", {
       greetingFromReference: true,
+      chainFromReference: false,
     });
     const prompt = render.mock.calls.at(-1)?.[0].prompt as string;
     expect(prompt).toMatch(/^Image 1 is the woman's identity only/);
     expect(prompt).toMatch(/bed/);
   });
 
-  it("keeps a staged-seed swap greeting and every later swap clip on turbo", async () => {
+  it("keeps a staged-seed swap greeting and every idle on turbo", async () => {
     swapClip.mockResolvedValue(swapped);
     await generateClip(swapRequest({ kind: "greeting" }));
     expect(renderBackendFor).toHaveBeenLastCalledWith("swap", {
       greetingFromReference: false,
+      chainFromReference: false,
     });
     await generateClip(swapRequest({ kind: "idle" }));
     expect(renderBackendFor).toHaveBeenLastCalledWith("swap", {
       greetingFromReference: false,
+      chainFromReference: false,
     });
   });
 

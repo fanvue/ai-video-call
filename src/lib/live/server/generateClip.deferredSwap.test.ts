@@ -221,3 +221,64 @@ describe("generateClip on the swap backend with the deferred clip swap", () => {
     expect(swapClip).not.toHaveBeenCalled();
   });
 });
+
+describe("generateClip on the swap backend with chain clips from reference-to-video", () => {
+  const swapRequest = (job: ClipRequest["job"]): ClipRequest => ({
+    ...request(job),
+    backend: "swap",
+  });
+
+  it("is the default", () => {
+    expect(LIVE_TUNABLES.SWAP_CHAIN_FROM_REFERENCE).toBe(true);
+  });
+
+  it("routes a reply to the reference backend and always passes the upload as the identity reference", async () => {
+    renderBackendFor.mockReturnValueOnce({
+      render,
+      supportsEndFrame: false,
+      supportsIdentityReference: true,
+    } as never);
+    await generateClip(
+      swapRequest({
+        kind: "reply",
+        requestId: "r1",
+        text: "hi",
+        channel: "chat",
+        from: "fan",
+        precededByIdle: false,
+      }),
+    );
+    expect(renderBackendFor).toHaveBeenLastCalledWith(
+      "swap",
+      expect.objectContaining({ chainFromReference: true }),
+    );
+    expect(render).toHaveBeenCalledWith(
+      expect.objectContaining({
+        identityReferenceUrl: session.anchorFrameUrl,
+        endFrameUrl: undefined,
+      }),
+    );
+  });
+
+  it("keeps idles and the greeting off it, so idles can still loop on turbo's end frame", async () => {
+    await generateClip(swapRequest({ kind: "idle" }));
+    expect(renderBackendFor).toHaveBeenLastCalledWith(
+      "swap",
+      expect.objectContaining({ chainFromReference: false }),
+    );
+    await generateClip(swapRequest({ kind: "greeting" }));
+    expect(renderBackendFor).toHaveBeenLastCalledWith(
+      "swap",
+      expect.objectContaining({ chainFromReference: false }),
+    );
+  });
+
+  it("never applies to other backends", async () => {
+    await generateClip(swapRequest({ kind: "checkIn", channel: "chat" }));
+    await generateClip(request({ kind: "checkIn", channel: "chat" }));
+    expect(renderBackendFor).toHaveBeenLastCalledWith(
+      "turbo",
+      expect.objectContaining({ chainFromReference: false }),
+    );
+  });
+});

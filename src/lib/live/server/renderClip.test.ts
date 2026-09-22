@@ -127,6 +127,15 @@ describe("renderBackendFor", () => {
     );
   });
 
+  it("routes a swap chain clip to reference-to-video only when asked", () => {
+    expect(renderBackendFor("swap", { chainFromReference: true })).toBe(
+      referenceBackend,
+    );
+    expect(renderBackendFor("turbo", { chainFromReference: true })).toBe(
+      turboBackend,
+    );
+  });
+
   it("routes turbo and reference to themselves", () => {
     expect(renderBackendFor("turbo")).toBe(turboBackend);
     expect(renderBackendFor("reference")).toBe(referenceBackend);

@@ -6,12 +6,12 @@ import {
   pollH3MaxVideoUntilComplete,
   submitH3MaxVideoGeneration,
 } from "@/lib/fal/requestH3MaxVideo";
-import type { RenderBackend } from "../contract";
+import { LIVE_TUNABLES, type RenderBackend } from "../contract";
 
-const RENDER_RESOLUTION = "480P";
+const RENDER_RESOLUTION = LIVE_TUNABLES.RENDER_RESOLUTION;
 const RENDER_TIMEOUT_MS = 5 * 60 * 1000;
 
-// $/sec at 480P. 768P/1080P kept for a future resolution option, unused by either backend today.
+// $/sec per h3-max resolution.
 const H3_MAX_COST_PER_SEC_USD: Record<string, number> = {
   "480P": 0.025,
   "768P": 0.04,
@@ -118,9 +118,15 @@ export const referenceBackend: VideoBackend = {
 // Swap mode's greeting is the one clip with no in-scene frame to start from: the upload is the wrong room and clothes, and staging a still took 17 to 35 s. Reference-to-video sets the scene from the prompt with the upload as identity only (15 s clip in ~9 s), and its swapped last frame seeds the turbo chain.
 export const renderBackendFor = (
   backend: RenderBackend,
-  options: { greetingFromReference?: boolean } = {},
+  options: {
+    greetingFromReference?: boolean;
+    chainFromReference?: boolean;
+  } = {},
 ): VideoBackend => {
-  if (backend === "swap" && options.greetingFromReference) {
+  if (
+    backend === "swap" &&
+    (options.greetingFromReference || options.chainFromReference)
+  ) {
     return referenceBackend;
   }
   // Director is a live WebRTC stream, handled entirely client-side by DirectorSession; it must
