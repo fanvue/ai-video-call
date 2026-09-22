@@ -20,6 +20,8 @@ const REVEAL_TIMEOUT_MS = 1500;
 // native-speech playback stays silent through that window then ramps volume up over 280ms.
 const AUDIO_POP_HIDE_MS = 1100;
 const AUDIO_RAMP_MS = 280;
+// Bounds the wait for a swap that never activates the element (a failed reveal).
+const AUDIO_ACTIVATE_WAIT_MS = 5_000;
 // How long a preloading element gets before its readiness is treated as a failure, not a stall.
 const LOAD_TIMEOUT_MS = 8000;
 // How long play() gets to actually produce a decoded frame before the swap is aborted.
@@ -494,9 +496,18 @@ export class GaplessPlayer {
     }
     el.muted = false;
     el.volume = 0;
+    const src = el.src;
     const start = performance.now();
     const ramp = () => {
-      if (this.disposed || this.getActive() !== el) {
+      if (this.disposed || el.src !== src) {
+        return;
+      }
+      // The policy runs before the swap makes this element active; it stays silent until then instead of abandoning the ramp at zero.
+      if (this.getActive() !== el) {
+        el.volume = 0;
+        if (performance.now() - start < AUDIO_ACTIVATE_WAIT_MS) {
+          requestAnimationFrame(ramp);
+        }
         return;
       }
       const elapsed = performance.now() - start;
