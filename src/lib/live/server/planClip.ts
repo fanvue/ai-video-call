@@ -38,11 +38,34 @@ const ACTION_BEAT_SEC = LIVE_TUNABLES.ACTION_CLIP_SEC;
 
 const CLIP_ENDS_LINE = "The clip ends there.";
 
-// Swap mode plays chain clips at SWAP_ACTION_CLIP_SEC so the next one is ready before they end; the planned action keeps its own timing and she holds the settled pose for the remainder.
-const stretchForSwap = (plan: ClipPlan): ClipPlan => {
+// Rescales a choreo's "<start>-<end>s:" time-boxes and the "By Ns" landing line to a new clip length.
+const scaleChoreoTimes = (
+  prompt: string,
+  fromSec: number,
+  toSec: number,
+): string => {
+  const scale = toSec / fromSec;
+  return prompt
+    .replace(
+      /(\d+)-(\d+)s:/g,
+      (_match, start: string, end: string) =>
+        `${Math.round(Number(start) * scale)}-${Math.round(Number(end) * scale)}s:`,
+    )
+    .replace(`By ${fromSec}s she is`, `By ${toSec}s she is`);
+};
+
+// Swap mode plays every chain clip at SWAP_ACTION_CLIP_SEC: the swap costs ~40 ms a frame, so a 15 s wardrobe beat sat 5 s longer in the swap than an 11 s one. A longer plan has its choreography compressed to fit; a shorter one holds the settled pose for the remainder.
+const fitForSwap = (plan: ClipPlan): ClipPlan => {
   const durationSec = LIVE_TUNABLES.SWAP_ACTION_CLIP_SEC;
-  if (plan.durationSec >= durationSec) {
+  if (plan.durationSec === durationSec) {
     return plan;
+  }
+  if (plan.durationSec > durationSec) {
+    return {
+      ...plan,
+      durationSec,
+      prompt: scaleChoreoTimes(plan.prompt, plan.durationSec, durationSec),
+    };
   }
   return {
     ...plan,
@@ -1745,7 +1768,7 @@ export const planClip = ({
   const loopingGreeting =
     job.kind === "greeting" && session.seedFrameUrl !== session.anchorFrameUrl;
   if (backend === "swap" && job.kind !== "idle" && !loopingGreeting) {
-    return stretchForSwap(plan);
+    return fitForSwap(plan);
   }
   // Greeting has no "earlier moment" yet (the reference image IS its starting frame).
   return backend === "reference" && job.kind !== "greeting"

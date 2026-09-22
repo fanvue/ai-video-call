@@ -353,10 +353,10 @@ export const LIVE_TUNABLES = {
   CHAIN_MAX_ATTEMPTS: 3,
   // Clips to have ready before the stream is shown as live.
   PRIME_CLIPS: 1,
-  // Swap to the next clip this far before the current one ends. Kept short: an anchored idle only settles back onto its anchor in its last half second, and a 0.5 s lead cut that off, so every boundary read as a camera jump. Decode latency is hidden by warming the preloaded element instead (gaplessPlayer.warmDecode).
-  SWAP_LEAD_SEC: 0.12,
-  // A reply arriving while an idle loops waits for the loop boundary when it is this close, so it starts from the anchor pose the idle returns to instead of cutting mid-motion. Further out it cuts at once: reply latency matters more than one seam.
-  CUT_IN_WAIT_MAX_SEC: 6,
+  // Start the next clip playing, hidden, this far before the current one ends; it is revealed on the outgoing clip's last frame (gaplessPlayer.untilClipEnds), so this only has to cover play-start latency, which ran past a 0.12 s lead on phones and froze or wrapped the outgoing clip.
+  SWAP_LEAD_SEC: 0.4,
+  // A reply arriving while an idle loops cuts in at once under the crossfade; it only waits for the loop boundary when the idle is about to wrap anyway. At 6 s a reply landing mid-idle sat visibly waiting for up to 6 s.
+  CUT_IN_WAIT_MAX_SEC: 1.5,
   // Timeupdate fires about four times a second, so a deferred cut-in on a looping element needs a wider boundary window than SWAP_LEAD_SEC or the wrap slips past it.
   CUT_IN_LEAD_SEC: 0.35,
   // Stage an in-scene still (selected room, canon lingerie) from the upload before the greeting; the raw photo's clothes and room otherwise contradict the prompt and the first clip visibly morphs.

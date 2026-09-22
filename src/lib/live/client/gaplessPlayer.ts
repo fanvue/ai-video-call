@@ -5,6 +5,10 @@ const SWAP_LEAD_SEC = LIVE_TUNABLES.SWAP_LEAD_SEC;
 const CUT_IN_WAIT_MAX_SEC = LIVE_TUNABLES.CUT_IN_WAIT_MAX_SEC;
 const CUT_IN_LEAD_SEC = LIVE_TUNABLES.CUT_IN_LEAD_SEC;
 const CROSSFADE_MS = 180;
+// The outgoing clip counts as on its last frame this close to its end (about two frames at 24 fps); rAF polls at 60 Hz so the reveal lands within a frame of the boundary.
+const REVEAL_EPS_SEC = 0.1;
+// If the outgoing element never reports its end (a stalled decoder), reveal anyway rather than hold two playing clips.
+const REVEAL_TIMEOUT_MS = 1500;
 // Ported from the legacy call page: the model's rendered audio pops for ~1.1s at clip start, so
 // native-speech playback stays silent through that window then ramps volume up over 280ms.
 const AUDIO_POP_HIDE_MS = 1100;
@@ -73,10 +77,13 @@ type RvfcVideoElement = HTMLVideoElement & {
   cancelVideoFrameCallback: (handle: number) => void;
 };
 
-// Confirms play() actually produced a decoded frame (browsers can resolve play() early). Prefers rVFC, which fires only once a frame is presented; a hidden tab presents no frames, so `playing` stands in there.
-const confirmPlaying = (el: HTMLVideoElement): Promise<boolean> =>
+// Confirms play() actually produced a decoded frame (browsers can resolve play() early). Prefers rVFC, which fires only once a frame is presented; a hidden tab presents no frames, so `playing` stands in there. A preloaded element already has readyState >= 2 before playback moves, so a swap asks for a fresh frame instead of trusting that.
+const confirmPlaying = (
+  el: HTMLVideoElement,
+  freshFrame = false,
+): Promise<boolean> =>
   new Promise((resolve) => {
-    if (el.readyState >= HAVE_CURRENT_DATA) {
+    if (!freshFrame && el.readyState >= HAVE_CURRENT_DATA) {
       resolve(true);
       return;
     }
@@ -112,6 +119,9 @@ export class GaplessPlayer {
   private activeSlot: "a" | "b" = "a";
   private preloadedClip: ClipToPlay | null = null;
   private swappingClip: ClipToPlay | null = null;
+  // A boundary swap whose incoming slot is playing hidden, waiting for the outgoing clip's last frame.
+  private revealWaiter: { el: HTMLVideoElement; done: () => void } | null =
+    null;
   private cutInWaitingForBoundary = false;
   private preloadedSlot: "a" | "b" | null = null;
   private status: PlayerStatus = "empty";
@@ -317,13 +327,13 @@ export class GaplessPlayer {
     }
     this.preloadedSlot = targetSlot;
     if (this.status === "holding") {
-      void this.performSwap(clip);
+      void this.performSwap(clip, false);
       return;
     }
     if (clip.interrupts && this.currentClipLoops) {
       const remaining = this.currentDurationSec - this.currentTimeSec;
       if (remaining > CUT_IN_WAIT_MAX_SEC) {
-        void this.performSwap(clip);
+        void this.performSwap(clip, false);
         return;
       }
       this.cutInWaitingForBoundary = true;
@@ -477,9 +487,37 @@ export class GaplessPlayer {
     requestAnimationFrame(ramp);
   }
 
+  // Resolves once the outgoing element is on its last frame (or ended, or gave up), so the already-playing incoming slot is revealed on the boundary instead of whenever play() happened to start.
+  private untilClipEnds(el: HTMLVideoElement): Promise<void> {
+    return new Promise((resolve) => {
+      if (
+        el.ended ||
+        el.paused ||
+        el.currentTime >= el.duration - REVEAL_EPS_SEC
+      ) {
+        resolve();
+        return;
+      }
+      const done = () => {
+        clearTimeout(timer);
+        el.removeEventListener("ended", done);
+        if (this.revealWaiter?.done === done) {
+          this.revealWaiter = null;
+        }
+        resolve();
+      };
+      const timer = window.setTimeout(done, REVEAL_TIMEOUT_MS);
+      el.addEventListener("ended", done);
+      this.revealWaiter = { el, done };
+    });
+  }
+
   // Swaps only once incoming.play() has resolved and produced a decoded frame; until then the
   // outgoing element owns visibility, so a stalled/black incoming slot never replaces a live one.
-  private async performSwap(clip: ClipToPlay): Promise<void> {
+  private async performSwap(
+    clip: ClipToPlay,
+    atBoundary: boolean,
+  ): Promise<void> {
     const outgoing = this.getActive();
     const incoming = this.getInactive();
     if (!incoming) {
@@ -493,9 +531,19 @@ export class GaplessPlayer {
     let confirmed: boolean;
     try {
       await incoming.play();
-      confirmed = await confirmPlaying(incoming);
+      confirmed = await confirmPlaying(incoming, true);
     } catch {
       confirmed = false;
+    }
+    // Boundary swaps run hidden from SWAP_LEAD_SEC out and reveal on the outgoing clip's last frame; cut-ins and holds reveal as soon as a frame is there.
+    if (
+      confirmed &&
+      atBoundary &&
+      outgoing &&
+      !this.disposed &&
+      generation === this.swapGeneration
+    ) {
+      await this.untilClipEnds(outgoing);
     }
     if (this.swappingClip === clip) {
       this.swappingClip = null;
@@ -548,6 +596,13 @@ export class GaplessPlayer {
     this.currentDurationSec = el.duration;
     this.currentTimeSec = el.currentTime;
     this.onProgress(el.currentTime, this.currentClipId ?? "");
+    if (
+      this.revealWaiter?.el === el &&
+      el.currentTime >= el.duration - REVEAL_EPS_SEC
+    ) {
+      this.revealWaiter.done();
+      return;
+    }
     const lead = this.cutInWaitingForBoundary ? CUT_IN_LEAD_SEC : SWAP_LEAD_SEC;
     const nearEnd = el.currentTime >= el.duration - lead;
     if (!nearEnd) {
@@ -555,7 +610,10 @@ export class GaplessPlayer {
     }
     if (this.preloadedClip && this.preloadedSlot) {
       this.cutInWaitingForBoundary = false;
-      void this.performSwap(this.preloadedClip);
+      // rAF keeps ticking through the hidden lead; one swap per preloaded clip.
+      if (this.swappingClip !== this.preloadedClip) {
+        void this.performSwap(this.preloadedClip, true);
+      }
       return;
     }
     // A clip is still loading: hold for it rather than pulling (and losing) another from the buffer.
@@ -646,6 +704,7 @@ export class GaplessPlayer {
     this.preloadedClip = null;
     this.preloadedSlot = null;
     this.cutInWaitingForBoundary = false;
+    this.revealWaiter?.done();
     this.status = "empty";
     this.currentClipId = null;
     this.currentClipLoops = false;

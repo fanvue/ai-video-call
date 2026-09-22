@@ -144,6 +144,8 @@ describe("GaplessPlayer", () => {
     // c1 reaches its swap point: c2 starts in b, c3 is preloaded into a.
     a.fireTimeUpdate(9.95);
     await flush();
+    b.fire("playing");
+    await flush();
     expect(b.paused).toBe(false);
     // The swapped-in slot must become the visible one or the viewer sees black.
     expect(b.style.opacity).toBe("1");
@@ -156,6 +158,8 @@ describe("GaplessPlayer", () => {
 
     // c2 ends: c3 plays from a instead of the stream dying.
     b.fireTimeUpdate(9.95);
+    await flush();
+    a.fire("playing");
     await flush();
     expect(a.paused).toBe(false);
     expect(player.getActiveSlot()).toBe("a");
@@ -183,6 +187,8 @@ describe("GaplessPlayer", () => {
     expect(b.src).toBe(clip("c2").videoUrl);
     a.fireTimeUpdate(9.95);
     await flush();
+    b.fire("playing");
+    await flush();
     expect(player.getActiveSlot()).toBe("b");
     expect(b.loop).toBe(false);
   });
@@ -203,6 +209,8 @@ describe("GaplessPlayer", () => {
     queue.unshift(clip("reply", false, true));
     player.checkForClip();
     await flush();
+    b.fire("playing");
+    await flush();
     expect(returned).toEqual(["idle2"]);
     expect(b.src).toBe(clip("reply").videoUrl);
     expect(player.getActiveSlot()).toBe("b");
@@ -217,7 +225,7 @@ describe("GaplessPlayer", () => {
     player.setInterruptReadyHandler(() => queue.some((c) => c.interrupts));
     player.start();
     await flush();
-    a.fireTimeUpdate(6);
+    a.fireTimeUpdate(9);
     await flush();
 
     queue.unshift(clip("reply", false, true));
@@ -234,9 +242,68 @@ describe("GaplessPlayer", () => {
     // The wider cut-in lead catches the wrap that a 0.12 s window would miss between timeupdates.
     a.fireTimeUpdate(9.7);
     await flush();
-    expect(player.getActiveSlot()).toBe("b");
+    b.fire("playing");
+    await flush();
+    // Playing hidden: the reveal waits for the idle's last frame, not for play() to start.
     expect(b.paused).toBe(false);
+    expect(player.getActiveSlot()).toBe("a");
+    expect(a.style.opacity).toBe("1");
+    a.fireTimeUpdate(9.92);
+    await flush();
+    expect(player.getActiveSlot()).toBe("b");
     expect(a.style.opacity).toBe("0");
+  });
+
+  it("cuts a reply into an idle at once when the idle is further than CUT_IN_WAIT_MAX_SEC from wrapping", async () => {
+    const queue: ClipToPlay[] = [clip("loop1", true)];
+    const { a, b, player } = setup(queue);
+    player.setInterruptReadyHandler(() => queue.some((c) => c.interrupts));
+    player.start();
+    await flush();
+    a.fireTimeUpdate(6);
+    await flush();
+
+    queue.unshift(clip("reply", false, true));
+    player.checkForClip();
+    await flush();
+    b.fire("playing");
+    await flush();
+    expect(player.getActiveSlot()).toBe("b");
+    expect(a.style.opacity).toBe("0");
+  });
+
+  it("does not reveal a boundary swap on a still first frame: a preloaded readyState alone is not a presented frame", async () => {
+    const { a, b, player } = setup([clip("c1"), clip("c2")]);
+    player.start();
+    await flush();
+    await flush(); // c2's preload settles so 9.7 s is a boundary swap, not a hold
+    a.fireTimeUpdate(9.7);
+    await flush();
+    expect(b.paused).toBe(false);
+    expect(player.getActiveSlot()).toBe("a");
+    b.fire("playing");
+    await flush();
+    // The incoming clip is playing hidden until the outgoing one is on its last frame.
+    expect(player.getActiveSlot()).toBe("a");
+    a.fire("ended");
+    await flush();
+    expect(player.getActiveSlot()).toBe("b");
+    expect(b.style.opacity).toBe("1");
+  });
+
+  it("reveals a boundary swap after REVEAL_TIMEOUT if the outgoing element never reports its end", async () => {
+    const { a, b, player } = setup([clip("c1"), clip("c2")]);
+    player.start();
+    await flush();
+    await flush(); // c2's preload settles so 9.7 s is a boundary swap, not a hold
+    a.fireTimeUpdate(9.7);
+    await flush();
+    b.fire("playing");
+    await flush();
+    expect(player.getActiveSlot()).toBe("a");
+    vi.advanceTimersByTime(1500);
+    await flush();
+    expect(player.getActiveSlot()).toBe("b");
   });
 
   it("resumes an active element that was paused from under it", async () => {
@@ -281,6 +348,8 @@ describe("GaplessPlayer", () => {
     expect(getFallbackClip).toHaveBeenCalledTimes(1);
     expect(b.src).toBe(clip("oldIdle").videoUrl);
     a.fireTimeUpdate(9.95);
+    await flush();
+    b.fire("playing");
     await flush();
     expect(player.getActiveSlot()).toBe("b");
     expect(player.getStatus()).toBe("playing");

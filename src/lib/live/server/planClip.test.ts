@@ -814,6 +814,39 @@ describe("planClip: swap mode clip length", () => {
     expect(turbo.durationSec).toBe(LIVE_TUNABLES.ACTION_CLIP_SEC);
     expect(turbo.prompt).toContain("The clip ends there.");
   });
+
+  it("compresses a MAX_CLIP_SEC wardrobe beat to SWAP_ACTION_CLIP_SEC, rescaling its choreography time-boxes", () => {
+    const s = session({ state: state({ body: body({ pose: "lying" }) }) });
+    const beat: PlannedBeat = {
+      id: "b1",
+      intent: { type: "removeGarment", garment: "bra" },
+      attempt: 0,
+    };
+    const turbo = planClip({
+      session: s,
+      job: { kind: "beat", beat },
+      speechMode: "text",
+      backend: "turbo",
+    });
+    expect(turbo.durationSec).toBe(LIVE_TUNABLES.MAX_CLIP_SEC);
+    expect(turbo.prompt).toContain("13-15s:");
+
+    const swap = planClip({
+      session: s,
+      job: { kind: "beat", beat },
+      speechMode: "text",
+      backend: "swap",
+    });
+    expect(swap.durationSec).toBe(LIVE_TUNABLES.SWAP_ACTION_CLIP_SEC);
+    expect(swap.prompt).not.toContain("13-15s:");
+    expect(swap.prompt).toContain("10-11s:");
+    expect(swap.prompt).not.toContain(
+      `By ${LIVE_TUNABLES.MAX_CLIP_SEC}s she is`,
+    );
+    expect(swap.prompt).toContain(
+      `By ${LIVE_TUNABLES.SWAP_ACTION_CLIP_SEC}s she is`,
+    );
+  });
 });
 
 describe("planClip: idle variety", () => {
