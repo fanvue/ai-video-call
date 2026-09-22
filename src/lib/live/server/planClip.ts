@@ -127,6 +127,8 @@ const CONTENT_LOCK_PERMISSIVE =
 
 const CONTENT_LOCK_HOLD = "CONTENT: nothing sexual happens in this clip.";
 
+const CONTENT_LOCK_IDLE = "CONTENT: flirtatious and teasing, no sexual act.";
+
 const SPEECH_RULES_NATIVE =
   "She speaks clear everyday English, lip-synced word for word to what she says.";
 
@@ -282,6 +284,7 @@ const buildPrompt = (params: {
   durationSec: number;
   // True for a fan/viewer-requested clip (reply/beat): leads with the action instead of the universal locks.
   leadWithAction?: boolean;
+  contentLine?: string;
 }): string => {
   const holdsWardrobe = wardrobeUnchanged(
     params.state.wardrobe,
@@ -300,7 +303,8 @@ const buildPrompt = (params: {
     PHYSICS_LOCK,
     holdsWardrobe ? null : GARMENT_PHYSICS_LINE,
     NO_OVERLAY_LOCK,
-    params.explicit ? CONTENT_LOCK_PERMISSIVE : CONTENT_LOCK_HOLD,
+    params.contentLine ??
+      (params.explicit ? CONTENT_LOCK_PERMISSIVE : CONTENT_LOCK_HOLD),
     speechLockLine(params.speechMode),
   ];
   const lines = params.leadWithAction
@@ -824,8 +828,7 @@ const planBeatIntentCore = (
       return {
         physical:
           `She does exactly this, one clear continuous action, and holds the result: "${intent.text}". ` +
-          "The fixed webcam does not move; she stays fully in frame throughout. No garment is added, " +
-          "removed, or shifted while she does it.",
+          "The fixed webcam does not move; she stays fully in frame throughout.",
         nextWardrobe: wardrobe,
         nextBody: body,
         durationSec: ACTION_BEAT_SEC,
@@ -970,7 +973,7 @@ const RE_SPIN =
   /\bspins?\b|\bspinning\b|\bdo a spin\b|\bfull (turn|circle|360)\b|\b360\b/i;
 
 const RE_GENERIC_ACTION =
-  /\b(show|do|try|give|move|walk|stand|pose|face|look|point|lift|raise|lower|open|close|hold|grab|pull|push|rotate|flex|stretch|arch|squat|jump|hop|shake|wiggle|roll|flip|spank|slap|smack|squeeze|cup|grope|rub|lick|suck|kiss|bite|twist|jiggle|bounce|spread|finger|ride|hump|tease|flash|strip|undress|tug|pinch|flick|thrust|kneel|crawl|sit|lie|lay|turn|bend|wave|blow)\b/i;
+  /\b(show|do|make|form|try|give|move|walk|stand|pose|face|look|point|lift|raise|lower|open|close|hold|grab|pull|push|rotate|flex|stretch|arch|squat|jump|hop|shake|wiggle|roll|flip|spank|slap|smack|squeeze|cup|grope|rub|lick|suck|kiss|bite|twist|jiggle|bounce|spread|finger|ride|hump|tease|flash|strip|undress|tug|pinch|flick|thrust|kneel|crawl|sit|lie|lay|turn|bend|wave|blow)\b/i;
 
 // Sexual/body nouns that make an unrecognized-but-physical (verbatim) request explicit content.
 const RE_SEXUAL_NOUN =
@@ -1490,14 +1493,18 @@ const planGreeting = (
   };
 };
 
-// Rotates so idle clips don't all read as the identical frozen loop; picked from elapsed time so it stays deterministic/testable, and never changes pose/clothing/props (idle clips loop start=end).
+// Testers found swaying-in-place idles read as AI; these are what a cam model does between messages, each returning to the start frame since idles loop start=end.
 const IDLE_LIFE_VARIANTS: readonly string[] = [
-  "breathing, blinking, a glance at the chat, a tiny weight shift, a tuck of her hair",
-  "glancing just off the lens as if reading something in the chat, a small smile, then her eyes back on the lens",
-  "a slow blink, rolling her shoulders once in a small stretch, then settling back still",
-  "glancing down and to the side for a moment as if thinking, then back up at the lens with a smile",
-  "adjusting her hair or glasses with one hand, her eyes flicking to the chat and back",
+  "she leans in a touch to read the chat on the screen just below the lens, eyes scanning line by line, then smiles at something she read and looks up into the lens",
+  "she twirls a strand of hair around one finger, holding the lens with a playful look, then lets it drop back",
+  "she bites her lower lip lightly and gives the lens a slow, knowing look, one eyebrow lifting",
+  "she trails her fingertips slowly along her collarbone and down her arm, eyes on the lens, then rests her hand back where it was",
+  "she reads the chat below the lens, laughs softly at a message, then glances up at the lens with a teasing smile",
+  "she runs one hand slowly along the top of her thigh, looking up at the lens through her lashes, then settles it back",
 ];
+// Only when a bra is worn: plays with the strap and lets it settle back on her shoulder.
+const IDLE_STRAP_VARIANT =
+  "she runs a fingertip along her bra strap with a flirty look at the lens, the strap staying on her shoulder, then lowers her hand";
 // If she's already holding her phone, reading it in place is more natural than the generic catalogue.
 const IDLE_PHONE_VARIANT =
   "glancing down at the phone already in her hand, thumb moving briefly like she's reading something, then looking back up at the lens";
@@ -1505,13 +1512,17 @@ const IDLE_PHONE_VARIANT =
 const idleLifeLine = (
   elapsedSec: number,
   hasPhone: boolean,
+  braOn: boolean,
   variant?: number,
 ): string => {
   if (hasPhone) return IDLE_PHONE_VARIANT;
+  const variants = braOn
+    ? [...IDLE_LIFE_VARIANTS, IDLE_STRAP_VARIANT]
+    : IDLE_LIFE_VARIANTS;
   const index =
     (variant ?? Math.floor(elapsedSec / LIVE_TUNABLES.IDLE_CLIP_SEC)) %
-    IDLE_LIFE_VARIANTS.length;
-  return IDLE_LIFE_VARIANTS[index] ?? (IDLE_LIFE_VARIANTS[0] as string);
+    variants.length;
+  return variants[index] ?? (variants[0] as string);
 };
 
 const planIdle = (
@@ -1537,16 +1548,17 @@ const planIdle = (
   const lifeLine = idleLifeLine(
     session.elapsedSec,
     nextBody.prop === "phone",
+    state.wardrobe.bra.on,
     job.variant,
   );
   const action = [
-    `IDLE, between requests. She stays ${nextBody.pose}, exactly as she is right now, for the entire clip — ` +
-      `only minimal, subtle life on top of that fixed pose: ${lifeLine}. Keep every movement small and slow; ` +
-      "she never leaves the pose she starts in. This is a static hold, not a scene with a beginning and an end.",
+    `IDLE, between requests, like a real webcam model waiting on her chat. She stays ${nextBody.pose} the entire clip, ` +
+      `relaxed, natural and quietly enticing: ${lifeLine}. Her movement is unhurried and human, her body grounded ` +
+      "in place, never a rhythmic sway or rocking loop; she never leaves the pose she starts in.",
     `FORBIDDEN this clip: no change of pose category (if she is ${nextBody.pose} now, she never sits, stands, ` +
       "kneels, or lies down — she stays exactly that way start to finish), no new prop, " +
       "no sexual act starting or continuing, no leaving frame.",
-    "Her hands stay exactly where the first frame shows them, resting still, never onto a new object.",
+    "Her hands move only for that and come back to where the first frame shows them, never onto a new object.",
     pauseLine,
     "The clip must END in the same pose, framing, expression baseline, and hand position it started in — " +
       "treat any motion as a small excursion that always returns to the exact start.",
@@ -1565,6 +1577,7 @@ const planIdle = (
     nextBody,
     explicit: false,
     durationSec,
+    contentLine: CONTENT_LOCK_IDLE,
   });
   return {
     prompt,

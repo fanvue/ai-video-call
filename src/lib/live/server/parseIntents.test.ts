@@ -68,6 +68,17 @@ describe("parseIntentsWithLlm", () => {
     expect(messages[1]?.content).toMatch(/wearing bra, panties; pose sitting/);
   });
 
+  it("plays a specific gesture filed as the stock gesture act verbatim", async () => {
+    create.mockResolvedValue(
+      reply(JSON.stringify({ intents: [{ type: "act", act: "gesture" }] })),
+    );
+    await expect(
+      parseIntentsWithLlm("do a heart with ur hands", state),
+    ).resolves.toEqual([
+      { type: "verbatim", text: "do a heart with ur hands" },
+    ]);
+  });
+
   it("returns null on an empty, unparseable or failed response", async () => {
     create.mockResolvedValueOnce(reply('{"intents":[]}'));
     await expect(parseIntentsWithLlm("hm", state)).resolves.toBeNull();

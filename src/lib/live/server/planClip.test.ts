@@ -121,16 +121,18 @@ describe("planClip: idle", () => {
     expect(plan.expectedState.body).toEqual(session().state.body);
     expect(plan.needsReplyText).toBe(false);
     expect(plan.durationSec).toBe(LIVE_TUNABLES.IDLE_CLIP_SEC);
-    expect(plan.prompt).toMatch(/nothing sexual happens/i);
+    expect(plan.prompt).not.toMatch(/render the nudity/i);
   });
 
-  it("asks for minimal motion that returns to the starting pose", () => {
+  it("asks for natural cam-model downtime that returns to the starting pose", () => {
     const plan = planClip({
       session: session(),
       job: { kind: "idle" },
       speechMode: "text",
     });
-    expect(plan.prompt).toMatch(/minimal, subtle life/);
+    expect(plan.prompt).toMatch(/like a real webcam model waiting on her chat/);
+    expect(plan.prompt).toMatch(/never a rhythmic sway/);
+    expect(plan.prompt).toMatch(/flirtatious and teasing, no sexual act/);
     expect(plan.prompt).toMatch(/never leaves the pose she starts in/);
     expect(plan.prompt).toMatch(/settled back in that exact starting pose/);
   });
@@ -903,7 +905,7 @@ describe("planClip: swap mode clip length", () => {
 
 describe("planClip: idle variety", () => {
   it("rotates the idle life-line deterministically with elapsed time, without changing pose/clothing/props", () => {
-    const prompts = [0, 1, 2, 3, 4, 5].map(
+    const prompts = [0, 1, 2, 3, 4, 5, 6, 7].map(
       (i) =>
         planClip({
           session: session({ elapsedSec: i * LIVE_TUNABLES.IDLE_CLIP_SEC }),
@@ -911,10 +913,10 @@ describe("planClip: idle variety", () => {
           speechMode: "text",
         }).prompt,
     );
-    // Same cadence repeats every 5 slots (the catalogue length), so slot 0 and slot 5 match.
-    expect(prompts[0]).toBe(prompts[5]);
-    // At least two distinct life-lines appear across a full cycle.
-    expect(new Set(prompts.slice(0, 5)).size).toBeGreaterThan(1);
+    // Same cadence repeats every 7 slots (6 variants plus the bra-strap one while a bra is worn), so slot 0 and slot 7 match.
+    expect(prompts[0]).toBe(prompts[7]);
+    expect(new Set(prompts.slice(0, 7)).size).toBe(7);
+    expect(prompts.some((p) => /bra strap/.test(p))).toBe(true);
     for (const plan of prompts) {
       expect(plan).toMatch(/must END in the same pose/i);
     }
@@ -992,6 +994,12 @@ describe("planClip: typing stays in the chat, never on camera", () => {
       speechMode: "text",
     });
     expect(plan.prompt).toMatch(/warm wave/i);
+  });
+
+  it("plays a specific gesture as asked instead of the stock wave", () => {
+    const plan = replyPlan("make a heart with your hands");
+    expect(plan.prompt).toMatch(/"make a heart with your hands"/);
+    expect(plan.prompt).not.toMatch(/warm wave|blown kiss/i);
   });
 
   it("does not open on typing for a fast back-to-back reply", () => {
