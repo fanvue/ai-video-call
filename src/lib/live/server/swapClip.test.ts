@@ -150,6 +150,39 @@ describe("swapClip", () => {
     );
   });
 
+  it("races a second request when the first hangs, and cancels the hung one", async () => {
+    vi.useFakeTimers();
+    let hungSignal: AbortSignal | undefined;
+    fetchMock
+      .mockResolvedValueOnce(new Response(new Uint8Array([1])))
+      .mockImplementationOnce((_url: URL, init: RequestInit) => {
+        hungSignal = init.signal ?? undefined;
+        return new Promise(() => undefined);
+      })
+      .mockResolvedValueOnce(
+        jsonResponse({
+          video_base64: Buffer.from("video").toString("base64"),
+          last_frame_base64: Buffer.from("frame").toString("base64"),
+          stats: serviceStats,
+        }),
+      );
+    uploadToFal
+      .mockResolvedValueOnce("https://fal.test/swap.mp4")
+      .mockResolvedValueOnce("https://fal.test/last.jpg");
+
+    const pending = swapClip({
+      videoUrl: "https://fal.test/turbo.mp4",
+      referenceImageUrl: "https://fal.test/reference-hung.png",
+    });
+    await vi.advanceTimersByTimeAsync(8_000);
+    const outcome = await pending;
+    vi.useRealTimers();
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(outcome.videoUrl).toBe("https://fal.test/swap.mp4");
+    expect(hungSignal?.aborted).toBe(true);
+  });
+
   it("gives up after a second 408", async () => {
     fetchMock
       .mockResolvedValueOnce(new Response(new Uint8Array([1])))
