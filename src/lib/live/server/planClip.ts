@@ -1741,7 +1741,10 @@ export const planClip = ({
         return planBeat(session, job);
     }
   })();
-  if (backend === "swap" && job.kind !== "idle") {
+  // A greeting on a staged seed loops like an idle, so it needs no stretch and swaps 120 fewer frames at the join.
+  const loopingGreeting =
+    job.kind === "greeting" && session.seedFrameUrl !== session.anchorFrameUrl;
+  if (backend === "swap" && job.kind !== "idle" && !loopingGreeting) {
     return stretchForSwap(plan);
   }
   // Greeting has no "earlier moment" yet (the reference image IS its starting frame).

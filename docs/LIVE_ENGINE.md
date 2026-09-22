@@ -65,10 +65,14 @@ one-in-flight chain cannot hold a buffer. The chain therefore has two modes:
 - **Staged seed.** With `STAGE_SEED` on, the reference step also renders one in-scene still
   (Seedream v4 edit: the upload's persona in the selected room, canon lingerie, webcam framing,
   13 to 20 s, $0.03) alongside the look capture, and that still is the session seed; the upload
-  stays the identity reference. The greeting then loops on it like an idle, so the idles
-  pre-stocked from it play straight after and the intro neither morphs from the photo nor holds.
-  If staging fails or is refused, the seed is the upload, the greeting chains forward and nothing
-  is pre-stocked (looping on the raw photo was tried and popped every clip).
+  stays the identity reference. The greeting then loops on it like an idle (plain
+  `ACTION_CLIP_SEC`, never stretched), so the idles pre-stocked from it play straight after and
+  the intro neither morphs from the photo nor holds. If staging fails or is refused, the seed is
+  the upload, the greeting chains forward and nothing is pre-stocked (looping on the raw photo was
+  tried and popped every clip). Swap mode never pre-stocks at the join: the looping greeting covers
+  the gap and fillers swapping alongside it doubled the join time. The setup screen starts the
+  reference step (`session.prepare`) as soon as a photo and scene are picked, debounced 800 ms,
+  so its 20 to 25 s overlap the fan choosing options rather than the connect.
 - **Chained action.** `greeting` (off a raw upload), `reply`, `beat` and `checkIn` are
   seeded from the frame currently on the anchor and chain frame to frame. Their last frame
   (guarded against both canon and the identity anchor) becomes the new anchor. When the anchor
@@ -94,9 +98,11 @@ Invariants:
 - The stream is shown as live once `PRIME_CLIPS` clips are ready after the greeting. Requests are
   accepted from the moment the pipeline starts; one sent during the intro queues behind the
   greeting and she is shown typing as soon as the greeting is on screen.
-- **Boundary fallback.** The player starts the next clip `SWAP_LEAD_SEC` (0.5 s) before the current
-  one ends and flips only on its first presented frame, so decode latency overlaps the outgoing
-  tail. If a one-shot clip reaches that point with nothing seeded from its tail ready, the player
+- **Boundary fallback.** The player warms each preloaded clip with a muted play and pause so the
+  boundary play presents within a frame, then swaps `SWAP_LEAD_SEC` (0.12 s) before the current one
+  ends. The lead stays short on purpose: an anchored idle only settles back onto its anchor in its
+  last half second, and a 0.5 s lead cut that off, so every boundary read as a camera jump. If a
+  one-shot clip reaches that point with nothing seeded from its tail ready, the player
   asks the pipeline for `nextFallbackClip()`: an idle of the same look from an earlier anchor,
   played as a cut. A cut beats a frozen frame; it is logged (`boundaryFallback`) so it can be
   counted.
@@ -286,7 +292,8 @@ payment stack behind human approval.
   stay above `IDLE_CLIP_SEC`'s 10s, both already at the fal floor, since `planReply` tells a
   hold-only beat from a real one by comparing the two); only `idle` starts at `IDLE_CLIP_SEC` and grows with measured production time. In swap mode every
   chain clip is stretched to `SWAP_ACTION_CLIP_SEC` (15s) with a hold appended to the prompt, because
-  the next clip seeds from this one's last frame and takes 10 to 17s to make. Every
+  the next clip seeds from this one's last frame and takes 10 to 17s to make; a greeting that loops
+  on a staged seed is exempt. Every
   clip is frame-verified before it can play or seed the next one (see "Frame guard"), so drift is
   caught clip by clip rather than compounding.
 - `vitest.config.ts` declares the `@/` alias (vitest does not read `tsconfig.json` paths on its

@@ -1648,6 +1648,29 @@ describe("ClipPipeline", () => {
     expect(pipeline.nextClip()?.jobKind).toBe("idle");
   });
 
+  it("does not pre-stock idles at the join in swap mode, even on a staged seed", () => {
+    const stagedSnapshot: LiveSessionSnapshot = {
+      ...snapshot,
+      seedFrameUrl: "https://example.com/staged.jpg",
+    };
+    const requests: ClipRequest[] = [];
+    const pipeline = trackedPipeline({
+      backend: "swap",
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        requests.push(req);
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+    pipeline.start(
+      { kind: "greeting" },
+      () => stagedSnapshot,
+      makeJobQueue().next,
+    );
+    expect(requests.map((r) => r.job.kind)).toEqual(["greeting"]);
+  });
+
   it("does not pre-stock idles from a raw upload seed on turbo, where the greeting chains away from it", () => {
     const requests: ClipRequest[] = [];
     const pipeline = trackedPipeline({

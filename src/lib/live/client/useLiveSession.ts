@@ -201,6 +201,11 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   const [needsTap, setNeedsTap] = useState(false);
   // Requests are accepted as soon as the director and pipeline exist, well before the greeting is on screen; a request sent during the intro queues behind it.
   const [acceptingRequests, setAcceptingRequests] = useState(false);
+  const preparedReferenceRef = useRef<{
+    file: File;
+    sceneId: SceneId;
+    promise: Promise<ReferenceUploadResult>;
+  } | null>(null);
   const [posterUrl, setPosterUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [backend, setBackendState] = useState<RenderBackend>("turbo");
@@ -533,6 +538,11 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         }
       }
       refreshBufferDepth();
+      reportTelemetry?.("clipStarted", {
+        clipId,
+        kind: result?.jobKind ?? "unknown",
+        durationSec: result?.durationSec ?? null,
+      });
       // A request typed during the intro is already queued behind the greeting, or rendering as its reply; she is seen reading it now.
       if (
         result?.jobKind === "greeting" &&
@@ -546,7 +556,13 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       greetingPlayedRef.current = true;
       maybeGoLive();
     },
-    [applyLiveState, maybeGoLive, refreshBufferDepth, refreshRequestStatuses],
+    [
+      applyLiveState,
+      maybeGoLive,
+      refreshBufferDepth,
+      refreshRequestStatuses,
+      reportTelemetry,
+    ],
   );
 
   const getFallbackClip = useCallback((): ClipToPlay | null => {
@@ -980,6 +996,26 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     return director.snapshot(Date.now());
   }, []);
 
+  // The reference step (upload, look capture, staged still) is 20 to 25 s of the join; kicking it off from the setup screen hides it behind option-picking. A failure is dropped so start() retries it and reports the error itself.
+  const uploadReference = deps.uploadReference;
+  const prepare = useCallback(
+    (file: File, sceneId: SceneId) => {
+      const current = preparedReferenceRef.current;
+      if (current && current.file === file && current.sceneId === sceneId) {
+        return;
+      }
+      const promise = uploadReference(file, sceneId);
+      const entry = { file, sceneId, promise };
+      preparedReferenceRef.current = entry;
+      promise.catch(() => {
+        if (preparedReferenceRef.current === entry) {
+          preparedReferenceRef.current = null;
+        }
+      });
+    },
+    [uploadReference],
+  );
+
   const start = useCallback(
     async (file: File, sceneId: SceneId, options: StartOptions) => {
       setError(null);
@@ -1025,7 +1061,12 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       privateModeRef.current = false;
       setPrivateModeState(false);
       player.reset();
-      const reference = await deps.uploadReference(file, sceneId);
+      const prepared = preparedReferenceRef.current;
+      const reference =
+        prepared && prepared.file === file && prepared.sceneId === sceneId
+          ? await prepared.promise
+          : await deps.uploadReference(file, sceneId);
+      preparedReferenceRef.current = null;
       setConnectStage("capturingLook");
       setPosterUrl(reference.seedFrameUrl);
       console.log(
@@ -1514,6 +1555,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       directorStreamState,
       lucyMetrics,
       lucyStreamState,
+      prepare,
       start,
       send,
       end,
@@ -1554,6 +1596,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       directorStreamState,
       lucyMetrics,
       lucyStreamState,
+      prepare,
       start,
       send,
       end,

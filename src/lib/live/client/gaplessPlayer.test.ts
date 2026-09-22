@@ -248,11 +248,11 @@ describe("GaplessPlayer", () => {
     expect(getNextClip).toHaveBeenCalled();
     expect(b.src).toBe("");
 
-    a.fireTimeUpdate(9.6);
+    a.fireTimeUpdate(9.9);
     await flush();
     expect(getFallbackClip).toHaveBeenCalledTimes(1);
     expect(b.src).toBe(clip("oldIdle").videoUrl);
-    a.fireTimeUpdate(9.7);
+    a.fireTimeUpdate(9.95);
     await flush();
     expect(player.getActiveSlot()).toBe("b");
     expect(player.getStatus()).toBe("playing");
@@ -355,6 +355,44 @@ describe("GaplessPlayer", () => {
     expect(player.getActiveSlot()).toBe("b");
     expect(started).toEqual(["incoming"]);
     expect(b.style.opacity).toBe("1");
+    expect(b.paused).toBe(false);
+  });
+
+  it("warms the preloaded slot with a muted play and pause, rewound to 0", async () => {
+    const queue: ClipToPlay[] = [clip("loop1", true), clip("next", false)];
+    const { b, player } = setup(queue);
+    player.start();
+    await flush();
+    player.checkForClip();
+    await flush();
+    expect(b.src).toBe(clip("next").videoUrl);
+    expect(b.playCalls).toBe(1);
+    expect(b.paused).toBe(true);
+    expect(b.muted).toBe(true);
+    expect(b.currentTime).toBe(0);
+    expect(player.getActiveSlot()).toBe("a");
+  });
+
+  it("does not pause an element whose boundary swap is already in flight when the warm-up resolves late", async () => {
+    const queue: ClipToPlay[] = [clip("one", false), clip("two", false)];
+    const { a, b, player } = setup(queue);
+    player.start();
+    await flush();
+    let resolveWarm: () => void = () => {};
+    b.playImpl = () => new Promise<void>((resolve) => (resolveWarm = resolve));
+    player.checkForClip();
+    await flush();
+    expect(b.playCalls).toBe(1);
+    // Boundary: performSwap calls play() again and waits for a presented frame.
+    b.playImpl = () => Promise.resolve();
+    a.fireTimeUpdate(9.9);
+    await flush();
+    expect(b.playCalls).toBe(2);
+    resolveWarm();
+    await flush();
+    b.fire("playing");
+    await flush();
+    expect(player.getActiveSlot()).toBe("b");
     expect(b.paused).toBe(false);
   });
 

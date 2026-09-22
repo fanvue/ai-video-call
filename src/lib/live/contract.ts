@@ -350,8 +350,8 @@ export const LIVE_TUNABLES = {
   CHAIN_MAX_ATTEMPTS: 3,
   // Clips to have ready before the stream is shown as live.
   PRIME_CLIPS: 1,
-  // The next clip's play() starts this far before the current one ends and the flip waits for its first presented frame, so the decode latency overlaps the outgoing tail instead of showing as a freeze.
-  SWAP_LEAD_SEC: 0.5,
+  // Swap to the next clip this far before the current one ends. Kept short: an anchored idle only settles back onto its anchor in its last half second, and a 0.5 s lead cut that off, so every boundary read as a camera jump. Decode latency is hidden by warming the preloaded element instead (gaplessPlayer.warmDecode).
+  SWAP_LEAD_SEC: 0.12,
   // Stage an in-scene still (selected room, canon lingerie) from the upload before the greeting; the raw photo's clothes and room otherwise contradict the prompt and the first clip visibly morphs.
   STAGE_SEED: true,
   STAGE_SEED_BUDGET_MS: 30_000,

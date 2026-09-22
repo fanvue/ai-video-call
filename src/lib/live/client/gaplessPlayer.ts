@@ -109,6 +109,7 @@ export class GaplessPlayer {
   private b: HTMLVideoElement | null = null;
   private activeSlot: "a" | "b" = "a";
   private preloadedClip: ClipToPlay | null = null;
+  private swappingClip: ClipToPlay | null = null;
   private preloadedSlot: "a" | "b" | null = null;
   private status: PlayerStatus = "empty";
   private disposed = false;
@@ -316,7 +317,33 @@ export class GaplessPlayer {
       (clip.interrupts && this.currentClipLoops)
     ) {
       void this.performSwap(clip);
+      return;
     }
+    void this.warmDecode(inactive, clip, generation);
+  }
+
+  // A hidden play()+pause() gets the first frames decoded, so the boundary play() presents within a frame instead of after a decoder spin-up. Muted, so no audio leaks from the hidden slot.
+  private async warmDecode(
+    el: HTMLVideoElement,
+    clip: ClipToPlay,
+    generation: number,
+  ): Promise<void> {
+    try {
+      el.muted = true;
+      await el.play();
+    } catch {
+      return;
+    }
+    if (
+      this.disposed ||
+      this.preloadedClip !== clip ||
+      this.swappingClip === clip ||
+      generation !== this.swapGeneration
+    ) {
+      return;
+    }
+    el.pause();
+    el.currentTime = 0;
   }
 
   // A clip that never became playable, or whose play() never produced a frame: tell the pipeline
@@ -451,6 +478,7 @@ export class GaplessPlayer {
     // Not bumped here: this swap belongs to the load that already completed in preload(); a
     // later preload superseding it will bump this and invalidate the check below.
     const generation = this.swapGeneration;
+    this.swappingClip = clip;
     this.applyAudioPolicy(incoming, clip);
     let confirmed: boolean;
     try {
@@ -458,6 +486,9 @@ export class GaplessPlayer {
       confirmed = await confirmPlaying(incoming);
     } catch {
       confirmed = false;
+    }
+    if (this.swappingClip === clip) {
+      this.swappingClip = null;
     }
     if (this.disposed || generation !== this.swapGeneration) {
       // A newer preload superseded this attempt; that one owns the outcome now.

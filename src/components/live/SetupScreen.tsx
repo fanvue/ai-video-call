@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { RenderBackend, SceneId, SpeechMode } from "@/lib/live/contract";
 
 const SCENES: { id: SceneId; label: string }[] = [
@@ -21,10 +21,19 @@ export type SetupSubmit = {
 type SetupScreenProps = {
   busy: boolean;
   error: string | null;
+  onPrepare?: (file: File, sceneId: SceneId) => void;
   onSubmit: (values: SetupSubmit) => void;
 };
 
-export const SetupScreen = ({ busy, error, onSubmit }: SetupScreenProps) => {
+// Long enough that flicking through the scenes does not stage a still ($0.03) for each one.
+const PREPARE_DEBOUNCE_MS = 800;
+
+export const SetupScreen = ({
+  busy,
+  error,
+  onPrepare,
+  onSubmit,
+}: SetupScreenProps) => {
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [sceneId, setSceneId] = useState<SceneId>("bedroom");
@@ -37,6 +46,17 @@ export const SetupScreen = ({ busy, error, onSubmit }: SetupScreenProps) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const canSubmit = Boolean(file) && !busy;
+
+  useEffect(() => {
+    if (!file || !onPrepare) {
+      return;
+    }
+    const timeoutId = setTimeout(
+      () => onPrepare(file, sceneId),
+      PREPARE_DEBOUNCE_MS,
+    );
+    return () => clearTimeout(timeoutId);
+  }, [file, sceneId, onPrepare]);
 
   return (
     <div className="mx-auto flex min-h-dvh w-full max-w-sm flex-col justify-center gap-6 px-4 py-8">

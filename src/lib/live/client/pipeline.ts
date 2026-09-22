@@ -192,8 +192,11 @@ export class ClipPipeline {
     this.displayAnchorFrameUrl = snapshot.seedFrameUrl;
     this.playoutCursorFrameUrl = snapshot.seedFrameUrl;
     this.submitChainJob(initialJob, 0);
-    // Pre-stocked fillers seed from the starting frame, so they only pay off where the greeting lands back on it: reference re-seeds to it, and on a staged seed the greeting loops (see generateClip).
-    if (this.backend === "reference" || greetingLoopsOn(snapshot)) {
+    // Pre-stocked fillers seed from the starting frame, so they only pay off where the greeting lands back on it: reference re-seeds to it, and on a staged seed the greeting loops (see generateClip). Swap mode waits for the greeting instead: its loop covers the gap, and fillers swapping alongside it doubled the join.
+    if (
+      this.backend === "reference" ||
+      (this.backend !== "swap" && greetingLoopsOn(snapshot))
+    ) {
       this.fillIdleStockpile();
     }
   }

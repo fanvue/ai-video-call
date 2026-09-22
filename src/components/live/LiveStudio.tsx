@@ -293,6 +293,7 @@ export const LiveStudio = () => {
       <SetupScreen
         busy={starting}
         error={startError}
+        onPrepare={session.prepare}
         onSubmit={handleSubmitSetup}
       />
     );

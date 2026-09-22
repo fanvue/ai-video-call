@@ -777,8 +777,10 @@ describe("planClip: idle duration", () => {
 describe("planClip: swap mode clip length", () => {
   it("stretches chain clips to SWAP_ACTION_CLIP_SEC with a hold to the new end, leaves idle to the pipeline and other backends alone", () => {
     const base = { session: session(), speechMode: "text" as const };
+    // A raw-upload greeting (seed is the anchor) chains forward, so it is stretched like a reply.
     const greeting = planClip({
       ...base,
+      session: session({ seedFrameUrl: "https://example.com/anchor.jpg" }),
       job: { kind: "greeting" },
       backend: "swap",
     });
@@ -793,6 +795,15 @@ describe("planClip: swap mode clip length", () => {
 
     const idle = planClip({ ...base, job: { kind: "idle" }, backend: "swap" });
     expect(idle.durationSec).toBe(LIVE_TUNABLES.IDLE_CLIP_SEC);
+
+    // A greeting on a staged seed loops like an idle, so it is not stretched.
+    const staged = planClip({
+      ...base,
+      job: { kind: "greeting" },
+      backend: "swap",
+    });
+    expect(staged.durationSec).toBe(LIVE_TUNABLES.ACTION_CLIP_SEC);
+    expect(staged.prompt).toContain("The clip ends there.");
 
     const turbo = planClip({
       ...base,
