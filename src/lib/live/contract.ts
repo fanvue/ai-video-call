@@ -373,6 +373,10 @@ export const LIVE_TUNABLES = {
   SWAP_GREETING_CLIP_SEC: 15,
   // Two-phase swap: the server swaps only the clip's last frame (about 1.5 s) so the next chain clip renders at once, and the client swaps the full clip in parallel before playing it. Off, the render call waits for the whole swap (about 7 s) before the chain can move.
   SWAP_DEFER_CLIP: true,
+  // A fan is waiting on a reply, so its swap runs server side alongside the seed extraction instead of in a client round trip after it; a failed inline swap falls back to the client swap.
+  SWAP_INLINE_REPLY: true,
+  // Held under the client swap's budget so a slow inline swap still leaves the fallback time to run.
+  SWAP_INLINE_BUDGET_MS: 30_000,
   // Pose bank (see stateFrames): off falls back to chaining every clip from its own last frame.
   SWAP_STATE_FRAMES: true,
   // Bounds the snapshot; states past this chain as before.

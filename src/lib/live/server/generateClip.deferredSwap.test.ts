@@ -142,16 +142,46 @@ describe("generateClip on the swap backend with the deferred clip swap", () => {
     expect(LIVE_TUNABLES.SWAP_DEFER_CLIP).toBe(true);
   });
 
+  const replyRequest = () =>
+    swapRequest({
+      kind: "reply",
+      requestId: "r1",
+      text: "hi",
+      channel: "chat",
+      from: "fan",
+      precededByIdle: false,
+    });
+
+  it("a reply swaps inline from the raw clip while its seed decodes, and comes back already swapped", async () => {
+    swapClip.mockResolvedValue({
+      videoUrl: "https://example.com/swapped.mp4",
+      lastFrameUrl: "https://example.com/swapped-last.jpg",
+      report: { status: "swapped", swapMs: 3000 },
+      costUsd: 0.01,
+    });
+    const result = await generateClip(replyRequest());
+    expect(swapClip).toHaveBeenCalledWith(
+      expect.objectContaining({ videoUrl: "https://example.com/clip.mp4" }),
+    );
+    expect(swapServiceLastFrame).toHaveBeenCalledWith(
+      expect.objectContaining({ videoUrl: "https://example.com/clip.mp4" }),
+    );
+    expect(result.videoUrl).toBe("https://example.com/swapped.mp4");
+    expect(result.seedFrameUrl).toBe("https://example.com/tail-raw.jpg");
+    expect(result.swap?.status).toBe("swapped");
+  });
+
+  it("a reply whose inline swap fails comes back raw and pending so the client swap still runs", async () => {
+    swapClip.mockRejectedValue(new Error("Swap service responded 408"));
+    const result = await generateClip(replyRequest());
+    expect(result.videoUrl).toBe("https://example.com/clip.mp4");
+    expect(result.seedFrameUrl).toBe("https://example.com/tail-raw.jpg");
+    expect(result.swap?.status).toBe("pending");
+  });
+
   it("a chain clip seeds the next clip from its raw last frame and comes back unswapped with a pending report", async () => {
     const result = await generateClip(
-      swapRequest({
-        kind: "reply",
-        requestId: "r1",
-        text: "hi",
-        channel: "chat",
-        from: "fan",
-        precededByIdle: false,
-      }),
+      swapRequest({ kind: "checkIn", channel: "chat" }),
     );
     expect(swapClip).not.toHaveBeenCalled();
     expect(swapServiceLastFrame).toHaveBeenCalledWith({

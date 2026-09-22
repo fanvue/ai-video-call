@@ -27,6 +27,7 @@ import {
   SWAP_GREETING_BUDGET_MS,
   swapClip,
   swapServiceLastFrame,
+  type SwapClipOutcome,
 } from "./swapClip";
 import { writeCheckIn, writeReply } from "./writeReply";
 
@@ -347,7 +348,29 @@ export const generateClip = async (
   let costUsd = rendered.costUsd;
   let swapReport: ClipSwapReport | undefined;
   let swappedLastFrameUrl: string | null = null;
-  if (backend === "swap" && LIVE_TUNABLES.SWAP_DEFER_CLIP) {
+  let inlineSwap: Promise<SwapClipOutcome | null> | null = null;
+  if (
+    backend === "swap" &&
+    LIVE_TUNABLES.SWAP_DEFER_CLIP &&
+    LIVE_TUNABLES.SWAP_INLINE_REPLY &&
+    !LIVE_TUNABLES.VERIFY_FRAMES &&
+    job.kind === "reply"
+  ) {
+    const inlineStarted = Date.now();
+    inlineSwap = swapClip({
+      videoUrl,
+      referenceImageUrl: session.anchorFrameUrl,
+      budgetMs: LIVE_TUNABLES.SWAP_INLINE_BUDGET_MS,
+      jobKind: job.kind,
+    }).catch((error: unknown) => {
+      console.warn(
+        `generateClip: inline swap failed after ${Date.now() - inlineStarted} ms, deferring to the client swap`,
+        error,
+      );
+      return null;
+    });
+    swapReport = pendingSwapReport();
+  } else if (backend === "swap" && LIVE_TUNABLES.SWAP_DEFER_CLIP) {
     // Two-phase swap: the clip comes back unswapped and pending, so the chain renders its next clip right after this render instead of after the 7 s clip swap; the client swaps the full clip before it plays (api/live/swap). The next seed is the raw render's last frame on purpose: seeding from a swapped tail had turbo re-render an already swapped and restored face that was then swapped again, and that stacking is what drifted the face over a session.
     swapReport = pendingSwapReport();
   } else if (backend === "swap") {
@@ -605,6 +628,19 @@ export const generateClip = async (
           ),
         }
       : null;
+
+  if (inlineSwap) {
+    const swapWaitStarted = Date.now();
+    const swapped = await inlineSwap;
+    if (swapped) {
+      videoUrl = swapped.videoUrl;
+      costUsd += swapped.costUsd;
+      swapReport = swapped.report;
+    }
+    console.log(
+      `generateClip: inline swap status=${swapReport?.status} waitedMs=${Date.now() - swapWaitStarted} swapMs=${swapReport?.swapMs}`,
+    );
+  }
 
   const guard: FrameGuardReport = {
     checked: guardOutcome.checked,
