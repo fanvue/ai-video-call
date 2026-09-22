@@ -2177,6 +2177,86 @@ describe("ClipPipeline", () => {
     expect(fallback?.state).toEqual(liveState);
   });
 
+  it("nextFallbackClip holds (null) while a chain clip's swap is still landing, even with a same-look idle on the shelf", async () => {
+    const queue = makeJobQueue();
+    const finalize: Array<{
+      result: ClipResult;
+      deferred: Deferred<{
+        videoUrl: string;
+        costUsd: number;
+        report: ClipResult["swap"] & object;
+      }>;
+    }> = [];
+    const pipeline = trackedPipeline({
+      backend: "swap",
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) =>
+        delayed(() => ({
+          ...chainAdvancingResult(req),
+          swap: {
+            status: "pending" as const,
+            swapMs: 0,
+            frames: 0,
+            framesWithFace: 0,
+            msPerFrame: 0,
+            similarityBefore: null,
+            similarityAfter: null,
+            restored: false,
+            reason: null,
+          },
+        })),
+      finalizeSwap: (result) => {
+        const deferred = defer<{
+          videoUrl: string;
+          costUsd: number;
+          report: ClipResult["swap"] & object;
+        }>();
+        finalize.push({ result, deferred });
+        return deferred.promise;
+      },
+    });
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting rendered
+    pipeline.nextClip();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // fillers on the greeting tail rendered
+    const landed = (result: ClipResult) => ({
+      videoUrl: `${result.videoUrl}.swapped.mp4`,
+      costUsd: 0.004,
+      report: {
+        status: "swapped" as const,
+        swapMs: 6000,
+        frames: 264,
+        framesWithFace: 264,
+        msPerFrame: 22,
+        similarityBefore: 0.6,
+        similarityAfter: 0.9,
+        restored: true,
+        reason: null,
+      },
+    });
+    for (const entry of finalize) {
+      if (entry.result.jobKind === "idle") {
+        entry.deferred.resolve(landed(entry.result));
+      }
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pipeline.getBufferStats().idleReady).toBeGreaterThan(0);
+
+    queue.push(REPLY_JOB);
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // reply rendered, swap pending
+    expect(pipeline.hasChainedReady()).toBe(false);
+    // Same-look idles are playable, but the reply lands next and follows the tail; the boundary holds for it.
+    expect(pipeline.nextFallbackClip()).toBeNull();
+
+    const reply = finalize.find((e) => e.result.jobKind === "reply");
+    reply?.deferred.resolve(landed(reply.result));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pipeline.hasChainedReady()).toBe(true);
+    expect(pipeline.nextClip()?.jobKind).toBe("reply");
+  });
+
   it("nextFallbackClip returns null when no idle of the current look is ready", () => {
     const pipeline = trackedPipeline({
       backend: "turbo",

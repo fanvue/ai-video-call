@@ -57,8 +57,8 @@ class LastFrameRequest(BaseModel):
 
 @app.cls(
     image=image,
-    # A10G over L40S: ~1.10 vs 1.95 $/hr, and credit is nearly gone; GPEN-256 needs far less GPU headroom than the 512 restorer did.
-    gpu="A10G",
+    # A10G over L40S: ~1.10 vs 1.95 $/hr, and credit is nearly gone; GPEN-256 needs far less GPU headroom than the 512 restorer did. L4 as a fallback: Modal logged "waiting to be scheduled on a GPU_A10G worker" mid-session and the pool ran on one GPU, which showed as holds.
+    gpu=["A10G", "L4"],
     # Detection, paste-back and the x264 encode are CPU work; Modal's default fractional core starves them.
     cpu=8,
     secrets=[modal.Secret.from_name("ai-video-swap-token")],

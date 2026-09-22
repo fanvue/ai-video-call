@@ -197,7 +197,7 @@ describe("GaplessPlayer", () => {
     expect(b.loop).toBe(false);
   });
 
-  it("cuts a requested clip into a looping idle as soon as it is playable, returning the displaced idle", async () => {
+  it("a requested clip replaces the preloaded idle and takes the screen at the loop wrap, returning the displaced idle", async () => {
     const queue: ClipToPlay[] = [clip("loop1", true), clip("idle2", true)];
     const { a, b, player } = setup(queue);
     const returned: string[] = [];
@@ -209,19 +209,23 @@ describe("GaplessPlayer", () => {
     expect(b.src).toBe(clip("idle2").videoUrl);
     a.currentTime = 3;
 
-    // The reply lands: it replaces the preloaded idle and takes the screen without waiting.
+    // The reply lands: it replaces the preloaded idle and is taken at the loop's wrap.
     queue.unshift(clip("reply", false, true));
     player.checkForClip();
     await flush();
-    b.fire("playing");
-    await flush();
     expect(returned).toEqual(["idle2"]);
     expect(b.src).toBe(clip("reply").videoUrl);
+    a.fireTimeUpdate(9.7);
+    await flush();
+    b.fire("playing");
+    await flush();
+    a.fireTimeUpdate(9.92);
+    await flush();
     expect(player.getActiveSlot()).toBe("b");
     expect(b.paused).toBe(false);
     expect(b.style.opacity).toBe("1");
-    expect(b.style.transitionDuration).toBe("450ms");
-    vi.advanceTimersByTime(450);
+    expect(b.style.transitionDuration).toBe("320ms");
+    vi.advanceTimersByTime(320);
     expect(a.style.opacity).toBe("0");
   });
 
@@ -262,23 +266,29 @@ describe("GaplessPlayer", () => {
     expect(a.style.opacity).toBe("0");
   });
 
-  it("cuts a reply into an idle at once when the idle is further than CUT_IN_WAIT_MAX_SEC from wrapping", async () => {
+  it("never cuts a reply into a looping idle mid-motion: it plays hidden and is revealed at the wrap", async () => {
     const queue: ClipToPlay[] = [clip("loop1", true)];
     const { a, b, player } = setup(queue);
     player.setInterruptReadyHandler(() => queue.some((c) => c.interrupts));
     player.start();
     await flush();
-    a.fireTimeUpdate(6);
+    a.fireTimeUpdate(2);
     await flush();
 
     queue.unshift(clip("reply", false, true));
     player.checkForClip();
     await flush();
+    expect(b.src).toBe(clip("reply").videoUrl);
+    a.fireTimeUpdate(5);
+    await flush();
+    expect(player.getActiveSlot()).toBe("a");
+    a.fireTimeUpdate(9.7);
+    await flush();
     b.fire("playing");
     await flush();
+    a.fireTimeUpdate(9.92);
+    await flush();
     expect(player.getActiveSlot()).toBe("b");
-    vi.advanceTimersByTime(450);
-    expect(a.style.opacity).toBe("0");
   });
 
   it("does not reveal a boundary swap on a still first frame: a preloaded readyState alone is not a presented frame", async () => {
@@ -434,7 +444,7 @@ describe("GaplessPlayer", () => {
 
   it("swaps only after incoming.play() resolves and fires playing, exactly once", async () => {
     const queue: ClipToPlay[] = [clip("loop1", true)];
-    const { b, player } = setup(queue);
+    const { a, b, player } = setup(queue);
     const started: string[] = [];
     player.setClipStartedHandler((id) => started.push(id));
     player.setInterruptReadyHandler(() => true);
@@ -450,12 +460,16 @@ describe("GaplessPlayer", () => {
     expect(b.src).toBe(incoming.videoUrl);
     expect(player.getActiveSlot()).toBe("a");
 
-    b.fire("loadeddata"); // preload's readiness resolves; performSwap awaits incoming.play()
+    b.fire("loadeddata"); // preload's readiness resolves; the cut-in waits for the loop's wrap
+    await flush();
+    a.fireTimeUpdate(9.7); // wrap: performSwap awaits incoming.play()
     await flush();
     expect(player.getActiveSlot()).toBe("a"); // play() has no decoded frame yet
     expect(started).toEqual([]);
 
     b.fire("playing"); // confirms a decoded frame; swap completes exactly once
+    await flush();
+    a.fireTimeUpdate(9.92);
     await flush();
 
     expect(player.getActiveSlot()).toBe("b");
@@ -504,7 +518,7 @@ describe("GaplessPlayer", () => {
 
   it("ignores a stale canplaythrough from an earlier, superseded preload", async () => {
     const queue: ClipToPlay[] = [clip("loop1", true)];
-    const { b, player } = setup(queue);
+    const { a, b, player } = setup(queue);
     const started: string[] = [];
     player.setClipStartedHandler((id) => started.push(id));
     player.start();
@@ -533,7 +547,11 @@ describe("GaplessPlayer", () => {
     // genuinely waiting on the same shared element.
     b.fire("canplaythrough");
     await flush();
+    a.fireTimeUpdate(9.7); // the loop wraps: the current preload's swap starts
+    await flush();
     b.fire("playing"); // confirmPlaying for the (correct) in-flight swap
+    await flush();
+    a.fireTimeUpdate(9.92);
     await flush();
 
     // Only the still-current clip ("replacement") is ever shown or reported started; the stale
@@ -568,9 +586,13 @@ describe("GaplessPlayer", () => {
     await flush();
     b.fire("loadeddata");
     await flush();
+    a.fireTimeUpdate(9.7); // the loop wraps: the swap starts
+    await flush();
     expect(player.getActiveSlot()).toBe("a");
 
     b.fire("playing"); // ignored: rVFC is preferred once available, this alone must not swap
+    await flush();
+    a.fireTimeUpdate(9.92);
     await flush();
     expect(player.getActiveSlot()).toBe("a");
     expect(started).toEqual([]);

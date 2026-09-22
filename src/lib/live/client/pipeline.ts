@@ -296,6 +296,11 @@ export class ClipPipeline {
 
   // A one-shot clip is ending with nothing seeded from its tail ready: the least bad continuation is an idle of the same look, played as a cut rather than a freeze. Prefers the newest anchor.
   nextFallbackClip(): ClipResult | null {
+    // A chain clip whose swap is still landing follows the tail frame for frame; an old-anchor idle does not. Prod showed the fallback cut and then the chain clip cutting into it 0.6 s later, two pose jumps for one boundary, so the player holds the last frame instead.
+    const chained = this.chainedReady[0];
+    if (chained !== undefined && !this.isPlayable(chained)) {
+      return null;
+    }
     const key = lookKey((this.chainTail ?? this.anchor).state);
     for (let i = this.idleReady.length - 1; i >= 0; i -= 1) {
       const clip = this.idleReady[i];
