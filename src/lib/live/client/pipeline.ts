@@ -116,6 +116,7 @@ export class ClipPipeline {
   private chainedReady: ClipResult[] = [];
   // Clips still having their full swap finished: they hold their queue position but are not playable yet.
   private pendingSwapClipIds = new Set<string>();
+  private consecutiveSwapFailures = 0;
   private pendingChainSwaps = 0;
   private activeSwaps = 0;
   private activeChainSwaps = 0;
@@ -248,8 +249,16 @@ export class ClipPipeline {
             this.activeChainSwaps -= 1;
           }
           this.dispatchSwaps();
-          // An unswapped idle shows the raw render's face for a whole clip; fillers are replaceable, so it is dropped and restocked instead.
-          if (lane === "idle" && result.swap?.status === "failed") {
+          const swapFailed = result.swap?.status === "failed";
+          this.consecutiveSwapFailures = swapFailed
+            ? this.consecutiveSwapFailures + 1
+            : 0;
+          // An unswapped idle shows the raw render's face for a whole clip, so a one-off failure is dropped and restocked; once swaps keep failing (service down) dropping would starve the player, so they play unswapped.
+          if (
+            lane === "idle" &&
+            swapFailed &&
+            this.consecutiveSwapFailures <= 1
+          ) {
             this.idleReady = this.idleReady.filter(
               (clip) => clip.clipId !== result.clipId,
             );
