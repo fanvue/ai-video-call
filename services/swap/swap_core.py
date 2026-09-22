@@ -11,6 +11,7 @@ import urllib.request
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 from typing import Any
 
 # inswapper_128 is research-only licensed (commercial license needed before this leaves the spike); deepinsight's repo is gated so this is a public mirror.
@@ -33,6 +34,16 @@ SEED_SHARPNESS_TARGET = 75.0
 SOFTEN_SIGMA = 1.2
 # Chained renders also inflate contrast and saturation and warm the skin (see the degrade-gen sheet). Each seed's LAB moments are pulled halfway back toward the session's first frame: a leaky correction that bounds the drift but still lets a real scene change (a garment coming off) shift the tone.
 TONE_LOCK_BLEND = 0.5
+# Off: the ESRGAN-below-80 / soften-above-95 pair oscillated seed to seed and left skin blotchy; the seed now goes out exactly as swapped.
+SEED_FINISH = False
+# Off: whole-frame LAB stats are dominated by background and garment, so the lock shifted skin tone toward whatever filled the frame.
+SEED_TONE_LOCK = False
+# Share of the Reinhard-matched patch kept over the raw swap: pulls the face toward the render's neck and skin without flattening its own shading.
+PATCH_COLOR_MATCH_BLEND = 0.6
+# EMA weight for the zero-phase landmark smoothing in swap_clip; per-frame detector jitter made the pasted patch shimmer.
+KPS_SMOOTH_ALPHA = 0.5
+# Off: on a 362-frame persona clip smoothing left output landmark wobble unchanged (0.565 vs 0.562 px) while holding the whole clip in memory and adding ~0.9 ms/frame.
+KPS_SMOOTH = False
 # FaceFusion's HyperSwap 1a (256 px, same ArcFace w600k_r50 identity as buffalo_l); the bake-off candidate against inswapper_128.
 HYPERSWAP_URL = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.3.0/hyperswap_1a_256.onnx"
 SWAP_SIZE = 256
@@ -140,7 +151,7 @@ class SwapEngine:
             else None
         )
         self.restorer = None
-        if restorer_path:
+        if restorer_path and RESTORE_FRAMES:
             import onnxruntime
 
             self.restorer = onnxruntime.InferenceSession(
@@ -151,7 +162,7 @@ class SwapEngine:
             self.restorer_output = self.restorer.get_outputs()[0].name
             print("restorer providers:", self.restorer.get_providers())
         self.enhancer = None
-        if enhancer_path:
+        if enhancer_path and SEED_FINISH:
             import onnxruntime
 
             self.enhancer = onnxruntime.InferenceSession(
@@ -160,7 +171,7 @@ class SwapEngine:
             self.enhancer_input = self.enhancer.get_inputs()[0].name
             print("enhancer providers:", self.enhancer.get_providers())
         self.hyperswap = None
-        if hyperswap_path:
+        if hyperswap_path and DEFAULT_SWAP_MODEL == "hyperswap":
             import onnxruntime
 
             self.hyperswap = onnxruntime.InferenceSession(
@@ -358,6 +369,8 @@ class SwapEngine:
         sharpness_before = round(self.sharpness(last_swapped), 1)
         sharpness_after = sharpness_before
         seed_frame = last_swapped
+        if not SEED_FINISH:
+            return seed_frame, enhance_ms, enhanced, sharpness_before, sharpness_after
         if self.enhancer is not None and sharpness_before < ENHANCE_MAX_SHARPNESS:
             enhance_started = time.perf_counter()
             seed_frame = self.enhance_frame(last_swapped)
@@ -405,11 +418,11 @@ class SwapEngine:
             raise ValueError("the clip had no frames")
         return frame
 
-    def swap_tail(self, video_path: str, source_face) -> tuple[dict[str, Any], bytes]:
+    def swap_tail(self, video_path: str, source_face, restore: bool = RESTORE_FRAMES) -> tuple[dict[str, Any], bytes]:
         started = time.perf_counter()
         frame = self.read_tail_frame(video_path)
         faces = self.detector.get(frame)
-        swapped = self.swap_frame(frame, source_face, faces)
+        swapped = self.swap_frame(frame, source_face, faces, restore=restore)
         swap_ms = int((time.perf_counter() - started) * 1000)
         seed_frame, enhance_ms, enhanced, sharpness_before, sharpness_after = self.finish_seed(swapped)
         stats = {
@@ -458,6 +471,8 @@ class SwapEngine:
         model: str = DEFAULT_SWAP_MODEL,
         restore: bool = True,
     ):
+        import cv2
+
         out = frame
         for face in faces:
             started = time.perf_counter()
@@ -469,6 +484,9 @@ class SwapEngine:
                 swapper = self.swapper_fp16 if model == "inswapper_fp16" and self.swapper_fp16 is not None else self.swapper
                 # insightface's own paste_back blends the whole frame in float; paste_patch touches only the face box.
                 patch, matrix = swapper.get(out, face, source_face, paste_back=False)
+            size = patch.shape[0]
+            original = cv2.warpAffine(frame, matrix, (size, size), borderMode=cv2.BORDER_REPLICATE)
+            patch = match_patch_color(patch, original, face_ellipse_mask(size))
             out = paste_patch(out, patch, matrix)
             swapped_at = time.perf_counter()
             if restore and self.restorer is not None:
@@ -565,13 +583,28 @@ class SwapEngine:
                         drain_one()
 
                 submitted = 0
-                if detect_every <= 1:
+                if detect_every <= 1 and not KPS_SMOOTH:
                     while submitted < MAX_CLIP_FRAMES:
                         ok, frame = capture.read()
                         if not ok:
                             break
                         emit(frame, None)
                         submitted += 1
+                elif detect_every <= 1:
+                    # Decode and detect the whole clip first (MAX_CLIP_FRAMES bounds memory) so landmarks can be smoothed across neighbouring frames before any swap.
+                    decoded = []
+                    detections = []
+                    while len(decoded) < MAX_CLIP_FRAMES:
+                        ok, frame = capture.read()
+                        if not ok:
+                            break
+                        decoded.append(frame)
+                        detections.append(pool.submit(detect, frame))
+                    all_faces = smooth_faces([future.result() for future in detections])
+                    for index, faces in enumerate(all_faces):
+                        emit(decoded[index], faces)
+                        decoded[index] = None
+                    submitted = len(all_faces)
                 else:
                     # Detection on every Nth frame only, landmarks interpolated between; a window whose face moved too far or changed count is detected frame by frame instead.
                     ok, frame = capture.read()
@@ -627,7 +660,7 @@ class SwapEngine:
             sharpness_before=sharpness_before,
             sharpness_after=sharpness_after,
         )
-        return stats, self.encode_jpeg(seed_frame)
+        return stats, self.encode_png(seed_frame)
 
 
 # A face that moves further than this share of its eye distance between two detected frames is detected frame by frame instead.
@@ -664,17 +697,95 @@ def interpolate_faces(start_faces, end_faces, count: int):
     return faces
 
 
+# Zero-phase EMA over runs of single-face frames; a run breaks where the count changes or the face jumps further than INTERPOLATE_MAX_SHIFT of its eye distance.
+def smooth_faces(faces_per_frame, alpha: float = KPS_SMOOTH_ALPHA):
+    import numpy as np
+    from insightface.app.common import Face
+
+    smoothed = list(faces_per_frame)
+    runs: list[list[int]] = []
+    for index, faces in enumerate(faces_per_frame):
+        if faces is None or len(faces) != 1:
+            continue
+        if runs and runs[-1][-1] == index - 1:
+            previous, current = faces_per_frame[index - 1][0], faces[0]
+            eye_distance = float(np.linalg.norm(previous.kps[1] - previous.kps[0]))
+            shift = float(np.linalg.norm(current.kps - previous.kps, axis=1).max())
+            if shift <= INTERPOLATE_MAX_SHIFT * eye_distance:
+                runs[-1].append(index)
+                continue
+        runs.append([index])
+    for run in runs:
+        if len(run) < 2:
+            continue
+        kps = ema_zero_phase(np.stack([faces_per_frame[i][0].kps for i in run]).astype(np.float32), alpha)
+        bbox = ema_zero_phase(np.stack([faces_per_frame[i][0].bbox for i in run]).astype(np.float32), alpha)
+        for offset, index in enumerate(run):
+            smoothed[index] = [
+                Face(bbox=bbox[offset], kps=kps[offset], det_score=faces_per_frame[index][0].det_score)
+            ]
+    return smoothed
+
+
+def ema_zero_phase(values, alpha: float):
+    forward = values.copy()
+    for index in range(1, len(forward)):
+        forward[index] = alpha * values[index] + (1.0 - alpha) * forward[index - 1]
+    backward = forward.copy()
+    for index in range(len(backward) - 2, -1, -1):
+        backward[index] = alpha * forward[index] + (1.0 - alpha) * backward[index + 1]
+    return backward
+
+
+# Soft ellipse over the face in an aligned crop; inset by the feather so it reaches ~0 before the crop edge and never leaves a seam.
+@lru_cache(maxsize=8)
+def face_ellipse_mask(size: int):
+    import cv2
+    import numpy as np
+
+    feather = max(size / 12.0, 2.0)
+    ys, xs = np.ogrid[:size, :size]
+    inside = ((xs + 0.5 - 0.5 * size) / (0.42 * size)) ** 2 + ((ys + 0.5 - 0.55 * size) / (0.5 * size)) ** 2 <= 1.0
+    mask = inside.astype(np.float32)
+    inset = int(round(feather))
+    mask[:inset, :] = 0.0
+    mask[-inset:, :] = 0.0
+    mask[:, :inset] = 0.0
+    mask[:, -inset:] = 0.0
+    mask = cv2.GaussianBlur(mask, (0, 0), feather / 3)
+    mask.setflags(write=False)
+    return mask
+
+
+# Reinhard LAB transfer of the swapped patch's moments onto the original crop's inside the face mask, then blended back by PATCH_COLOR_MATCH_BLEND.
+def match_patch_color(patch, original, mask, blend: float = PATCH_COLOR_MATCH_BLEND):
+    import cv2
+    import numpy as np
+
+    region = (mask > 0.5).astype(np.uint8)
+    if not region.any():
+        return patch
+    patch_lab_u8 = cv2.cvtColor(patch, cv2.COLOR_BGR2LAB)
+    patch_mean, patch_std = (v.reshape(3).astype(np.float32) for v in cv2.meanStdDev(patch_lab_u8, mask=region))
+    original_mean, original_std = (
+        v.reshape(3).astype(np.float32) for v in cv2.meanStdDev(cv2.cvtColor(original, cv2.COLOR_BGR2LAB), mask=region)
+    )
+    # A flat channel (std ~0) keeps its spread and only shifts its mean.
+    scale = np.where(patch_std < 1e-3, 1.0, original_std / np.maximum(patch_std, 1e-3)).astype(np.float32)
+    patch_lab = patch_lab_u8.astype(np.float32)
+    matched = np.clip((patch_lab - patch_mean) * scale + original_mean, 0, 255).astype(np.uint8)
+    matched = cv2.cvtColor(matched, cv2.COLOR_LAB2BGR)
+    return cv2.addWeighted(matched, blend, patch, 1.0 - blend, 0)
+
+
 def paste_patch(frame, patch, matrix):
-    # `matrix` maps frame -> patch. Blends the warped patch back with a feathered box mask, only
+    # `matrix` maps frame -> patch. Blends the warped patch back with a feathered elliptical face mask, only
     # inside the frame region the patch lands on; the full-frame float blend was most of the per-frame cost.
     import cv2
     import numpy as np
 
     size = patch.shape[0]
-    margin = max(size // 10, 4)
-    mask = np.zeros((size, size), dtype=np.float32)
-    mask[margin:-margin, margin:-margin] = 1.0
-    mask = cv2.GaussianBlur(mask, (0, 0), margin / 2)
+    mask = face_ellipse_mask(size)
 
     inverse = cv2.invertAffineTransform(matrix)
     height, width = frame.shape[:2]
@@ -792,7 +903,7 @@ def last_frame_from_url(
         download_ms = int((time.perf_counter() - started) * 1000)
         frame = engine.read_tail_frame(source_path)
     tone_locked = False
-    if tone_reference_url:
+    if tone_reference_url and SEED_TONE_LOCK:
         # Tone is a quality feature, not a guard: a reference that fails to load leaves the seed as rendered.
         try:
             frame = engine.tone_lock(frame, tone_reference_stats(engine, tone_reference_url))
@@ -839,9 +950,12 @@ def swap_clip_from_bytes(
     model: str = DEFAULT_SWAP_MODEL,
     options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    # Response: base64 mp4 + base64 JPEG of the swapped last frame (the next clip's seed) + stats.
+    # Response: base64 mp4 + base64 PNG of the swapped last frame (the next clip's seed) + stats.
     if model not in SWAP_MODELS:
         raise ValueError(f"unknown swap model {model!r}")
+    # HyperSwap is only loaded when it is the default; fail instead of silently swapping with inswapper under its name.
+    if model == "hyperswap" and engine.hyperswap is None:
+        raise ValueError("hyperswap is not loaded on this engine")
     source_face = engine.reference_face(reference_data_uri)
     with tempfile.TemporaryDirectory() as directory:
         source_path = os.path.join(directory, "source.mp4")
@@ -854,6 +968,7 @@ def swap_clip_from_bytes(
     return {
         "video_base64": base64.b64encode(swapped).decode("ascii"),
         "last_frame_base64": base64.b64encode(last_frame).decode("ascii"),
+        "last_frame_format": "png",
         "stats": asdict(stats),
     }
 
@@ -880,9 +995,10 @@ def profile_networks(engine: SwapEngine, video: bytes, reference_data_uri: str, 
     result = {
         "detect_ms": timed(lambda: engine.detector.get(frame)),
         "inswapper_ms": timed(lambda: engine.swapper.get(frame, face, source_face, paste_back=False)),
-        "restore_ms": timed(lambda: engine.restore_face(frame, face, source_face)),
         "full_frame_ms": timed(lambda: engine.swap_frame(frame, source_face, engine.detector.get(frame))),
     }
+    if engine.restorer is not None:
+        result["restore_ms"] = timed(lambda: engine.restore_face(frame, face, source_face))
     if engine.hyperswap is not None:
         result["hyperswap_ms"] = timed(lambda: engine.hyperswap_patch(frame, face, source_face))
     return result

@@ -69,8 +69,8 @@ class LastFrameRequest(BaseModel):
     # Detection, paste-back and the x264 encode are CPU work; Modal's default fractional core starves them.
     cpu=8,
     secrets=[modal.Secret.from_name("ai-video-swap-token")],
-    # Covers a short gap between sessions; a cold container measured ~11 s to ready (four in parallel), inside the upload-to-first-swap window.
-    scaledown_window=300,
+    # Swaps arrive every few seconds during a call, so a minute without one means the call ended; shorter idle billing after each session, and the upload warm-up covers the next cold start (~11 s).
+    scaledown_window=60,
     # A join burst needs up to 4 real swaps in flight; one per container beats 3 sharing one GPU.
     max_containers=4,
     # Prod showed 8 to 15 s of queueing per clip when a fourth swap arrived and its container was still starting; keep two warm spares while the app has traffic.
