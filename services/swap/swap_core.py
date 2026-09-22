@@ -218,6 +218,68 @@ class SwapEngine:
         blended = cv2.addWeighted(restored, RESTORE_BLEND, crop, 1.0 - RESTORE_BLEND, 0)
         return paste_patch(frame, blended, matrix)
 
+    # The next clip's seed: the swapped last frame, restored only when the chain has already blurred it.
+    def finish_seed(self, last_swapped):
+        enhance_ms = 0
+        enhanced = False
+        sharpness_before = round(self.sharpness(last_swapped), 1)
+        sharpness_after = sharpness_before
+        seed_frame = last_swapped
+        if self.enhancer is not None and sharpness_before < ENHANCE_MAX_SHARPNESS:
+            enhance_started = time.perf_counter()
+            seed_frame = self.enhance_frame(last_swapped)
+            enhance_ms = int((time.perf_counter() - enhance_started) * 1000)
+            enhanced = True
+            sharpness_after = round(self.sharpness(seed_frame), 1)
+        return seed_frame, enhance_ms, enhanced, sharpness_before, sharpness_after
+
+    # Only the clip's last frame, swapped and finished the same way swap_clip finishes it, so the next clip can render while the full swap is still queued. Decodes just the tail with ffmpeg instead of walking the clip.
+    def swap_tail(self, video_path: str, source_face) -> tuple[dict[str, Any], bytes]:
+        import cv2
+        import numpy as np
+
+        started = time.perf_counter()
+        capture = cv2.VideoCapture(video_path)
+        if not capture.isOpened():
+            raise ValueError("could not open the clip")
+        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        capture.release()
+        frame_bytes = width * height * 3
+        frame = None
+        # -sseof is relative to the container end; a video track shorter than the audio can leave the window empty.
+        for tail_sec in ("0.3", "1.5"):
+            raw = subprocess.run(
+                [
+                    "ffmpeg", "-loglevel", "error", "-sseof", f"-{tail_sec}", "-i", video_path, "-an",
+                    "-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1",
+                ],
+                check=True,
+                capture_output=True,
+            ).stdout
+            if len(raw) >= frame_bytes:
+                frame_count = len(raw) // frame_bytes
+                last = np.frombuffer(raw[(frame_count - 1) * frame_bytes : frame_count * frame_bytes], dtype=np.uint8)
+                frame = last.reshape((height, width, 3)).copy()
+                break
+        if frame is None:
+            raise ValueError("the clip had no frames")
+        faces = self.detector.get(frame)
+        swapped = self.swap_frame(frame, source_face, faces)
+        swap_ms = int((time.perf_counter() - started) * 1000)
+        seed_frame, enhance_ms, enhanced, sharpness_before, sharpness_after = self.finish_seed(swapped)
+        stats = {
+            "swap_ms": swap_ms,
+            "had_face": bool(faces),
+            "similarity_before": self.similarity(frame, source_face),
+            "similarity_after": self.similarity(swapped, source_face),
+            "enhanced": enhanced,
+            "enhance_ms": enhance_ms,
+            "sharpness_before": sharpness_before,
+            "sharpness_after": sharpness_after,
+        }
+        return stats, self.encode_jpeg(seed_frame)
+
     def swap_frame(self, frame, source_face, faces, timings: dict[str, float] | None = None):
         out = frame
         for face in faces:
@@ -322,17 +384,7 @@ class SwapEngine:
             raise ValueError("the clip had no frames")
 
         swap_ms = int((time.perf_counter() - started) * 1000)
-        seed_frame = last_swapped
-        enhance_ms = 0
-        enhanced = False
-        sharpness_before = round(self.sharpness(last_swapped), 1)
-        sharpness_after = sharpness_before
-        if self.enhancer is not None and sharpness_before < ENHANCE_MAX_SHARPNESS:
-            enhance_started = time.perf_counter()
-            seed_frame = self.enhance_frame(last_swapped)
-            enhance_ms = int((time.perf_counter() - enhance_started) * 1000)
-            enhanced = True
-            sharpness_after = round(self.sharpness(seed_frame), 1)
+        seed_frame, enhance_ms, enhanced, sharpness_before, sharpness_after = self.finish_seed(last_swapped)
         stats = ClipSwapStats(
             frames=frames,
             frames_with_face=frames_with_face,
@@ -426,6 +478,38 @@ def swap_clip_from_url(
         flush=True,
     )
     return result
+
+
+def swap_tail_from_url(
+    engine: SwapEngine, video_url: str, reference_data_uri: str
+) -> dict[str, Any]:
+    source_face = engine.reference_face(reference_data_uri)
+    with tempfile.TemporaryDirectory() as directory:
+        source_path = os.path.join(directory, "source.mp4")
+        started = time.perf_counter()
+        download(video_url, source_path)
+        download_ms = int((time.perf_counter() - started) * 1000)
+        stats, seed_jpeg = engine.swap_tail(source_path, source_face)
+    stats["download_ms"] = download_ms
+    print(
+        f"swapTail: download_ms={download_ms} swap_ms={stats['swap_ms']} had_face={stats['had_face']} "
+        f"similarity={stats['similarity_before']}->{stats['similarity_after']} "
+        f"enhance_ms={stats['enhance_ms']} sharpness={stats['sharpness_before']}->{stats['sharpness_after']}",
+        flush=True,
+    )
+    return {"last_frame_base64": base64.b64encode(seed_jpeg).decode("ascii"), "stats": stats}
+
+
+def swap_tail_from_bytes(
+    engine: SwapEngine, video: bytes, reference_data_uri: str
+) -> dict[str, Any]:
+    source_face = engine.reference_face(reference_data_uri)
+    with tempfile.TemporaryDirectory() as directory:
+        source_path = os.path.join(directory, "source.mp4")
+        with open(source_path, "wb") as file:
+            file.write(video)
+        stats, seed_jpeg = engine.swap_tail(source_path, source_face)
+    return {"last_frame_base64": base64.b64encode(seed_jpeg).decode("ascii"), "stats": stats}
 
 
 def swap_clip_from_bytes(

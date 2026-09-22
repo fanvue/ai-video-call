@@ -158,11 +158,13 @@ Docs
 
 ## Rolling back
 
-`stable-v1` tags the last build the team signed off on before the seamless-playback round. To
-return the working tree to it without rewriting history:
+`stable-v1` tags the last build the team signed off on before the seamless-playback round, and
+`stable-v2` the one before the two-phase swap round (filler hold, enhancer gate, warm Modal
+container, swap as the default mode). To return the working tree to one of them without
+rewriting history:
 
 ```bash
-git checkout stable-v1 -- . && git commit -m "Roll back to stable-v1"
+git checkout stable-v2 -- . && git commit -m "Roll back to stable-v2"
 ```
 
 then deploy as usual (`npx vercel --prod --yes` from a clean detached worktree of `HEAD`).

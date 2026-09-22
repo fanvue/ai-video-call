@@ -132,14 +132,26 @@ Invariants:
 
 ## Request latency policy
 
-1. Immediately: the reply job is submitted from the current anchor, and the fan sees
-   "typing…" in chat. The reply text lands at `typingLeadSec` into the reply clip.
+1. Immediately: the reply job is submitted from the current anchor. She is shown typing 3 s
+   after the fan's message no matter what is rendering (the greeting, a swap, a queued filler),
+   and earlier if the reply job starts sooner. The reply text lands at `typingLeadSec` into the
+   reply clip.
 2. Idle loops already buffered keep playing until the reply clip is ready; then it plays at the
    next boundary. Idle renders in flight for the old anchor are left to finish and discarded
    (cost logged) once the anchor changes.
 3. Follow-up beats chain after the reply. The last beat's last frame is the new anchor; she
    stays wherever the request left her (a `rest` beat is scheduled only after
    `REST_AFTER_IDLE_MS` of inactivity, and only puts down a prop / frees her hands).
+4. Swap mode (the default) swaps in two phases (`LIVE_TUNABLES.SWAP_DEFER_CLIP`). The render
+   call swaps only the clip's last frame (`/swapTail`, under a second of GPU) and returns the
+   clip `pending` with that frame as the next seed, so the chain advances after render + tail
+   instead of render + a 6 to 7 s full swap. The client then finishes the clip through
+   `/api/live/swap`; the clip is held out of playback until its swap lands (or fails, in which
+   case it plays unswapped with a `failed` report). The pipeline emits `clipRendered` when the
+   canon advances and `clipReady` when the clip is playable; fillers stay held while a chain
+   swap is pending and a playable idle exists. Expected reply time from a warm container is
+   render 3 s + tail 2 s + swap 7 s + rehost, about 12 s, plus up to `CUT_IN_WAIT_MAX_SEC` for
+   the boundary. A reply sent during the join still waits for the greeting render first.
 
 ## Wardrobe and props
 

@@ -1,6 +1,7 @@
 // Thin fetch wrappers for the server routes. See docs/LIVE_ENGINE.md.
 import {
   clipResultSchema,
+  clipSwapReportSchema,
   type ClipRequest,
   type ClipResult,
   type CreatorProfile,
@@ -10,6 +11,7 @@ import {
   type TranscriptEntry,
 } from "@/lib/live/contract";
 import type { ReferenceUploadResult } from "@/lib/live/client/useLiveSession";
+import { z } from "zod";
 
 const readFileAsBase64 = (file: File): Promise<string> =>
   new Promise((resolve, reject) => {
@@ -40,6 +42,26 @@ const postJson = async <T>(url: string, body: unknown): Promise<T> => {
 export const renderClip = async (req: ClipRequest): Promise<ClipResult> => {
   const raw = await postJson<unknown>("/api/live/clip", req);
   return clipResultSchema.parse(raw);
+};
+
+const swapResultSchema = z.object({
+  videoUrl: z.string().min(1),
+  costUsd: z.number().min(0),
+  report: clipSwapReportSchema,
+});
+export type SwapRenderedClipResult = z.infer<typeof swapResultSchema>;
+
+// Second phase of a swap-mode clip: finishes the face swap of a clip that came back with swap.status "pending".
+export const swapRenderedClip = async (
+  result: ClipResult,
+  referenceImageUrl: string,
+): Promise<SwapRenderedClipResult> => {
+  const raw = await postJson<unknown>("/api/live/swap", {
+    videoUrl: result.videoUrl,
+    referenceImageUrl,
+    jobKind: result.jobKind,
+  });
+  return swapResultSchema.parse(raw);
 };
 
 export type UpscaleSeedResult = { url: string | null; costUsd: number };

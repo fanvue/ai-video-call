@@ -54,7 +54,7 @@ export const SetupScreen = ({
   const [voiceExperimental, setVoiceExperimental] = useState(false);
   // Reference-to-video (single anchor image, periodic identity correction) held up better in
   // testing than the image-to-video/guard-repair chain, so it's the default over turbo or director.
-  const [backend, setBackend] = useState<RenderBackend>("reference");
+  const [backend, setBackend] = useState<RenderBackend>("swap");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Staging is the slow part of the join (20 to 35 s), so it runs here and the call starts only once it has settled.
@@ -192,7 +192,7 @@ export const SetupScreen = ({
               {(
                 [
                   { value: "turbo", label: "Turbo" },
-                  { value: "reference", label: "Reference (recommended)" },
+                  { value: "reference", label: "Reference" },
                   {
                     value: "director",
                     label: "Director (SFW only, live stream, alpha)",
@@ -204,7 +204,7 @@ export const SetupScreen = ({
                   {
                     value: "swap",
                     label:
-                      "Swap (self-hosted identity lock per clip over Turbo, alpha)",
+                      "Swap (recommended: identity lock per clip over Turbo)",
                   },
                 ] as const
               ).map((option) => (

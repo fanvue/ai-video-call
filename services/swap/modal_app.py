@@ -13,6 +13,8 @@ from swap_core import (
     bearer_token,
     swap_clip_from_bytes,
     swap_clip_from_url,
+    swap_tail_from_bytes,
+    swap_tail_from_url,
     token_allowed,
 )
 
@@ -80,6 +82,10 @@ class SwapService:
     def swap_clip_bytes(self, video: bytes, reference_image: str) -> dict:
         return swap_clip_from_bytes(self.engine, video, reference_image)
 
+    @modal.method()
+    def swap_tail_bytes(self, video: bytes, reference_image: str) -> dict:
+        return swap_tail_from_bytes(self.engine, video, reference_image)
+
     @modal.asgi_app()
     def web(self):
         api = FastAPI()
@@ -88,6 +94,17 @@ class SwapService:
         @api.get("/health")
         def health() -> dict[str, str]:
             return {"status": "ok"}
+
+        @api.post("/swapTail")
+        def swap_tail(
+            body: SwapClipRequest, authorization: str | None = Header(default=None)
+        ) -> dict:
+            if not token_allowed(bearer_token(authorization)):
+                raise HTTPException(status_code=403, detail="unauthorized")
+            try:
+                return swap_tail_from_url(engine, body.video_url, body.reference_image)
+            except ValueError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
 
         # Sync handler on purpose: FastAPI runs it in a worker thread so the GPU loop never blocks the event loop.
         @api.post("/swapClip")

@@ -269,7 +269,8 @@ export type ObservedState = z.infer<typeof observedStateSchema>;
 
 // Swap backend only: what the self-hosted swap did to this clip. "failed" means the unswapped turbo clip is playing.
 export const clipSwapReportSchema = z.object({
-  status: z.enum(["swapped", "failed"]),
+  // "pending": the clip is still the unswapped render; the client finishes the swap before playing it (see LIVE_ENGINE.md, two-phase swap).
+  status: z.enum(["swapped", "failed", "pending"]),
   swapMs: z.number().int().min(0),
   frames: z.number().int().min(0),
   framesWithFace: z.number().int().min(0),
@@ -344,6 +345,8 @@ export const LIVE_TUNABLES = {
   SWAP_IDLE_MAX_INFLIGHT: 3,
   // Swap mode chain clips run the maximum length: the next clip seeds from this one's last frame so it cannot start early, and it takes 10 to 17s to make.
   SWAP_ACTION_CLIP_SEC: 15,
+  // Two-phase swap: the server swaps only the clip's last frame (about 1.5 s) so the next chain clip renders at once, and the client swaps the full clip in parallel before playing it. Off, the render call waits for the whole swap (about 7 s) before the chain can move.
+  SWAP_DEFER_CLIP: true,
   // Next idle length = measured idle production time + this headroom, clamped to the clip bounds.
   IDLE_HEADROOM_SEC: 1,
   // A chain job (reply/beat) gets 3 attempts total; idle stays at 2 (1 retry).

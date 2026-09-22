@@ -6,6 +6,7 @@ import {
   type ClipJob,
   type ClipRequest,
   type ClipResult,
+  type ClipSwapReport,
   type LiveSessionSnapshot,
   type LiveState,
   type RenderBackend,
@@ -13,7 +14,10 @@ import {
 } from "@/lib/live/contract";
 
 export type PipelineEvent =
+  // The clip is playable. A swap-mode clip fires this once its full swap has landed.
   | { type: "clipReady"; result: ClipResult; lane: "idle" | "chained" }
+  // A swap-mode clip rendered and (for a chain clip) its tail is the new seed, but the clip itself is still being swapped; canon advances now, playback waits for clipReady.
+  | { type: "clipRendered"; result: ClipResult; lane: "idle" | "chained" }
   | { type: "clipDiscarded"; result: ClipResult; costUsd: number }
   | { type: "bufferEmpty" }
   | { type: "bufferRecovered" }
@@ -40,6 +44,10 @@ export type ClipPipelineOptions = {
   ) => Promise<{ url: string | null; costUsd: number }>;
   // Whether the next chain job should include the dual identity reference (see consumeIdentityReferenceDue).
   needsIdentityReference?: () => boolean;
+  // Swap mode: finishes a clip whose swap.status is "pending" (the full face swap) before it may play.
+  finalizeSwap?: (
+    result: ClipResult,
+  ) => Promise<{ videoUrl: string; costUsd: number; report: ClipSwapReport }>;
 };
 
 export type SnapshotSource = () => LiveSessionSnapshot;
@@ -78,6 +86,7 @@ export class ClipPipeline {
   private readonly abandonDependents?: (job: ClipJob) => void;
   private readonly upscaleSeed?: ClipPipelineOptions["upscaleSeed"];
   private readonly needsIdentityReference?: () => boolean;
+  private readonly finalizeSwap?: ClipPipelineOptions["finalizeSwap"];
   private backend: RenderBackend;
   private speechMode: SpeechMode;
 
@@ -105,6 +114,9 @@ export class ClipPipeline {
   // Seed for the next chain job once the current one resolves; null = chain caught up with anchor.
   private chainTail: AnchorPoint | null = null;
   private chainedReady: ClipResult[] = [];
+  // Clips still having their full swap finished: they hold their queue position but are not playable yet.
+  private pendingSwapClipIds = new Set<string>();
+  private pendingChainSwaps = 0;
   // First settled frame per look (the upload for the initial one); a finished plan re-seeds from it, so generated descendants never stack deeper than one plan.
   private trustedSeedByLook = new Map<string, string>();
   // Drifted tail frame -> the trusted frame it was re-seeded to; idles rendered from the trusted frame must stay playable after the tail's own clip.
@@ -128,6 +140,7 @@ export class ClipPipeline {
     this.abandonDependents = options.abandonDependents;
     this.upscaleSeed = options.upscaleSeed;
     this.needsIdentityReference = options.needsIdentityReference;
+    this.finalizeSwap = options.finalizeSwap;
     this.backend = options.backend ?? "turbo";
     this.speechMode = options.speechMode ?? "text";
   }
@@ -166,10 +179,67 @@ export class ClipPipeline {
   }
 
   getReadyDurationsSec(): number {
-    return [...this.idleReady, ...this.chainedReady].reduce(
-      (sum, clip) => sum + clip.durationSec,
-      0,
-    );
+    return [...this.idleReady, ...this.chainedReady]
+      .filter((clip) => this.isPlayable(clip))
+      .reduce((sum, clip) => sum + clip.durationSec, 0);
+  }
+
+  private isPlayable(clip: ClipResult): boolean {
+    return !this.pendingSwapClipIds.has(clip.clipId);
+  }
+
+  // Two-phase swap: the result is on the shelf with its tail as the seed, so the chain and fillers move on now; the clip becomes playable when the full swap lands, and plays unswapped if that fails.
+  private beginPendingSwap(
+    result: ClipResult,
+    lane: "idle" | "chained",
+  ): boolean {
+    const finalizeSwap = this.finalizeSwap;
+    if (result.swap?.status !== "pending" || !finalizeSwap) {
+      return false;
+    }
+    this.pendingSwapClipIds.add(result.clipId);
+    if (lane === "chained") {
+      this.pendingChainSwaps += 1;
+    }
+    this.onEvent({ type: "clipRendered", result, lane });
+    finalizeSwap(result)
+      .then(
+        (swapped) => {
+          result.videoUrl = swapped.videoUrl;
+          result.swap = swapped.report;
+          result.costUsd += swapped.costUsd;
+          this.addCost(swapped.costUsd);
+        },
+        (error: unknown) => {
+          result.swap = {
+            status: "failed",
+            swapMs: 0,
+            frames: 0,
+            framesWithFace: 0,
+            msPerFrame: 0,
+            similarityBefore: null,
+            similarityAfter: null,
+            restored: false,
+            reason: (error instanceof Error
+              ? error.message
+              : String(error)
+            ).slice(0, 300),
+          };
+        },
+      )
+      .then(() => {
+        if (this.disposed) {
+          return;
+        }
+        this.pendingSwapClipIds.delete(result.clipId);
+        if (lane === "chained") {
+          this.pendingChainSwaps -= 1;
+        }
+        this.onEvent({ type: "clipReady", result, lane });
+        this.announceIfRecovered();
+        this.fillIdleStockpile();
+      });
+    return true;
   }
 
   // Kicks off the chain with the initial (greeting) job and wires the sources for later steps.
@@ -206,7 +276,7 @@ export class ClipPipeline {
     const key = lookKey((this.chainTail ?? this.anchor).state);
     for (let i = this.idleReady.length - 1; i >= 0; i -= 1) {
       const clip = this.idleReady[i];
-      if (clip && lookKey(clip.state) === key) {
+      if (clip && this.isPlayable(clip) && lookKey(clip.state) === key) {
         this.idleReady.splice(i, 1);
         this.fillIdleStockpile();
         return clip;
@@ -262,6 +332,10 @@ export class ClipPipeline {
 
   private pickNext(): ClipResult | null {
     const chained = this.chainedReady[0];
+    if (chained && !this.isPlayable(chained)) {
+      // Order is canon: a later clip must not jump ahead of one still being swapped.
+      return null;
+    }
     if (chained) {
       this.chainedReady.shift();
       this.firstChainClipPlayed = true;
@@ -276,16 +350,19 @@ export class ClipPipeline {
     // An idle rendered from the exact cursor frame is seamless; one from its trusted alias is a small cut, so it is the fallback.
     const exactIndex = this.idleReady.findIndex(
       (clip) =>
+        this.isPlayable(clip) &&
         this.idleAnchorByClipId.get(clip.clipId) === this.playoutCursorFrameUrl,
     );
     const idleIndex =
       exactIndex !== -1
         ? exactIndex
-        : this.idleReady.findIndex((clip) =>
-            this.sameSeed(
-              this.idleAnchorByClipId.get(clip.clipId) ?? "",
-              this.playoutCursorFrameUrl,
-            ),
+        : this.idleReady.findIndex(
+            (clip) =>
+              this.isPlayable(clip) &&
+              this.sameSeed(
+                this.idleAnchorByClipId.get(clip.clipId) ?? "",
+                this.playoutCursorFrameUrl,
+              ),
           );
     if (idleIndex !== -1) {
       const [clip] = this.idleReady.splice(idleIndex, 1);
@@ -297,13 +374,16 @@ export class ClipPipeline {
 
   private hasPlayable(): boolean {
     return (
-      this.chainedReady.length > 0 ||
+      (this.chainedReady[0] !== undefined &&
+        this.isPlayable(this.chainedReady[0])) ||
       (this.firstChainClipPlayed &&
-        this.idleReady.some((clip) =>
-          this.sameSeed(
-            this.idleAnchorByClipId.get(clip.clipId) ?? "",
-            this.playoutCursorFrameUrl,
-          ),
+        this.idleReady.some(
+          (clip) =>
+            this.isPlayable(clip) &&
+            this.sameSeed(
+              this.idleAnchorByClipId.get(clip.clipId) ?? "",
+              this.playoutCursorFrameUrl,
+            ),
         ))
     );
   }
@@ -499,7 +579,9 @@ export class ClipPipeline {
     this.chainTail = { frameUrl: result.seedFrameUrl, state: result.state };
     // Bridge idles from the new tail can start rendering right away, alongside the next beat.
     this.fillIdleStockpile();
-    this.onEvent({ type: "clipReady", result, lane: "chained" });
+    if (!this.beginPendingSwap(result, "chained")) {
+      this.onEvent({ type: "clipReady", result, lane: "chained" });
+    }
     this.addCost(result.costUsd);
     this.announceIfRecovered();
     this.tryAdvanceChain();
@@ -584,8 +666,8 @@ export class ClipPipeline {
     // The swap service takes one clip at a time (6 to 7 s each), and prod showed replies queueing 7 to 15 s behind fillers submitted while they rendered. While a request is in flight, fillers wait unless the shelf is bare.
     if (
       this.backend === "swap" &&
-      this.chainInflight &&
-      this.idleReady.length > 0
+      (this.chainInflight || this.pendingChainSwaps > 0) &&
+      this.idleReady.some((clip) => this.isPlayable(clip))
     ) {
       return;
     }
@@ -678,7 +760,9 @@ export class ClipPipeline {
     // drops idle results), so it's safe to play even though its own end frame has drifted.
     this.idleAnchorByClipId.set(result.clipId, anchorAtSubmit.frameUrl);
     this.idleReady.push(result);
-    this.onEvent({ type: "clipReady", result, lane: "idle" });
+    if (!this.beginPendingSwap(result, "idle")) {
+      this.onEvent({ type: "clipReady", result, lane: "idle" });
+    }
     this.addCost(result.costUsd);
     this.announceIfRecovered();
     this.fillIdleStockpile();

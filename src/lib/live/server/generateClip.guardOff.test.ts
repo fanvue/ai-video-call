@@ -5,6 +5,15 @@ import {
   type LiveSessionSnapshot,
 } from "../contract";
 
+// The swap tests here cover the inline path (render waits for the whole swap); generateClip.deferredSwap.test.ts covers the two-phase default.
+vi.mock("../contract", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../contract")>();
+  return {
+    ...actual,
+    LIVE_TUNABLES: { ...actual.LIVE_TUNABLES, SWAP_DEFER_CLIP: false },
+  };
+});
+
 const render = vi.fn();
 const renderBackendFor = vi.fn(() => ({ render, supportsEndFrame: true }));
 vi.mock("./renderClip", () => ({
@@ -30,6 +39,8 @@ vi.mock("./swapClip", () => ({
   SWAP_BUDGET_MS: 150_000,
   SWAP_GREETING_BUDGET_MS: 20_000,
   swapClip: (...args: unknown[]) => swapClip(...args),
+  swapTail: vi.fn(),
+  pendingSwapReport: () => ({ status: "pending" }),
   failedSwapReport: (swapMs: number, error: Error) => ({
     status: "failed",
     swapMs,

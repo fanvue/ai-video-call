@@ -108,6 +108,11 @@ export type UseLiveSessionDeps = {
   fetchLucyToken: () => Promise<string>;
   // Swap mode only; starts the GPU container before the first clip needs it.
   warmSwap: () => Promise<void>;
+  // Swap mode only: second phase of a clip that came back with swap.status "pending".
+  swapRenderedClip?: (
+    result: ClipResult,
+    referenceImageUrl: string,
+  ) => Promise<{ videoUrl: string; costUsd: number; report: ClipSwapReport }>;
   // Optional: playback and connect events for the server log; tests leave it out.
   reportTelemetry?: (
     event: string,
@@ -299,6 +304,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   const speechModeRef = useRef<SpeechMode>("text");
   const tickIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const greetingPlayedRef = useRef(false);
+  // Clip ids whose canon already advanced on clipRendered (two-phase swap), so clipReady does not advance it twice.
+  const canonAdvancedRef = useRef(new Set<string>());
   const liveStateRef = useRef<LiveState | null>(null);
   const currentOwnerRef = useRef<QueueOwner>({ type: "studio" });
   const currentActRef = useRef<QueueStripEntry | null>(null);
@@ -698,6 +705,22 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         endRef.current();
         return;
       }
+      if (event.type === "clipRendered") {
+        // Canon and the request chip move now; playback waits for clipReady once the swap lands.
+        const rendered = event.result;
+        clipMetaRef.current.set(rendered.clipId, rendered);
+        if (event.lane === "chained" && currentRequestIdRef.current) {
+          requestIdByClipIdRef.current.set(
+            rendered.clipId,
+            currentRequestIdRef.current,
+          );
+        }
+        canonAdvancedRef.current.add(rendered.clipId);
+        director.clipCompleted(rendered, Date.now());
+        refreshRequestStatuses();
+        pipelineRef.current?.pollChain();
+        return;
+      }
       if (event.type === "chainJobStarted") {
         const job = event.job;
         const owner: QueueOwner =
@@ -756,15 +779,20 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       if (event.lane === "chained") {
         pendingTipCentsRef.current = undefined;
         // Remembered so handleClipStarted can mark this request "playing" once it's on screen.
-        if (currentRequestIdRef.current) {
+        if (
+          currentRequestIdRef.current &&
+          !requestIdByClipIdRef.current.has(result.clipId)
+        ) {
           requestIdByClipIdRef.current.set(
             result.clipId,
             currentRequestIdRef.current,
           );
         }
       }
-      // Canon advances here (for planning); the UI's displayed state follows via handleClipStarted.
-      director.clipCompleted(result, Date.now());
+      // Canon advances here (for planning); the UI's displayed state follows via handleClipStarted. A two-phase swap clip already advanced it on clipRendered.
+      if (!canonAdvancedRef.current.delete(result.clipId)) {
+        director.clipCompleted(result, Date.now());
+      }
       refreshRequestStatuses();
       if (result.reply) {
         pendingRevealRef.current = {
@@ -1234,6 +1262,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       setViewerCount(room.getViewerCount());
       setQueueStrip(EMPTY_QUEUE_STRIP);
 
+      const swapRenderedClip = deps.swapRenderedClip;
       const pipeline = new ClipPipeline({
         render: deps.renderClip,
         now: () => Date.now(),
@@ -1246,6 +1275,10 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         upscaleSeed: deps.upscaleSeed,
         needsIdentityReference: () =>
           directorRef.current?.consumeIdentityReferenceDue(Date.now()) ?? false,
+        finalizeSwap:
+          options.backend === "swap" && swapRenderedClip
+            ? (result) => swapRenderedClip(result, reference.anchorFrameUrl)
+            : undefined,
       });
       pipelineRef.current = pipeline;
       const startPipeline = () => {
@@ -1436,6 +1469,14 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       requestSentAtMsRef.current.set(entry.id, sentAtMs);
       setTranscript((prev) => [...prev, entry]);
       pipeline.onRequestEnqueued();
+      // She notices the message and starts typing about 3 s later, whatever the chain is busy with; the render of her reply follows when the lane frees.
+      if (typingDelayRef.current) {
+        clearTimeout(typingDelayRef.current);
+      }
+      typingDelayRef.current = setTimeout(() => {
+        typingDelayRef.current = null;
+        setTypingCreator(true);
+      }, 3000);
       refreshBufferDepth();
       refreshQueueStrip();
       refreshRequestStatuses();

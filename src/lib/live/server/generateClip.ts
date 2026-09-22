@@ -21,9 +21,11 @@ import { renderBackendFor } from "./renderClip";
 import { STAGE_ROOM_BY_SCENE } from "./sceneRooms";
 import {
   failedSwapReport,
+  pendingSwapReport,
   SWAP_BUDGET_MS,
   SWAP_GREETING_BUDGET_MS,
   swapClip,
+  swapTail,
 } from "./swapClip";
 import { writeCheckIn, writeReply } from "./writeReply";
 
@@ -334,7 +336,28 @@ export const generateClip = async (
   let costUsd = rendered.costUsd;
   let swapReport: ClipSwapReport | undefined;
   let swappedLastFrameUrl: string | null = null;
-  if (backend === "swap") {
+  if (backend === "swap" && LIVE_TUNABLES.SWAP_DEFER_CLIP) {
+    // Two-phase swap: only the tail is swapped here, so the chain can render its next clip about 1.5 s after this render instead of after the 7 s clip swap. The client swaps the full clip before it plays (api/live/swap). An anchored loop returns to its seed and needs no tail at all.
+    swapReport = pendingSwapReport();
+    if (!keepsSessionSeed) {
+      const tailStarted = Date.now();
+      try {
+        const tail = await swapTail({
+          videoUrl,
+          referenceImageUrl: session.anchorFrameUrl,
+          jobKind: job.kind,
+        });
+        swappedLastFrameUrl = tail.lastFrameUrl;
+        costUsd += tail.costUsd;
+      } catch (error) {
+        // The raw last frame seeds the next clip instead; the swap of the clip itself is unaffected.
+        console.warn(
+          `generateClip: swapTail failed after ${Date.now() - tailStarted}ms, seeding from the raw frame`,
+          error,
+        );
+      }
+    }
+  } else if (backend === "swap") {
     const swapStarted = Date.now();
     try {
       const swapped = await swapClip({

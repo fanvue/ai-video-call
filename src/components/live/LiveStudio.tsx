@@ -6,6 +6,7 @@ import {
   fetchLucyToken,
   renderClip,
   reportTelemetry,
+  swapRenderedClip,
   uploadReference,
   upscaleSeed,
   warmSwap,
@@ -77,6 +78,7 @@ export const LiveStudio = () => {
     composeDirectorPrompt,
     fetchLucyToken,
     warmSwap,
+    swapRenderedClip,
     reportTelemetry,
   });
   const { bindVideoA, bindVideoB } = videoRefs;
