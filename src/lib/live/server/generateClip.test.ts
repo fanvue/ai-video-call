@@ -45,6 +45,12 @@ vi.mock("./swapClip", () => ({
 
 const writeReply = vi.fn();
 const writeCheckIn = vi.fn();
+const captureRoom = vi.fn(async (): Promise<string | null> => null);
+vi.mock("./captureRoom", () => ({
+  captureRoom: (...args: unknown[]) =>
+    (captureRoom as (...a: unknown[]) => Promise<string | null>)(...args),
+}));
+
 vi.mock("./writeReply", () => ({
   writeReply: (...args: unknown[]) => writeReply(...args),
   writeCheckIn: (...args: unknown[]) => writeCheckIn(...args),

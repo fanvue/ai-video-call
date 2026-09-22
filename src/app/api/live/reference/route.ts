@@ -9,6 +9,7 @@ import {
   sceneIdSchema,
   type Wardrobe,
 } from "@/lib/live/contract";
+import { STAGE_ROOM_BY_SCENE } from "@/lib/live/server/sceneRooms";
 import { stageSeed } from "@/lib/live/server/stageSeed";
 import { swapServiceFaceCrop } from "@/lib/live/server/swapClip";
 
@@ -139,10 +140,13 @@ export async function POST(request: Request) {
     wardrobe: DEFAULT_WARDROBE,
     lookLock,
     // Staged: the still is the room, so its preset describes what the first clip shows; otherwise the photo's own background.
+    // Swap mode's greeting draws the room from STAGE_ROOM_BY_SCENE, so the chain prompts start from that same text instead of the upload's room.
     surroundings:
       staged && sceneId
         ? SURROUNDINGS_BY_SCENE[sceneId]
-        : capture?.surroundings?.slice(0, 400) || undefined,
+        : parsed.data.stage === false && sceneId
+          ? STAGE_ROOM_BY_SCENE[sceneId]
+          : capture?.surroundings?.slice(0, 400) || undefined,
     framing: staged ? "medium" : capturedFraming,
     captured,
   });

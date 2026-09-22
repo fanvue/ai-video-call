@@ -16,6 +16,7 @@ import {
   type ObservedState,
   type Pose,
 } from "../contract";
+import { captureRoom } from "./captureRoom";
 import { guardFrame } from "./frameGuard";
 import { planClip, typingLeadSecFor } from "./planClip";
 import { reconcilePose, reconcileWardrobe } from "./reconcileState";
@@ -37,6 +38,8 @@ const COLOR_ISSUE_RE = /^(top|bottom|bra|panties) color drifted/;
 
 const FRAME_BUDGET_MS = 15_000;
 const GUARD_BUDGET_MS = 8_000;
+// One vision read on the greeting; past this the greeting ships with its preset ROOM text rather than hold the first clip.
+const ROOM_CAPTURE_BUDGET_MS = 6_000;
 
 class StepTimeoutError extends Error {}
 
@@ -358,6 +361,10 @@ export const generateClip = async (
   console.log(
     `generateClip: renderMs=${renderMs} kind=${job.kind} backend=${backend} dualRef=${videoBackend.supportsIdentityReference ? useIdentityReference : "n/a"} bankedEnd=${!!bankedEndFrameUrl}`,
   );
+  // Clip-level trace: without the prompt and frame URLs a scene jump reported from a session could not be tied to a clip.
+  console.log(
+    `generateClip: trace kind=${job.kind} video=${rendered.videoUrl} seed=${session.seedFrameUrl} end=${isAnchoredLoop ? "loop" : (bankedEndFrameUrl ?? "none")} prompt=${JSON.stringify(prompt)}`,
+  );
 
   // Swap backend: the swapped clip replaces turbo's output for playback and checks.
   let videoUrl = rendered.videoUrl;
@@ -600,12 +607,27 @@ export const generateClip = async (
     }
   }
 
-  const replyOutcome = await replyTextPromise;
+  // The greeting draws its room from preset text while chain prompts carried the upload's own room, so every later clip drifted toward a room that was never on screen; ROOM is locked to what the greeting actually rendered.
+  const roomPromise =
+    greetingFromReference && seedFrameUrl !== session.seedFrameUrl
+      ? withTimeout(
+          captureRoom(seedFrameUrl),
+          ROOM_CAPTURE_BUDGET_MS,
+          "captureRoom",
+        ).catch(() => null)
+      : Promise.resolve(null);
+  const [replyOutcome, capturedRoom] = await Promise.all([
+    replyTextPromise,
+    roomPromise,
+  ]);
+  const roomState = capturedRoom
+    ? { ...expectedState, surroundings: capturedRoom }
+    : expectedState;
   // A rejected clip's dialogue never rewrites canon: only an approved clip's nextWorld is adopted.
   const finalState =
     verdict === "approved" && replyOutcome?.nextWorld
-      ? { ...expectedState, world: replyOutcome.nextWorld.slice(0, 420) }
-      : expectedState;
+      ? { ...roomState, world: replyOutcome.nextWorld.slice(0, 420) }
+      : roomState;
 
   const reply: ClipResult["reply"] = plan.fixedReplyText
     ? {

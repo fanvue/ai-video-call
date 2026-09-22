@@ -15,6 +15,7 @@ import {
   type SpeechMode,
   type Wardrobe,
 } from "../contract";
+import { correctActionTypos } from "./actionTypos";
 
 export type ClipPlan = {
   prompt: string;
@@ -101,15 +102,18 @@ const FRAMING_DESCRIPTION: Record<Body["framing"], string> = {
 };
 
 const cameraLockLine = (framing: Body["framing"]): string =>
-  `FIXED WEBCAM: static laptop webcam, ${FRAMING_DESCRIPTION[framing]}, no zoom, no pan, no push-in, no cut, no camera movement of any kind.`;
+  `FIXED WEBCAM: static webcam, ${FRAMING_DESCRIPTION[framing]}, no zoom, no pan, no push-in, no cut, no camera movement of any kind.`;
 
 const ANATOMY_LOCK =
   "ANATOMY LOCK: exactly one adult woman — one head, two arms, two hands, ten fingers, two legs, two feet. " +
   "Never extra limbs, fused limbs, a second body, or floating parts.";
 
+// Testers saw objects pop in and out between clips; the room is named as fixed set dressing that only her hands can move.
 const PHYSICS_LOCK =
   "PHYSICS: fabric has real weight, one garment or one motion at a time, hands do one thing at a time. " +
-  "Nothing teleports, dissolves, or regrows mid-clip.";
+  "Nothing teleports, dissolves, or regrows mid-clip. The room is fixed: every object, the furniture, the light " +
+  "and the window stay exactly where the first frame shows them, nothing appears or vanishes, and an object " +
+  "moves only while her hand visibly holds it. A garment she takes off lands and stays where it fell.";
 
 const NO_OVERLAY_LOCK = "No text overlays, no watermark, no subtitles, no UI.";
 
@@ -153,9 +157,10 @@ const PROP_LABEL: Record<"vibrator" | "dildo" | "drink" | "phone", string> = {
 };
 
 const POSE_DESCRIPTION: Record<Pose, string> = {
-  sitting: "sitting in her chair at the desk",
+  // Furniture-neutral: naming a chair or desk the greeting never drew pulled one into the room.
+  sitting: "sitting in the same seat as the first frame",
   standing: "standing",
-  leaning: "leaning against the desk",
+  leaning: "leaning back against the furniture behind her",
   kneeling: "kneeling",
   lying: "lying down",
   onAllFours: "on her hands and knees",
@@ -1364,10 +1369,11 @@ const capIntents = (intents: BeatIntent[]): BeatIntent[] => {
 
 // Clause-to-clause state isn't simulated here; a stale default self-filters via isIntentSatisfied later.
 const resolveIntents = (
-  text: string,
+  rawText: string,
   wardrobe: Wardrobe,
   body: Body,
 ): BeatIntent[] => {
+  const text = correctActionTypos(rawText);
   const correction = garmentCorrectionIntents(text);
   if (correction) {
     return capIntents(dedupeConsecutiveIntents(correction));
@@ -1480,7 +1486,7 @@ const planGreeting = (
 // Rotates so idle clips don't all read as the identical frozen loop; picked from elapsed time so it stays deterministic/testable, and never changes pose/clothing/props (idle clips loop start=end).
 const IDLE_LIFE_VARIANTS: readonly string[] = [
   "breathing, blinking, a glance at the chat, a tiny weight shift, a tuck of her hair",
-  "glancing over at her screen as if reading something in the chat, a small smile, then her eyes back on the lens",
+  "glancing just off the lens as if reading something in the chat, a small smile, then her eyes back on the lens",
   "a slow blink, rolling her shoulders once in a small stretch, then settling back still",
   "glancing down and to the side for a moment as if thinking, then back up at the lens with a smile",
   "adjusting her hair or glasses with one hand, her eyes flicking to the chat and back",
@@ -1599,12 +1605,6 @@ const planCheckIn = (
   };
 };
 
-// Laptop lead-in from her chair with a free hand, her phone otherwise; eats into the beat's own time window like the prop-setdown/sit-up lead-ins above rather than growing it.
-const typingLeadLine = (device: "laptop" | "phone", leadSec: number): string =>
-  device === "laptop"
-    ? `0-${leadSec}s: she glances at the chat and types a quick reply on her laptop, eyes flicking between the screen and the lens.`
-    : `0-${leadSec}s: she glances at the chat, picks up her phone, types a quick reply, then sets it back down.`;
-
 const planReply = (
   session: LiveSessionSnapshot,
   job: Extract<ClipJob, { kind: "reply" }>,
@@ -1623,19 +1623,8 @@ const planReply = (
   const beatPlan = planBeatIntent(first, state);
   const durationSec = clampDuration(beatPlan.durationSec);
 
-  let physical = beatPlan.physical;
-  // Only the first reply after a genuine idle stretch opens on typing — a rapid back-to-back
-  // exchange would show her "typing" before every single message, which reads as slow, not real.
-  if (job.channel === "chat" && job.precededByIdle) {
-    const leadSec = Math.max(1, Math.round(typingLeadSecFor(job.text)));
-    const device: "laptop" | "phone" =
-      state.body.pose === "sitting" && state.body.hands === "free"
-        ? "laptop"
-        : "phone";
-    physical =
-      `${typingLeadLine(device, leadSec)} ` +
-      shiftChoreoTimes(beatPlan.physical, leadSec, durationSec);
-  }
+  // No typing lead-in on camera: it asked for a laptop or phone the room does not have, and testers saw on-screen animations while she typed. The chat's own "typing…" label carries the beat.
+  const physical = beatPlan.physical;
 
   const expectedState: LiveState = {
     ...state,

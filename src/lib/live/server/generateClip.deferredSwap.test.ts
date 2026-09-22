@@ -57,6 +57,12 @@ vi.mock("./swapClip", () => ({
   }),
 }));
 
+const captureRoom = vi.fn(async (): Promise<string | null> => null);
+vi.mock("./captureRoom", () => ({
+  captureRoom: (...args: unknown[]) =>
+    (captureRoom as (...a: unknown[]) => Promise<string | null>)(...args),
+}));
+
 vi.mock("./writeReply", () => ({
   writeReply: vi.fn(async () => ({ text: "hey you", nextWorld: "chatting" })),
   writeCheckIn: vi.fn(async () => null),
@@ -220,6 +226,43 @@ describe("generateClip on the swap backend with the deferred clip swap", () => {
     await generateClip(request({ kind: "greeting" }));
     expect(swapClip).not.toHaveBeenCalled();
   });
+});
+
+it("locks ROOM to what a swap-mode greeting actually rendered", async () => {
+  swapServiceLastFrame.mockResolvedValue(
+    "https://example.com/greeting-tail.jpg",
+  );
+  captureRoom.mockResolvedValueOnce(
+    "A made bed, a lamp on the left, a window on the right.",
+  );
+  const result = await generateClip({
+    ...request({ kind: "greeting" }),
+    session: { ...session, seedFrameUrl: session.anchorFrameUrl },
+    backend: "swap",
+  });
+  expect(captureRoom).toHaveBeenCalledWith(
+    "https://example.com/greeting-tail.jpg",
+  );
+  expect(result.state.surroundings).toBe(
+    "A made bed, a lamp on the left, a window on the right.",
+  );
+});
+
+it("keeps the session's ROOM text for any clip after the greeting", async () => {
+  captureRoom.mockClear();
+  const result = await generateClip({
+    ...request({
+      kind: "reply",
+      requestId: "r9",
+      text: "hi",
+      channel: "chat",
+      from: "fan",
+      precededByIdle: false,
+    }),
+    backend: "swap",
+  });
+  expect(captureRoom).not.toHaveBeenCalled();
+  expect(result.state.surroundings).toBe(session.state.surroundings);
 });
 
 it("keeps swap-mode chain clips off reference-to-video by default", () => {

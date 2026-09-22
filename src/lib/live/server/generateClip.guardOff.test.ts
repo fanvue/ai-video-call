@@ -58,6 +58,12 @@ vi.mock("./swapClip", () => ({
   }),
 }));
 
+const captureRoom = vi.fn(async (): Promise<string | null> => null);
+vi.mock("./captureRoom", () => ({
+  captureRoom: (...args: unknown[]) =>
+    (captureRoom as (...a: unknown[]) => Promise<string | null>)(...args),
+}));
+
 vi.mock("./writeReply", () => ({
   writeReply: vi.fn(async () => ({ text: "hey you", nextWorld: "chatting" })),
   writeCheckIn: vi.fn(async () => null),

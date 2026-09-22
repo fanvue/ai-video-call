@@ -162,9 +162,7 @@ describe("planClip: framing", () => {
         speechMode: "text",
       });
       expect(
-        plan.prompt.startsWith(
-          `FIXED WEBCAM: static laptop webcam, ${shot}, no zoom`,
-        ),
+        plan.prompt.startsWith(`FIXED WEBCAM: static webcam, ${shot}, no zoom`),
       ).toBe(true);
       expect(plan.prompt).toMatch(/no camera movement of any kind/);
       expect(plan.prompt).toContain(`hands empty, ${shot}.`);
@@ -954,7 +952,7 @@ describe("planBeatIntent: rest restores the full baseline, not just free hands",
   });
 });
 
-describe("planClip: typing lead-in only after a genuine idle stretch", () => {
+describe("planClip: typing stays in the chat, never on camera", () => {
   const replyWithIdleFlag = (
     precededByIdle: boolean,
     channel: "chat" | "voice" = "chat",
@@ -972,9 +970,27 @@ describe("planClip: typing lead-in only after a genuine idle stretch", () => {
       speechMode: "text",
     });
 
-  it("opens on typing when the reply follows a genuine idle stretch", () => {
+  it("does not film her typing even after a genuine idle stretch", () => {
     const plan = replyWithIdleFlag(true);
-    expect(plan.prompt).toMatch(/types a quick reply/i);
+    expect(plan.prompt).not.toMatch(
+      /types a quick reply|reply on her laptop|picks up her phone/i,
+    );
+  });
+
+  it("reads a one-key slip of an action verb as that action", () => {
+    const plan = planClip({
+      session: session(),
+      job: {
+        kind: "reply",
+        requestId: "r2",
+        text: "wavw",
+        channel: "chat",
+        from: "fan",
+        precededByIdle: false,
+      },
+      speechMode: "text",
+    });
+    expect(plan.prompt).toMatch(/warm wave/i);
   });
 
   it("does not open on typing for a fast back-to-back reply", () => {
