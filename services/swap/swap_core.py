@@ -178,6 +178,15 @@ class SwapEngine:
             raise RuntimeError("jpeg encode failed")
         return buffer.tobytes()
 
+    # Lossless for the chain seed: a JPEG round trip per generation was one more thing the next render compounded.
+    def encode_png(self, frame) -> bytes:
+        import cv2
+
+        ok, buffer = cv2.imencode(".png", frame, [cv2.IMWRITE_PNG_COMPRESSION, 3])
+        if not ok:
+            raise RuntimeError("png encode failed")
+        return buffer.tobytes()
+
     def reference_face(self, data_uri: str):
         header, _, payload = data_uri.partition(",")
         if not header.startswith("data:image/"):
@@ -539,7 +548,7 @@ def swap_tail_from_url(
     return {"last_frame_base64": base64.b64encode(seed_jpeg).decode("ascii"), "stats": stats}
 
 
-# The raw last frame, unswapped: the next chain clip's seed. fal's ffmpeg-api took 5 to 6 s for the same frame on the reply path.
+# The raw last frame, unswapped, finished like every other seed (enhanced once the chain has blurred it): the next chain clip's seed. fal's ffmpeg-api took 5 to 6 s for the same frame on the reply path.
 def last_frame_from_url(engine: SwapEngine, video_url: str) -> dict[str, Any]:
     with tempfile.TemporaryDirectory() as directory:
         source_path = os.path.join(directory, "source.mp4")
@@ -547,11 +556,23 @@ def last_frame_from_url(engine: SwapEngine, video_url: str) -> dict[str, Any]:
         download(video_url, source_path)
         download_ms = int((time.perf_counter() - started) * 1000)
         frame = engine.read_tail_frame(source_path)
+    seed_frame, enhance_ms, enhanced, sharpness_before, sharpness_after = engine.finish_seed(frame)
     total_ms = int((time.perf_counter() - started) * 1000)
-    print(f"lastFrame: download_ms={download_ms} total_ms={total_ms}", flush=True)
+    print(
+        f"lastFrame: download_ms={download_ms} enhance_ms={enhance_ms} enhanced={enhanced} "
+        f"sharpness={sharpness_before}->{sharpness_after} total_ms={total_ms}",
+        flush=True,
+    )
     return {
-        "last_frame_base64": base64.b64encode(engine.encode_jpeg(frame)).decode("ascii"),
-        "stats": {"download_ms": download_ms, "total_ms": total_ms},
+        "last_frame_base64": base64.b64encode(engine.encode_png(seed_frame)).decode("ascii"),
+        "stats": {
+            "download_ms": download_ms,
+            "enhance_ms": enhance_ms,
+            "enhanced": enhanced,
+            "sharpness_before": sharpness_before,
+            "sharpness_after": sharpness_after,
+            "total_ms": total_ms,
+        },
     }
 
 

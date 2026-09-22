@@ -11,7 +11,9 @@ vi.mock("@/lib/fal/uploadImage", () => ({
   uploadToFal: (...args: unknown[]) => uploadToFal(...args),
 }));
 
-const { failedSwapReport, swapClip } = await import("./swapClip");
+const { failedSwapReport, swapClip, swapServiceLastFrame } = await import(
+  "./swapClip"
+);
 
 const serviceStats = {
   frames: 240,
@@ -120,6 +122,47 @@ describe("swapClip", () => {
       }),
     ).rejects.toThrow(/422.*exactly one face/);
     expect(uploadToFal).not.toHaveBeenCalled();
+  });
+});
+
+describe("swapServiceLastFrame", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", fetchMock);
+    fetchMock.mockReset();
+    uploadToFal.mockReset();
+    envMock.SWAP_SERVICE_URL = "https://swap.test";
+    envMock.SWAP_TOKEN = "0123456789abcdef0123456789abcdef";
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("asks the service for the finished seed with the bearer token and rehosts it lossless", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        last_frame_base64: Buffer.from("seed").toString("base64"),
+        stats: { download_ms: 400, total_ms: 900 },
+      }),
+    );
+    uploadToFal.mockResolvedValueOnce("https://fal.test/seed.png");
+
+    const url = await swapServiceLastFrame({
+      videoUrl: "https://fal.test/turbo.mp4",
+    });
+
+    const [target, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(target.toString()).toBe("https://swap.test/lastFrame");
+    expect((init.headers as Record<string, string>).Authorization).toBe(
+      "Bearer 0123456789abcdef0123456789abcdef",
+    );
+    expect(JSON.parse(init.body as string)).toEqual({
+      video_url: "https://fal.test/turbo.mp4",
+    });
+    expect(uploadToFal.mock.calls[0][1]).toMatch(/^seed-.*\.png$/);
+    expect(uploadToFal.mock.calls[0][2]).toBe("image/png");
+    expect(url).toBe("https://fal.test/seed.png");
   });
 });
 

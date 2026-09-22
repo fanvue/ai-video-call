@@ -257,8 +257,8 @@ describe("GaplessPlayer", () => {
     a.fireTimeUpdate(9.92);
     await flush();
     expect(player.getActiveSlot()).toBe("b");
-    expect(b.style.transitionDuration).toBe("180ms");
-    vi.advanceTimersByTime(180);
+    expect(b.style.transitionDuration).toBe("320ms");
+    vi.advanceTimersByTime(320);
     expect(a.style.opacity).toBe("0");
   });
 

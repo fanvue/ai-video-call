@@ -174,8 +174,8 @@ export const swapServiceLastFrame = async ({
   const stamp = Date.now();
   const url = await uploadToFal(
     Buffer.from(parsed.last_frame_base64, "base64"),
-    `seed-${stamp}.jpg`,
-    "image/jpeg",
+    `seed-${stamp}.png`,
+    "image/png",
   );
   console.log(
     `lastFrame: serviceMs=${stamp - startedAt} rehostMs=${Date.now() - stamp}`,

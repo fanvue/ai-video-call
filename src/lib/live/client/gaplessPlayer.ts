@@ -4,7 +4,8 @@ import { LIVE_TUNABLES, type SpeechMode } from "@/lib/live/contract";
 const SWAP_LEAD_SEC = LIVE_TUNABLES.SWAP_LEAD_SEC;
 const CUT_IN_WAIT_MAX_SEC = LIVE_TUNABLES.CUT_IN_WAIT_MAX_SEC;
 const CUT_IN_LEAD_SEC = LIVE_TUNABLES.CUT_IN_LEAD_SEC;
-const CROSSFADE_MS = 180;
+// Boundary dissolve. 180 ms read as a hard cut once the incoming slot faded in on top; the two clips share the boundary frame, so a longer overlap costs no continuity.
+const CROSSFADE_MS = 320;
 // A cut-in lands mid-motion on a clip rendered from a different moment, so it dissolves longer to soften the pose change; boundaries are frame-continuous and stay short.
 const CUT_IN_CROSSFADE_MS = 450;
 // The incoming slot fades in above the outgoing one, which stays opaque until the fade ends, so a late first paint shows the outgoing's last frame instead of black. Negative so the studio chrome (z auto) stays above both; the container is `isolate`.
