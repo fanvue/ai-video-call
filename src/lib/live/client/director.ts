@@ -24,6 +24,7 @@ export type DirectorState = {
   liveState: LiveState;
   seedFrameUrl: string;
   anchorFrameUrl: string;
+  identityFrameUrl?: string;
   startedAt: number;
   transcript: TranscriptEntry[];
   jobQueue: ClipJob[];
@@ -54,6 +55,7 @@ export type DirectorState = {
 export type DirectorInit = {
   creator: CreatorProfile;
   anchorFrameUrl: string;
+  identityFrameUrl?: string;
   seedFrameUrl: string;
   liveState: LiveState;
   now: number;
@@ -86,6 +88,7 @@ export class LiveDirector {
       liveState: init.liveState,
       seedFrameUrl: init.seedFrameUrl,
       anchorFrameUrl: init.anchorFrameUrl,
+      identityFrameUrl: init.identityFrameUrl,
       stateFrames: {},
       startedAt: init.now,
       transcript: [],
@@ -418,6 +421,7 @@ export class LiveDirector {
       state: this.state.liveState,
       seedFrameUrl: this.state.seedFrameUrl,
       anchorFrameUrl: this.state.anchorFrameUrl,
+      identityFrameUrl: this.state.identityFrameUrl,
       toneFrameUrl: this.state.toneFrameUrl,
       stateFrames: this.state.stateFrames,
       elapsedSec: this.elapsedSec(now),

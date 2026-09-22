@@ -931,6 +931,32 @@ def last_frame_from_url(
     }
 
 
+# Head-only crop of the reference for reference-to-video's identity image: the full photo's room and clothes were copied into the scene.
+def face_crop_from_data_uri(engine: SwapEngine, data_uri: str, scale: float = 1.6, size: int = 512) -> dict[str, Any]:
+    import cv2
+
+    header, _, payload = data_uri.partition(",")
+    if not header.startswith("data:image/"):
+        raise ValueError("reference must be an image data URI")
+    image = engine.decode_image(base64.b64decode(payload))
+    height, width = image.shape[:2]
+    # Replicated border: the detector misses a face that fills the photo, and the square crop may run past its edges.
+    padded = cv2.copyMakeBorder(image, height, height, width, width, cv2.BORDER_REPLICATE)
+    faces = engine.identity.get(padded)
+    if len(faces) != 1:
+        raise ValueError(f"reference must contain exactly one face, found {len(faces)}")
+    x1, y1, x2, y2 = faces[0].bbox
+    side = scale * max(x2 - x1, y2 - y1)
+    # Centre a little above the bbox so the crop keeps the hair and stops above the shoulders.
+    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2 - 0.1 * (y2 - y1)
+    left, top = int(round(cx - side / 2)), int(round(cy - side / 2))
+    # Neutral grey past the photo's edges: replicated streaks read as scene content to the video model.
+    plain = cv2.copyMakeBorder(image, height, height, width, width, cv2.BORDER_CONSTANT, value=(128, 128, 128))
+    crop = plain[max(top, 0) : top + int(side), max(left, 0) : left + int(side)]
+    crop = cv2.resize(crop, (size, size), interpolation=cv2.INTER_AREA)
+    return {"crop_base64": base64.b64encode(engine.encode_jpeg(crop)).decode("ascii")}
+
+
 def swap_tail_from_bytes(
     engine: SwapEngine, video: bytes, reference_data_uri: str
 ) -> dict[str, Any]:

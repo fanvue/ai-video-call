@@ -74,7 +74,7 @@ export const turboBackend: VideoBackend = {
 // Per fal's MiniMax H3 prompting guide, each reference needs an explicit role or the model treats
 // it as the current scene — 98fb8bf's unlabeled two-reference attempt snapped pose/wardrobe back to the upload.
 const IDENTITY_REFERENCE_PROMPT_PREFIX =
-  "Image 1 is for facial identity and likeness only — ignore its pose, clothing, and setting. Image 2 is the current pose, outfit, and scene — match it exactly and continue the action from it. ";
+  "Image 1 is a close-up of her face, for facial identity and likeness only — ignore its pose, clothing, background, and framing. Image 2 is the current pose, outfit, and scene — match it exactly and continue the action from it. ";
 
 export const referenceBackend: VideoBackend = {
   supportsEndFrame: false,

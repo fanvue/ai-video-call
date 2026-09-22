@@ -14,6 +14,7 @@ from swap_core import (
     RESTORER_URL,
     SwapEngine,
     bearer_token,
+    face_crop_from_data_uri,
     last_frame_from_url,
     profile_networks,
     swap_clip_from_bytes,
@@ -54,6 +55,10 @@ image = (
 
 class SwapClipRequest(BaseModel):
     video_url: str
+    reference_image: str
+
+
+class FaceCropRequest(BaseModel):
     reference_image: str
 
 
@@ -105,6 +110,10 @@ class SwapService:
         return profile_networks(self.engine, video, reference_image, runs)
 
     @modal.method()
+    def face_crop_bytes(self, reference_image: str) -> dict:
+        return face_crop_from_data_uri(self.engine, reference_image)
+
+    @modal.method()
     def swap_tail_bytes(self, video: bytes, reference_image: str) -> dict:
         return swap_tail_from_bytes(self.engine, video, reference_image)
 
@@ -125,6 +134,17 @@ class SwapService:
                 raise HTTPException(status_code=403, detail="unauthorized")
             try:
                 return last_frame_from_url(engine, body.video_url, body.tone_reference_url)
+            except ValueError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
+
+        @api.post("/faceCrop")
+        def face_crop(
+            body: FaceCropRequest, authorization: str | None = Header(default=None)
+        ) -> dict:
+            if not token_allowed(bearer_token(authorization)):
+                raise HTTPException(status_code=403, detail="unauthorized")
+            try:
+                return face_crop_from_data_uri(engine, body.reference_image)
             except ValueError as error:
                 raise HTTPException(status_code=422, detail=str(error)) from error
 

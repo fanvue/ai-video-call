@@ -274,6 +274,7 @@ export const generateClip = async (
   const chainFromReference =
     backend === "swap" &&
     LIVE_TUNABLES.SWAP_CHAIN_FROM_REFERENCE &&
+    !!session.identityFrameUrl &&
     job.kind !== "idle" &&
     job.kind !== "greeting";
   const videoBackend = renderBackendFor(backend, {
@@ -303,12 +304,14 @@ export const generateClip = async (
       ? session.stateFrames?.[stateFrameKey(plan.expectedState)]
       : undefined;
 
-  // A reference-rendered chain clip always carries the upload: identity is the reason it left turbo.
-  const identityReferenceUrl =
-    videoBackend.supportsIdentityReference &&
-    (useIdentityReference || chainFromReference)
-      ? session.anchorFrameUrl
-      : undefined;
+  // A reference-rendered chain clip always carries the head-only crop: identity is the reason it left turbo, and the full upload's room and clothes were copied into the scene.
+  const identityReferenceUrl = !videoBackend.supportsIdentityReference
+    ? undefined
+    : chainFromReference
+      ? session.identityFrameUrl
+      : useIdentityReference
+        ? session.anchorFrameUrl
+        : undefined;
 
   const renderStarted = Date.now();
   // The reference model has no first frame to inherit the room from, so the prompt establishes it and pins the upload to identity only.

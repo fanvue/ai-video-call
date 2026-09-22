@@ -279,3 +279,38 @@ export const failedSwapReport = (
     300,
   ),
 });
+
+// Covers a cold container (about 11 s); it runs beside the upload and vision capture, off the join's critical path.
+const FACE_CROP_BUDGET_MS = 25_000;
+
+const faceCropResponseSchema = z.object({ crop_base64: z.string().min(1) });
+
+// Head-only crop of the upload, rehosted, for reference-to-video's identity image.
+export const swapServiceFaceCrop = async (
+  referenceDataUri: string,
+): Promise<string> => {
+  if (!env.SWAP_SERVICE_URL || !env.SWAP_TOKEN) {
+    throw new Error("Swap service is not configured");
+  }
+  const response = await fetch(new URL("/faceCrop", env.SWAP_SERVICE_URL), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.SWAP_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ reference_image: referenceDataUri }),
+    signal: AbortSignal.timeout(FACE_CROP_BUDGET_MS),
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(
+      `Swap service responded ${response.status}: ${detail.slice(0, 200)}`,
+    );
+  }
+  const parsed = faceCropResponseSchema.parse(await response.json());
+  return uploadToFal(
+    Buffer.from(parsed.crop_base64, "base64"),
+    `identity-${Date.now()}.jpg`,
+    "image/jpeg",
+  );
+};

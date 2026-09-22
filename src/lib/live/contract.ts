@@ -246,6 +246,8 @@ export const liveSessionSnapshotSchema = z.object({
   seedFrameUrl: z.url(),
   // Untouched upload. Identity anchor the guard compares every checked frame against.
   anchorFrameUrl: z.url(),
+  // Head-only crop of the upload: the identity image for reference-to-video chain clips, which copied the full photo's room and clothes into the scene.
+  identityFrameUrl: z.url().optional(),
   // The session's first rendered frame (the greeting's tail): every later chain seed has its tone pulled back toward it, so the contrast and colour drift of chained renders stops compounding.
   toneFrameUrl: z.url().optional(),
   // First seed seen in each stateFrameKey. A chain clip that lands in a banked state ends on that frame and seeds from it, so chaining drifts once per new state instead of once per clip.

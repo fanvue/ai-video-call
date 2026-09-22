@@ -48,7 +48,7 @@ describe("referenceBackend.render", () => {
       "https://example.com/upload.jpg",
       "https://example.com/seed.jpg",
     ]);
-    expect(call.prompt).toMatch(/^Image 1 is for facial identity/);
+    expect(call.prompt).toMatch(/^Image 1 is a close-up of her face/);
     expect(call.prompt).toContain("she waves");
   });
 

@@ -61,6 +61,8 @@ import {
 
 export type ReferenceUploadResult = {
   anchorFrameUrl: string;
+  // Head-only crop of the upload; absent when the swap service could not crop it.
+  identityFrameUrl?: string;
   // The greeting's first frame: a staged in-scene still when staging succeeded, otherwise the upload itself.
   seedFrameUrl: string;
   staged: boolean;
@@ -1277,6 +1279,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       const director = new LiveDirector({
         creator,
         anchorFrameUrl: reference.anchorFrameUrl,
+        identityFrameUrl: reference.identityFrameUrl,
         seedFrameUrl: reference.seedFrameUrl,
         liveState: initialLiveState,
         now: Date.now(),

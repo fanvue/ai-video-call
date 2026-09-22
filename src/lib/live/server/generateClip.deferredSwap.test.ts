@@ -223,16 +223,34 @@ describe("generateClip on the swap backend with the deferred clip swap", () => {
 });
 
 describe("generateClip on the swap backend with chain clips from reference-to-video", () => {
+  const identityFrameUrl = "https://example.com/identity-crop.jpg";
   const swapRequest = (job: ClipRequest["job"]): ClipRequest => ({
     ...request(job),
     backend: "swap",
+    session: { ...session, identityFrameUrl },
   });
+  const reply: ClipRequest["job"] = {
+    kind: "reply",
+    requestId: "r1",
+    text: "hi",
+    channel: "chat",
+    from: "fan",
+    precededByIdle: false,
+  };
 
   it("is the default", () => {
     expect(LIVE_TUNABLES.SWAP_CHAIN_FROM_REFERENCE).toBe(true);
   });
 
-  it("routes a reply to the reference backend and always passes the upload as the identity reference", async () => {
+  it("stays on turbo when there is no head-only crop, never handing reference-to-video the full upload", async () => {
+    await generateClip({ ...request(reply), backend: "swap" });
+    expect(renderBackendFor).toHaveBeenLastCalledWith(
+      "swap",
+      expect.objectContaining({ chainFromReference: false }),
+    );
+  });
+
+  it("routes a reply to the reference backend with the head-only crop as its identity image, not the full upload", async () => {
     renderBackendFor.mockReturnValueOnce({
       render,
       supportsEndFrame: false,
@@ -254,7 +272,7 @@ describe("generateClip on the swap backend with chain clips from reference-to-vi
     );
     expect(render).toHaveBeenCalledWith(
       expect.objectContaining({
-        identityReferenceUrl: session.anchorFrameUrl,
+        identityReferenceUrl: identityFrameUrl,
         endFrameUrl: undefined,
       }),
     );

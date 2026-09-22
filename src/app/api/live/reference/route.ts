@@ -10,6 +10,7 @@ import {
   type Wardrobe,
 } from "@/lib/live/contract";
 import { stageSeed } from "@/lib/live/server/stageSeed";
+import { swapServiceFaceCrop } from "@/lib/live/server/swapClip";
 
 export const maxDuration = 60;
 
@@ -97,9 +98,21 @@ export async function POST(request: Request) {
       return null;
     }
   };
-  const [anchorFrameUrl, capture] = await Promise.all([
+  // Without a crop, chain clips stay on turbo rather than hand reference-to-video the whole photo.
+  const cropIdentity = async (): Promise<string | undefined> => {
+    try {
+      return await swapServiceFaceCrop(
+        `data:${contentType};base64,${imageBase64}`,
+      );
+    } catch (error) {
+      console.warn("live/reference: face crop failed", error);
+      return undefined;
+    }
+  };
+  const [anchorFrameUrl, capture, identityFrameUrl] = await Promise.all([
     uploadReferenceImageToFal(Buffer.from(imageBase64, "base64"), contentType),
     captureLook(),
+    cropIdentity(),
   ]);
   const lookLock =
     capture?.lookLock?.slice(0, 600) || "an adult woman with a natural build";
@@ -118,6 +131,7 @@ export async function POST(request: Request) {
 
   return NextResponse.json({
     anchorFrameUrl,
+    identityFrameUrl,
     // The greeting's first frame. A staged still already shows the selected room and the canon lingerie, so the prompt no longer contradicts the seed.
     seedFrameUrl: staged?.url ?? anchorFrameUrl,
     staged: staged !== null,
