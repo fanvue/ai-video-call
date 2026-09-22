@@ -14,7 +14,7 @@ import {
 import type { ReferenceUploadResult } from "@/lib/live/client/useLiveSession";
 import { z } from "zod";
 
-const readFileAsBase64 = (file: File): Promise<string> =>
+const readFileAsBase64 = (file: Blob): Promise<string> =>
   new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -25,6 +25,36 @@ const readFileAsBase64 = (file: File): Promise<string> =>
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
+
+// Vercel rejects bodies over 4.5 MB (413) and base64 adds a third, so large photos are re-encoded to a JPEG well under that.
+const MAX_UPLOAD_BYTES = 2_500_000;
+const MAX_UPLOAD_EDGE = 2048;
+
+const shrinkForUpload = async (file: File): Promise<Blob> => {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(
+    1,
+    MAX_UPLOAD_EDGE / Math.max(bitmap.width, bitmap.height),
+  );
+  if (scale === 1 && file.size <= MAX_UPLOAD_BYTES) {
+    bitmap.close();
+    return file;
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
+  canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  for (const quality of [0.92, 0.85, 0.75]) {
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, "image/jpeg", quality),
+    );
+    if (blob && blob.size <= MAX_UPLOAD_BYTES) return blob;
+  }
+  throw new Error(
+    "That photo is too large to upload. Please use a smaller one.",
+  );
+};
 
 const postJson = async <T>(url: string, body: unknown): Promise<T> => {
   const res = await fetch(url, {
@@ -82,12 +112,13 @@ export const uploadReference = async (
   sceneId: SceneId,
   stage = true,
 ): Promise<ReferenceUploadResult> => {
-  const imageBase64 = await readFileAsBase64(file);
   // The server only accepts jpeg/png; HEIC and webp are rejected upfront rather than as a 400.
-  const contentType = file.type === "image/png" ? "image/png" : "image/jpeg";
   if (file.type && file.type !== "image/jpeg" && file.type !== "image/png") {
     throw new Error("Please use a JPEG or PNG photo.");
   }
+  const upload = await shrinkForUpload(file);
+  const imageBase64 = await readFileAsBase64(upload);
+  const contentType = upload.type === "image/png" ? "image/png" : "image/jpeg";
   return postJson<ReferenceUploadResult>("/api/live/reference", {
     imageBase64,
     contentType,

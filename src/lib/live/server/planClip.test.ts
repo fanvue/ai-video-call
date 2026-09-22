@@ -213,33 +213,34 @@ describe("planClip: prompt shape", () => {
     expect(plan.prompt).toMatch(/render the nudity and sexual acts/i);
   });
 
-  it("adds a wardrobe-lock line to a non-wardrobe action that doesn't already carry one", () => {
-    const plan = replyPlan("touch yourself");
-    expect(plan.wardrobeIntent).toBeNull();
-    expect(plan.prompt).toMatch(
-      /Her clothing stays exactly as described .* nothing is put on or taken off\./,
-    );
+  it("adds a positive wardrobe lock to every non-wardrobe clip", () => {
+    for (const text of ["touch yourself", "wave hello"]) {
+      const plan = replyPlan(text);
+      expect(plan.wardrobeIntent).toBeNull();
+      expect(plan.prompt).toMatch(
+        /WARDROBE LOCK: .*her bra \(black lace bra\) stays fastened on her chest.*her panties \(black lace panties\) stay on her hips\./,
+      );
+    }
   });
 
-  it("does not duplicate an existing wardrobe-lock line already in the action text", () => {
-    const plan = replyPlan("wave hello");
-    expect(plan.prompt).toMatch(/No clothing changes, nothing new appears\./);
-    expect(plan.prompt).not.toMatch(
-      /Her clothing stays exactly as described .* nothing is put on or taken off\./,
-    );
+  it("never cues undressing in a clip that keeps her wardrobe", () => {
+    const idle = planClip({
+      session: session(),
+      job: { kind: "idle" },
+      speechMode: "text",
+    });
+    for (const plan of [idle, replyPlan("wave hello"), replyPlan("twerk")]) {
+      expect(plan.prompt).not.toMatch(
+        /takes? off|taken off|clothing change|onto her own clothes/i,
+      );
+    }
   });
 
-  it("never adds the wardrobe-lock line to a clip that actually changes wardrobe", () => {
+  it("keeps garment physics and drops the wardrobe lock on a clip that changes wardrobe", () => {
     const plan = replyPlan("take off your top");
     expect(plan.wardrobeIntent).toBe("remove");
-    expect(plan.prompt).not.toMatch(
-      /Her clothing stays exactly as described .* nothing is put on or taken off\./,
-    );
-  });
-
-  it("names bra/panties white in the wardrobe-lock line only when they are actually worn", () => {
-    const plan = replyPlan("touch yourself");
-    expect(plan.prompt).toMatch(/her bra and panties stay white/);
+    expect(plan.prompt).not.toMatch(/WARDROBE LOCK/);
+    expect(plan.prompt).toMatch(/a garment she takes off lands and stays/);
   });
 
   it("never mentions bra/panties color in the wardrobe-lock line when they're already off", () => {

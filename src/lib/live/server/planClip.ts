@@ -110,10 +110,14 @@ const ANATOMY_LOCK =
 
 // Testers saw objects pop in and out between clips; the room is named as fixed set dressing that only her hands can move.
 const PHYSICS_LOCK =
-  "PHYSICS: fabric has real weight, one garment or one motion at a time, hands do one thing at a time. " +
+  "PHYSICS: fabric has real weight, hands do one thing at a time. " +
   "Nothing teleports, dissolves, or regrows mid-clip. The room is fixed: every object, the furniture, the light " +
   "and the window stay exactly where the first frame shows them, nothing appears or vanishes, and an object " +
-  "moves only while her hand visibly holds it. A garment she takes off lands and stays where it fell.";
+  "moves only while her hand visibly holds it.";
+
+// Undressing language on a hold clip reads as a cue: testers saw idles and waves strip the bra, then regrow it to meet the end frame.
+const GARMENT_PHYSICS_LINE =
+  "One garment at a time; a garment she takes off lands and stays where it fell.";
 
 const NO_OVERLAY_LOCK = "No text overlays, no watermark, no subtitles, no UI.";
 
@@ -243,26 +247,29 @@ const wardrobeUnchanged = (a: Wardrobe, b: Wardrobe): boolean =>
     a.removedOrder.length === b.removedOrder.length &&
     a.removedOrder.every((id, i) => id === b.removedOrder[i]));
 
-// Matches the wardrobe-lock phrasing already scattered through the choreography library below, so
-// the fallback line only fires when a clip's own action text doesn't already carry one.
-const HAS_WARDROBE_LOCK_RE =
-  /no clothing change|nothing (comes off|new appears)|stays exactly on her body|no garment is added, removed/i;
+const GARMENT_HOLD_PHRASE: Record<GarmentId, string> = {
+  top: "stays on",
+  bottom: "stay on",
+  bra: "stays fastened on her chest, both straps on her shoulders",
+  panties: "stay on her hips",
+};
 
-// Positive-only, like describeState: only names bra/panties as staying white when they're actually worn.
-const wardrobeLockLine = (wardrobe: Wardrobe): string => {
-  const wornColored = (["bra", "panties"] as const).filter(
-    (id) => wardrobe[id].on,
-  );
-  const colorClause =
-    wornColored.length > 0
-      ? ` — her ${wornColored.map((id) => GARMENT_LABEL[id]).join(" and ")} stay white`
-      : "";
-  return `Her clothing stays exactly as described${colorClause}; nothing is put on or taken off.`;
+// Positive-only, like describeState: every worn garment is named as staying put, so a hold clip never mentions undressing.
+const wardrobeLockLine = (wardrobe: Wardrobe): string | null => {
+  const worn = GARMENT_ORDER.filter((id) => wardrobe[id].on);
+  if (worn.length === 0) return null;
+  const garments = worn
+    .map(
+      (id) =>
+        `her ${GARMENT_LABEL[id]} (${wardrobe[id].description}) ${GARMENT_HOLD_PHRASE[id]}`,
+    )
+    .join(", ");
+  return `WARDROBE LOCK: from the first frame to the last, ${garments}.`;
 };
 
 // Requested-clip only: names this the one and only action, ahead of every lock, since a video model weights earlier tokens more heavily.
 const ONLY_ACTION_LINE =
-  "She performs only this one action for the entire clip — no turning away, no walking off, no clothing change beyond what is described here.";
+  "She performs only this one action for the entire clip — no turning away, no walking off.";
 
 const buildPrompt = (params: {
   state: LiveState;
@@ -276,20 +283,22 @@ const buildPrompt = (params: {
   // True for a fan/viewer-requested clip (reply/beat): leads with the action instead of the universal locks.
   leadWithAction?: boolean;
 }): string => {
-  const needsWardrobeLock =
-    wardrobeUnchanged(params.state.wardrobe, params.nextWardrobe) &&
-    !HAS_WARDROBE_LOCK_RE.test(params.action);
+  const holdsWardrobe = wardrobeUnchanged(
+    params.state.wardrobe,
+    params.nextWardrobe,
+  );
   const setupLines = [
     cameraLockLine(params.state.body.framing),
     ANATOMY_LOCK,
     lookLockLine(params.creator.lookLock),
     `ROOM: ${params.state.surroundings}`,
     `NOW: she is ${describeState(params.state.wardrobe, params.state.body)}`,
+    holdsWardrobe ? wardrobeLockLine(params.nextWardrobe) : null,
   ];
   const closingLines = [
-    needsWardrobeLock ? wardrobeLockLine(params.nextWardrobe) : null,
     `By ${params.durationSec}s she is ${describeState(params.nextWardrobe, params.nextBody)}, still, eyes on the lens. ${CLIP_ENDS_LINE}`,
     PHYSICS_LOCK,
+    holdsWardrobe ? null : GARMENT_PHYSICS_LINE,
     NO_OVERLAY_LOCK,
     params.explicit ? CONTENT_LOCK_PERMISSIVE : CONTENT_LOCK_HOLD,
     speechLockLine(params.speechMode),
@@ -462,7 +471,7 @@ const planAct = (
       return {
         physical:
           `${leadIn}Standing with her back to the webcam, she shakes and bounces her hips and ass ` +
-          "to a beat only she can hear. No clothing changes.",
+          "to a beat only she can hear.",
         nextWardrobe: wardrobe,
         nextBody: { ...body, pose: "standing", facing: "away" },
         durationSec: ACTION_BEAT_SEC,
@@ -494,7 +503,7 @@ const planAct = (
         return {
           physical:
             `${leadIn}Facing away and bent forward, she reaches back with both hands and pulls her ` +
-            "ass cheeks apart, holding them open toward the lens, looking back over her shoulder. No clothing changes.",
+            "ass cheeks apart, holding them open toward the lens, looking back over her shoulder.",
           nextWardrobe: wardrobe,
           nextBody: {
             ...body,
@@ -514,7 +523,7 @@ const planAct = (
             ? "Lying down, she draws her knees up and lets them fall open, legs spread toward the lens."
             : "She draws her knees up and lets them fall open, legs spread toward the lens.";
       return {
-        physical: `${legsLine} No clothing changes.`,
+        physical: `${legsLine}`,
         nextWardrobe: wardrobe,
         nextBody: body,
         durationSec: ACTION_BEAT_SEC,
@@ -524,7 +533,7 @@ const planAct = (
     case "sway":
       return {
         physical:
-          "Bent over, she sways and arches her back, hips rocking slowly. No clothing changes.",
+          "Bent over, she sways and arches her back, hips rocking slowly.",
         nextWardrobe: wardrobe,
         nextBody: body,
         durationSec: ACTION_BEAT_SEC,
@@ -534,7 +543,7 @@ const planAct = (
       const leadIn =
         body.pose !== "standing" ? "0-2s: she rises to her feet. " : "";
       return {
-        physical: `${leadIn}She sways her hips to a beat only she can hear, full body in frame. No clothing changes.`,
+        physical: `${leadIn}She sways her hips to a beat only she can hear, full body in frame.`,
         nextWardrobe: wardrobe,
         nextBody: { ...body, pose: "standing" },
         durationSec: ACTION_BEAT_SEC,
@@ -574,7 +583,7 @@ const planAct = (
       return {
         physical:
           "She gives a warm wave and smiles at the webcam, maybe a small wink or a blown kiss. " +
-          "No clothing changes, nothing new appears.",
+          "Nothing new appears.",
         nextWardrobe: wardrobe,
         nextBody: body,
         durationSec: LIVE_TUNABLES.IDLE_CLIP_SEC,
@@ -584,7 +593,7 @@ const planAct = (
       return {
         physical:
           "She sticks her tongue out playfully or slowly licks her lips, holding her exact pose. " +
-          "No clothing changes, nothing new appears.",
+          "Nothing new appears.",
         nextWardrobe: wardrobe,
         nextBody: body,
         durationSec: LIVE_TUNABLES.IDLE_CLIP_SEC,
@@ -606,8 +615,7 @@ const planAct = (
           "0-4s: she lowers herself onto her hands and knees on the bed, turning her hips toward the " +
           "webcam as she settles — she does not stand up or turn a full circle, the turn happens as " +
           "part of the same movement. 4-8s: on her hands and knees, back arched, she rocks her hips in " +
-          "a slow, steady rhythm. 8-11s: she glances back over her shoulder at the lens, still rocking. " +
-          "No clothing changes.",
+          "a slow, steady rhythm. 8-11s: she glances back over her shoulder at the lens, still rocking.",
         nextWardrobe: wardrobe,
         nextBody: {
           ...body,
@@ -624,8 +632,7 @@ const planAct = (
       return {
         physical:
           "One hand comes around and spanks her own ass cheek, a few firm slaps, visible skin " +
-          `reaction, eyes on the lens${turnsToSide ? " — she turns her hips to the side as part of the same motion" : ""}. ` +
-          "No clothing changes.",
+          `reaction, eyes on the lens${turnsToSide ? " — she turns her hips to the side as part of the same motion" : ""}.`,
         nextWardrobe: wardrobe,
         nextBody: turnsToSide ? { ...body, facing: "side" } : body,
         durationSec: ACTION_BEAT_SEC,
@@ -642,7 +649,7 @@ const planAct = (
       return {
         physical:
           `Both hands come up and cup her own breasts${overFabric}, squeezing gently, thumbs circling ` +
-          "slowly over where her nipples are. No clothing changes.",
+          "slowly over where her nipples are.",
         nextWardrobe: wardrobe,
         nextBody: body,
         durationSec: ACTION_BEAT_SEC,
@@ -721,7 +728,7 @@ const planBeatIntentCore = (
         physical:
           `She moves from her current pose into ${POSE_DESCRIPTION[intent.pose]}, turning as she settles ` +
           `so she ends up ${FACING_TRANSITION_LABEL[intent.facing]}. The fixed webcam does not move. She ` +
-          "does not spin or turn a full circle. No clothing changes.",
+          "does not spin or turn a full circle.",
         nextWardrobe: wardrobe,
         nextBody: { ...body, pose: intent.pose, facing: intent.facing },
         durationSec: ACTION_BEAT_SEC,
@@ -1537,9 +1544,9 @@ const planIdle = (
       `only minimal, subtle life on top of that fixed pose: ${lifeLine}. Keep every movement small and slow; ` +
       "she never leaves the pose she starts in. This is a static hold, not a scene with a beginning and an end.",
     `FORBIDDEN this clip: no change of pose category (if she is ${nextBody.pose} now, she never sits, stands, ` +
-      "kneels, or lies down — she stays exactly that way start to finish), no clothing change, no new prop, " +
+      "kneels, or lies down — she stays exactly that way start to finish), no new prop, " +
       "no sexual act starting or continuing, no leaving frame.",
-    "Her hands stay exactly where the first frame shows them — never onto her own clothes, never onto a new object.",
+    "Her hands stay exactly where the first frame shows them, resting still, never onto a new object.",
     pauseLine,
     "The clip must END in the same pose, framing, expression baseline, and hand position it started in — " +
       "treat any motion as a small excursion that always returns to the exact start.",
