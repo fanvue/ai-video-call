@@ -64,6 +64,12 @@ vi.mock("./captureRoom", () => ({
     (captureRoom as (...a: unknown[]) => Promise<string | null>)(...args),
 }));
 
+const parseIntentsWithLlm = vi.fn(async (): Promise<unknown> => null);
+vi.mock("./parseIntents", () => ({
+  parseIntentsWithLlm: (...args: unknown[]) =>
+    (parseIntentsWithLlm as (...a: unknown[]) => Promise<unknown>)(...args),
+}));
+
 vi.mock("./writeReply", () => ({
   writeReply: vi.fn(async () => ({ text: "hey you", nextWorld: "chatting" })),
   writeCheckIn: vi.fn(async () => null),

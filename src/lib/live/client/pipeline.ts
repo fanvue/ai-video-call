@@ -10,6 +10,7 @@ import {
   type LiveSessionSnapshot,
   type LiveState,
   type RenderBackend,
+  type IntentParser,
   type SpeechMode,
   type SwapProfile,
 } from "@/lib/live/contract";
@@ -36,6 +37,7 @@ export type ClipPipelineOptions = {
   backend?: RenderBackend;
   speechMode?: SpeechMode;
   swapProfile?: SwapProfile;
+  intentParser?: IntentParser;
   // Called with a chain job that failed past retry, so the caller (director) can drop only that
   // request's own queued follow-ups instead of the whole queue.
   abandonDependents?: (job: ClipJob) => void;
@@ -95,6 +97,7 @@ export class ClipPipeline {
   private backend: RenderBackend;
   private speechMode: SpeechMode;
   private readonly swapProfile?: SwapProfile;
+  private readonly intentParser?: IntentParser;
 
   private getSnapshot: SnapshotSource | null = null;
   private getNextJob: (() => ClipJob) | null = null;
@@ -159,6 +162,7 @@ export class ClipPipeline {
     this.backend = options.backend ?? "turbo";
     this.speechMode = options.speechMode ?? "text";
     this.swapProfile = options.swapProfile;
+    this.intentParser = options.intentParser;
   }
 
   setBackend(backend: RenderBackend): void {
@@ -651,6 +655,7 @@ export class ClipPipeline {
       backend: this.backend,
       speechMode: this.speechMode,
       swapProfile: this.swapProfile,
+      intentParser: this.intentParser,
       useIdentityReference,
     };
     this.chainInflight = { job };

@@ -239,6 +239,15 @@ export type RenderBackend = z.infer<typeof renderBackendSchema>;
 export const speechModeSchema = z.enum(["text", "native"]);
 export type SpeechMode = z.infer<typeof speechModeSchema>;
 
+// How a reply's text becomes actions: the regex catalogue, an LLM only when the catalogue found no action, or an LLM for every request.
+export const intentParserSchema = z.enum(["regex", "hybrid", "llm"]);
+export type IntentParser = z.infer<typeof intentParserSchema>;
+export const INTENT_PARSER_LABELS: Record<IntentParser, string> = {
+  regex: "Regex catalogue (fastest)",
+  hybrid: "Hybrid (LLM when the catalogue finds no action)",
+  llm: "LLM reads every request",
+};
+
 // Swap-mode test profiles picked under Advanced, so a trial config sits beside the default instead of replacing it. swapModel is the Modal service's model name.
 export const swapProfileSchema = z.enum(["default", "hyperswap_1c", "ghost_1"]);
 export type SwapProfile = z.infer<typeof swapProfileSchema>;
@@ -290,6 +299,7 @@ export const clipRequestSchema = z.object({
   backend: renderBackendSchema.default("turbo"),
   speechMode: speechModeSchema.default("text"),
   swapProfile: swapProfileSchema.optional(),
+  intentParser: intentParserSchema.optional(),
   // Gates the reference backend's dual (identity + current-frame) reference; see consumeIdentityReferenceDue.
   useIdentityReference: z.boolean().default(false),
 });

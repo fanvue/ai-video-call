@@ -63,6 +63,12 @@ vi.mock("./captureRoom", () => ({
     (captureRoom as (...a: unknown[]) => Promise<string | null>)(...args),
 }));
 
+const parseIntentsWithLlm = vi.fn(async (): Promise<unknown> => null);
+vi.mock("./parseIntents", () => ({
+  parseIntentsWithLlm: (...args: unknown[]) =>
+    (parseIntentsWithLlm as (...a: unknown[]) => Promise<unknown>)(...args),
+}));
+
 vi.mock("./writeReply", () => ({
   writeReply: vi.fn(async () => ({ text: "hey you", nextWorld: "chatting" })),
   writeCheckIn: vi.fn(async () => null),
@@ -263,6 +269,50 @@ it("keeps the session's ROOM text for any clip after the greeting", async () => 
   });
   expect(captureRoom).not.toHaveBeenCalled();
   expect(result.state.surroundings).toBe(session.state.surroundings);
+});
+
+describe("intent parser", () => {
+  const reply = (text: string, intentParser?: ClipRequest["intentParser"]) =>
+    generateClip({
+      ...request({
+        kind: "reply",
+        requestId: "rp",
+        text,
+        channel: "chat",
+        from: "fan",
+        precededByIdle: false,
+      }),
+      intentParser,
+    });
+  const promptOf = () =>
+    (render.mock.calls.at(-1)?.[0] as { prompt: string }).prompt;
+
+  beforeEach(() => parseIntentsWithLlm.mockReset());
+
+  it("never calls the LLM on the default regex parser", async () => {
+    await reply("brush ur hair");
+    expect(parseIntentsWithLlm).not.toHaveBeenCalled();
+  });
+
+  it("hybrid skips the LLM when the catalogue already found an action", async () => {
+    await reply("do a spin", "hybrid");
+    expect(parseIntentsWithLlm).not.toHaveBeenCalled();
+  });
+
+  it("hybrid plans from the LLM's intents when the catalogue found none", async () => {
+    parseIntentsWithLlm.mockResolvedValueOnce([
+      { type: "act", act: "gesture" },
+    ]);
+    await reply("giv us a lil hello with ur hand", "hybrid");
+    expect(parseIntentsWithLlm).toHaveBeenCalledTimes(1);
+    expect(promptOf()).toMatch(/warm wave/i);
+  });
+
+  it("falls back to the catalogue when the LLM returns nothing", async () => {
+    parseIntentsWithLlm.mockResolvedValueOnce(null);
+    await reply("do a spin", "llm");
+    expect(promptOf()).toMatch(/360-degree/);
+  });
 });
 
 it("keeps swap-mode chain clips off reference-to-video by default", () => {

@@ -2,7 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
+  INTENT_PARSER_LABELS,
   SWAP_PROFILES,
+  type IntentParser,
   type RenderBackend,
   type SceneId,
   type SpeechMode,
@@ -24,6 +26,7 @@ export type SetupSubmit = {
   backend: RenderBackend;
   speechMode: SpeechMode;
   swapProfile: SwapProfile;
+  intentParser: IntentParser;
 };
 
 type SetupScreenProps = {
@@ -63,6 +66,7 @@ export const SetupScreen = ({
   // testing than the image-to-video/guard-repair chain, so it's the default over turbo or director.
   const [backend, setBackend] = useState<RenderBackend>("swap");
   const [swapProfile, setSwapProfile] = useState<SwapProfile>("default");
+  const [intentParser, setIntentParser] = useState<IntentParser>("regex");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Staging is the slow part of the join (20 to 35 s), so it runs here and the call starts only once it has settled.
@@ -246,6 +250,24 @@ export const SetupScreen = ({
                 frame seeds the next clip so identity re-locks every clip.
               </p>
             ) : null}
+            <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
+              Request understanding
+              <select
+                value={intentParser}
+                onChange={(event) =>
+                  setIntentParser(event.target.value as IntentParser)
+                }
+                className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] p-2 text-[var(--foreground)]"
+              >
+                {(Object.keys(INTENT_PARSER_LABELS) as IntentParser[]).map(
+                  (id) => (
+                    <option key={id} value={id}>
+                      {INTENT_PARSER_LABELS[id]}
+                    </option>
+                  ),
+                )}
+              </select>
+            </label>
             {backend === "swap" ? (
               <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
                 Swap profile (test configs)
@@ -288,6 +310,7 @@ export const SetupScreen = ({
             backend,
             speechMode: voiceExperimental ? "native" : "text",
             swapProfile,
+            intentParser,
           });
         }}
         className={

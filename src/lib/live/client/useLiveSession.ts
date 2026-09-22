@@ -54,6 +54,7 @@ import {
   type LiveState,
   type RenderBackend,
   type SceneId,
+  type IntentParser,
   type SpeechMode,
   type SwapProfile,
   type TranscriptEntry,
@@ -92,6 +93,7 @@ export type StartOptions = {
   backend?: RenderBackend;
   speechMode?: SpeechMode;
   swapProfile?: SwapProfile;
+  intentParser?: IntentParser;
 };
 
 export type UseLiveSessionDeps = {
@@ -1312,6 +1314,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         backend: options.backend ?? "turbo",
         speechMode: options.speechMode ?? "text",
         swapProfile: options.swapProfile,
+        intentParser: options.intentParser,
         abandonDependents: (job) => {
           directorRef.current?.abandonRequest(requestIdForJob(job));
         },

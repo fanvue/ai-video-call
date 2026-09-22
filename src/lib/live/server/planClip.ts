@@ -1368,7 +1368,7 @@ const capIntents = (intents: BeatIntent[]): BeatIntent[] => {
 };
 
 // Clause-to-clause state isn't simulated here; a stale default self-filters via isIntentSatisfied later.
-const resolveIntents = (
+export const resolveIntents = (
   rawText: string,
   wardrobe: Wardrobe,
   body: Body,
@@ -1609,9 +1609,13 @@ const planReply = (
   session: LiveSessionSnapshot,
   job: Extract<ClipJob, { kind: "reply" }>,
   speechMode: SpeechMode,
+  parsedIntents?: BeatIntent[],
 ): ClipPlan => {
   const { state, creator } = session;
-  const intents = resolveIntents(job.text, state.wardrobe, state.body);
+  const intents =
+    parsedIntents && parsedIntents.length > 0
+      ? capIntents(dedupeConsecutiveIntents(parsedIntents))
+      : resolveIntents(job.text, state.wardrobe, state.body);
   const dropped = leadingSatisfiedCount(intents, state);
   const allSatisfied = dropped >= intents.length;
   const lastIntent = intents[intents.length - 1];
@@ -1751,11 +1755,14 @@ export const planClip = ({
   job,
   speechMode,
   backend = "turbo",
+  parsedIntents,
 }: {
   session: LiveSessionSnapshot;
   job: ClipJob;
   speechMode: SpeechMode;
   backend?: RenderBackend;
+  // Reply only: intents already read from the request by the LLM parser, used in place of the regex catalogue.
+  parsedIntents?: BeatIntent[];
 }): ClipPlan => {
   const plan = ((): ClipPlan => {
     switch (job.kind) {
@@ -1766,7 +1773,7 @@ export const planClip = ({
       case "checkIn":
         return planCheckIn(session, job, speechMode);
       case "reply":
-        return planReply(session, job, speechMode);
+        return planReply(session, job, speechMode, parsedIntents);
       case "beat":
         return planBeat(session, job);
     }
