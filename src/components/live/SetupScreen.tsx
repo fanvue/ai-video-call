@@ -1,7 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { RenderBackend, SceneId, SpeechMode } from "@/lib/live/contract";
+import {
+  SWAP_PROFILES,
+  type RenderBackend,
+  type SceneId,
+  type SpeechMode,
+  type SwapProfile,
+} from "@/lib/live/contract";
 import type { PrepareStatus } from "@/lib/live/client/useLiveSession";
 
 const SCENES: { id: SceneId; label: string }[] = [
@@ -17,6 +23,7 @@ export type SetupSubmit = {
   displayName: string;
   backend: RenderBackend;
   speechMode: SpeechMode;
+  swapProfile: SwapProfile;
 };
 
 type SetupScreenProps = {
@@ -55,6 +62,7 @@ export const SetupScreen = ({
   // Reference-to-video (single anchor image, periodic identity correction) held up better in
   // testing than the image-to-video/guard-repair chain, so it's the default over turbo or director.
   const [backend, setBackend] = useState<RenderBackend>("swap");
+  const [swapProfile, setSwapProfile] = useState<SwapProfile>("default");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Staging is the slow part of the join (20 to 35 s), so it runs here and the call starts only once it has settled.
@@ -238,6 +246,24 @@ export const SetupScreen = ({
                 frame seeds the next clip so identity re-locks every clip.
               </p>
             ) : null}
+            {backend === "swap" ? (
+              <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
+                Swap profile (test configs)
+                <select
+                  value={swapProfile}
+                  onChange={(event) =>
+                    setSwapProfile(event.target.value as SwapProfile)
+                  }
+                  className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] p-2 text-[var(--foreground)]"
+                >
+                  {(Object.keys(SWAP_PROFILES) as SwapProfile[]).map((id) => (
+                    <option key={id} value={id}>
+                      {SWAP_PROFILES[id].label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
             {backend === "director" ? (
               <p className="text-xs text-[var(--muted)]">
                 fal&apos;s content policy rejects explicit requests; they show
@@ -261,6 +287,7 @@ export const SetupScreen = ({
             displayName: displayName.trim(),
             backend,
             speechMode: voiceExperimental ? "native" : "text",
+            swapProfile,
           });
         }}
         className={

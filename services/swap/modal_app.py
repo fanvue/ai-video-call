@@ -5,13 +5,17 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 from swap_core import (
+    CROSSFACE_GHOST_URL,
     DEFAULT_SWAP_MODEL,
     ENHANCER_URL,
+    GHOST_1_URL,
+    HYPERSWAP_1C_URL,
     HYPERSWAP_URL,
     INSWAPPER_FP16_URL,
     INSWAPPER_URL,
     REQUIREMENTS,
     RESTORER_URL,
+    SWAP_MODELS,
     SwapEngine,
     bearer_token,
     face_crop_from_data_uri,
@@ -46,6 +50,9 @@ image = (
         f"wget -q -O /models/real_esrgan_x2.onnx {ENHANCER_URL}",
         f"wget -q -O /models/hyperswap_1a_256.onnx {HYPERSWAP_URL}",
         f"wget -q -O /models/inswapper_128_fp16.onnx {INSWAPPER_FP16_URL}",
+        f"wget -q -O /models/hyperswap_1c_256.onnx {HYPERSWAP_1C_URL}",
+        f"wget -q -O /models/ghost_1_256.onnx {GHOST_1_URL}",
+        f"wget -q -O /models/crossface_ghost.onnx {CROSSFACE_GHOST_URL}",
         # insightface otherwise downloads the 275MB buffalo_l pack on every cold start.
         "python -c \"from insightface.utils.storage import ensure_available; ensure_available('models', 'buffalo_l', root='/root/.insightface')\"",
     )
@@ -56,6 +63,7 @@ image = (
 class SwapClipRequest(BaseModel):
     video_url: str
     reference_image: str
+    model: str = DEFAULT_SWAP_MODEL
 
 
 class FaceCropRequest(BaseModel):
@@ -95,6 +103,11 @@ class SwapService:
             "/models/real_esrgan_x2.onnx",
             "/models/hyperswap_1a_256.onnx",
             "/models/inswapper_128_fp16.onnx",
+            onnx_swapper_paths={
+                "hyperswap_1c": "/models/hyperswap_1c_256.onnx",
+                "ghost_1": "/models/ghost_1_256.onnx",
+                "crossface_ghost": "/models/crossface_ghost.onnx",
+            },
         )
 
     # Modal-authenticated path for smoke tests and the swapper bake-off from a laptop, so no clip needs a public URL; its defaults match the web path.
@@ -166,8 +179,10 @@ class SwapService:
         ) -> dict:
             if not token_allowed(bearer_token(authorization)):
                 raise HTTPException(status_code=403, detail="unauthorized")
+            if body.model not in SWAP_MODELS:
+                raise HTTPException(status_code=422, detail=f"unknown swap model {body.model!r}")
             try:
-                return swap_clip_from_url(engine, body.video_url, body.reference_image)
+                return swap_clip_from_url(engine, body.video_url, body.reference_image, body.model)
             except ValueError as error:
                 raise HTTPException(status_code=422, detail=str(error)) from error
 

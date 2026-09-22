@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getCurrentUser } from "@/lib/fanvue";
+import { swapModelFor, swapProfileSchema } from "@/lib/live/contract";
 import {
   failedSwapReport,
   SWAP_BUDGET_MS,
@@ -25,6 +26,7 @@ const bodySchema = z.object({
   videoUrl: falUrl,
   referenceImageUrl: falUrl,
   jobKind: z.enum(["greeting", "idle", "checkIn", "reply", "beat"]),
+  swapProfile: swapProfileSchema.optional(),
 });
 
 // Second phase of the swap: the clip already came back from /api/live/clip unswapped with a swapped tail as the next seed; this finishes the clip itself before the client plays it. Fails open to the unswapped clip with a failed report.
@@ -40,7 +42,7 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
-  const { videoUrl, referenceImageUrl, jobKind } = parsed.data;
+  const { videoUrl, referenceImageUrl, jobKind, swapProfile } = parsed.data;
   const startedAt = Date.now();
   try {
     const swapped = await swapClip({
@@ -49,6 +51,7 @@ export async function POST(request: Request) {
       budgetMs:
         jobKind === "greeting" ? SWAP_GREETING_BUDGET_MS : SWAP_BUDGET_MS,
       jobKind,
+      swapModel: swapModelFor(swapProfile),
     });
     return NextResponse.json({
       videoUrl: swapped.videoUrl,

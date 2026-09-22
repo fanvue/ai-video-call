@@ -173,6 +173,7 @@ export const LiveStudio = () => {
           displayName: values.displayName || "Her",
           backend: values.backend,
           speechMode: values.speechMode,
+          swapProfile: values.swapProfile,
         })
         .then(() => {
           setStartedAtMs(Date.now());

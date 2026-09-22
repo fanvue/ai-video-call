@@ -86,6 +86,16 @@ describe("POST /api/live/swap", () => {
     expect(data.report.status).toBe("swapped");
   });
 
+  it("maps the session's swap profile to its model and rejects unknown profiles", async () => {
+    vi.mocked(swapClip).mockRejectedValue(new Error("stop"));
+    await POST(jsonBody({ ...body, swapProfile: "ghost_1" }));
+    expect(swapClip).toHaveBeenCalledWith(
+      expect.objectContaining({ swapModel: "ghost_1" }),
+    );
+    const rejected = await POST(jsonBody({ ...body, swapProfile: "simswap" }));
+    expect(rejected.status).toBe(400);
+  });
+
   it("gives the greeting the short budget and fails open to the unswapped clip", async () => {
     vi.mocked(swapClip).mockRejectedValue(
       new Error("Swap service responded 503"),

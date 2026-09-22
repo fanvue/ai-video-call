@@ -55,6 +55,7 @@ import {
   type RenderBackend,
   type SceneId,
   type SpeechMode,
+  type SwapProfile,
   type TranscriptEntry,
   type Wardrobe,
 } from "@/lib/live/contract";
@@ -90,6 +91,7 @@ export type StartOptions = {
   displayName: string;
   backend?: RenderBackend;
   speechMode?: SpeechMode;
+  swapProfile?: SwapProfile;
 };
 
 export type UseLiveSessionDeps = {
@@ -118,6 +120,7 @@ export type UseLiveSessionDeps = {
   swapRenderedClip?: (
     result: ClipResult,
     referenceImageUrl: string,
+    swapProfile?: SwapProfile,
   ) => Promise<{ videoUrl: string; costUsd: number; report: ClipSwapReport }>;
   // Optional: playback and connect events for the server log; tests leave it out.
   reportTelemetry?: (
@@ -1308,6 +1311,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         onEvent: handlePipelineEvent,
         backend: options.backend ?? "turbo",
         speechMode: options.speechMode ?? "text",
+        swapProfile: options.swapProfile,
         abandonDependents: (job) => {
           directorRef.current?.abandonRequest(requestIdForJob(job));
         },
@@ -1316,7 +1320,12 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
           directorRef.current?.consumeIdentityReferenceDue(Date.now()) ?? false,
         finalizeSwap:
           options.backend === "swap" && swapRenderedClip
-            ? (result) => swapRenderedClip(result, reference.anchorFrameUrl)
+            ? (result) =>
+                swapRenderedClip(
+                  result,
+                  reference.anchorFrameUrl,
+                  options.swapProfile,
+                )
             : undefined,
       });
       pipelineRef.current = pipeline;

@@ -8,6 +8,7 @@ import {
   type InputChannel,
   type SceneId,
   type SpeechMode,
+  type SwapProfile,
   type TranscriptEntry,
 } from "@/lib/live/contract";
 import type { ReferenceUploadResult } from "@/lib/live/client/useLiveSession";
@@ -57,11 +58,13 @@ export type SwapRenderedClipResult = z.infer<typeof swapResultSchema>;
 export const swapRenderedClip = async (
   result: ClipResult,
   referenceImageUrl: string,
+  swapProfile?: SwapProfile,
 ): Promise<SwapRenderedClipResult> => {
   const raw = await postJson<unknown>("/api/live/swap", {
     videoUrl: result.videoUrl,
     referenceImageUrl,
     jobKind: result.jobKind,
+    swapProfile,
   });
   return swapResultSchema.parse(raw);
 };

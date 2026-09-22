@@ -84,11 +84,13 @@ export const swapClip = async ({
   referenceImageUrl,
   budgetMs = SWAP_BUDGET_MS,
   jobKind = "unknown",
+  swapModel,
 }: {
   videoUrl: string;
   referenceImageUrl: string;
   budgetMs?: number;
   jobKind?: string;
+  swapModel?: string;
 }): Promise<SwapClipOutcome> => {
   if (!env.SWAP_SERVICE_URL || !env.SWAP_TOKEN) {
     throw new Error("Swap service is not configured");
@@ -97,6 +99,7 @@ export const swapClip = async ({
   const body = JSON.stringify({
     video_url: videoUrl,
     reference_image: await fetchAsDataUri(referenceImageUrl),
+    ...(swapModel ? { model: swapModel } : {}),
   });
   const controllers: AbortController[] = [];
   const attempt = async () => {

@@ -94,6 +94,36 @@ describe("swapClip", () => {
     expect(outcome.costUsd).toBeCloseTo((12 * 1.95) / 3600, 6);
   });
 
+  it("sends a test profile's swap model to the service", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(new Uint8Array([1, 2, 3]), {
+          headers: { "content-type": "image/png" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          video_base64: Buffer.from("video").toString("base64"),
+          last_frame_base64: Buffer.from("frame").toString("base64"),
+          stats: serviceStats,
+        }),
+      );
+    uploadToFal
+      .mockResolvedValueOnce("https://fal.test/swap.mp4")
+      .mockResolvedValueOnce("https://fal.test/last.jpg");
+
+    await swapClip({
+      videoUrl: "https://fal.test/turbo.mp4",
+      referenceImageUrl: "https://fal.test/reference-profile.png",
+      swapModel: "hyperswap_1c",
+    });
+
+    const [, init] = fetchMock.mock.calls[1] as [URL, RequestInit];
+    expect(JSON.parse(init.body as string)).toMatchObject({
+      model: "hyperswap_1c",
+    });
+  });
+
   it("throws before contacting the service when it is not configured", async () => {
     envMock.SWAP_TOKEN = undefined;
     await expect(

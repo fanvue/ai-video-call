@@ -6,6 +6,7 @@ import {
 import {
   LIVE_TUNABLES,
   stateFrameKey,
+  swapModelFor,
   type ClipRequest,
   type ClipResult,
   type ClipSwapReport,
@@ -375,6 +376,7 @@ export const generateClip = async (
         budgetMs:
           job.kind === "greeting" ? SWAP_GREETING_BUDGET_MS : SWAP_BUDGET_MS,
         jobKind: job.kind,
+        swapModel: swapModelFor(request.swapProfile),
       });
       videoUrl = swapped.videoUrl;
       costUsd += swapped.costUsd;

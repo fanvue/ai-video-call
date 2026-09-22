@@ -11,6 +11,7 @@ import {
   type LiveState,
   type RenderBackend,
   type SpeechMode,
+  type SwapProfile,
 } from "@/lib/live/contract";
 
 export type PipelineEvent =
@@ -34,6 +35,7 @@ export type ClipPipelineOptions = {
   onEvent: (event: PipelineEvent) => void;
   backend?: RenderBackend;
   speechMode?: SpeechMode;
+  swapProfile?: SwapProfile;
   // Called with a chain job that failed past retry, so the caller (director) can drop only that
   // request's own queued follow-ups instead of the whole queue.
   abandonDependents?: (job: ClipJob) => void;
@@ -92,6 +94,7 @@ export class ClipPipeline {
   private readonly finalizeSwap?: ClipPipelineOptions["finalizeSwap"];
   private backend: RenderBackend;
   private speechMode: SpeechMode;
+  private readonly swapProfile?: SwapProfile;
 
   private getSnapshot: SnapshotSource | null = null;
   private getNextJob: (() => ClipJob) | null = null;
@@ -155,6 +158,7 @@ export class ClipPipeline {
     this.finalizeSwap = options.finalizeSwap;
     this.backend = options.backend ?? "turbo";
     this.speechMode = options.speechMode ?? "text";
+    this.swapProfile = options.swapProfile;
   }
 
   setBackend(backend: RenderBackend): void {
@@ -646,6 +650,7 @@ export class ClipPipeline {
       job,
       backend: this.backend,
       speechMode: this.speechMode,
+      swapProfile: this.swapProfile,
       useIdentityReference,
     };
     this.chainInflight = { job };
@@ -844,6 +849,7 @@ export class ClipPipeline {
       // Idle is never committed as canon or reused as a seed, so use the faster turbo backend; swap mode keeps swap, or the filler (most of what plays) would show the unswapped face.
       backend: this.backend === "swap" ? "swap" : "turbo",
       speechMode: this.speechMode,
+      swapProfile: this.swapProfile,
       useIdentityReference: false,
     };
     this.trackIdleInflight(anchorAtSubmit.frameUrl, 1);

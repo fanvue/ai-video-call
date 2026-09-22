@@ -239,6 +239,26 @@ export type RenderBackend = z.infer<typeof renderBackendSchema>;
 export const speechModeSchema = z.enum(["text", "native"]);
 export type SpeechMode = z.infer<typeof speechModeSchema>;
 
+// Swap-mode test profiles picked under Advanced, so a trial config sits beside the default instead of replacing it. swapModel is the Modal service's model name.
+export const swapProfileSchema = z.enum(["default", "hyperswap_1c", "ghost_1"]);
+export type SwapProfile = z.infer<typeof swapProfileSchema>;
+export const SWAP_PROFILES: Record<
+  SwapProfile,
+  { label: string; swapModel: string }
+> = {
+  default: { label: "Default (inswapper fp16)", swapModel: "inswapper_fp16" },
+  hyperswap_1c: {
+    label: "HyperSwap 1c (sharper, weaker likeness)",
+    swapModel: "hyperswap_1c",
+  },
+  ghost_1: { label: "GHOST 1 (Apache-2.0 licence)", swapModel: "ghost_1" },
+};
+// Undefined for the default profile so the service's own default model governs.
+export const swapModelFor = (profile?: SwapProfile): string | undefined =>
+  profile && profile !== "default"
+    ? SWAP_PROFILES[profile].swapModel
+    : undefined;
+
 // Request / response
 
 export const liveSessionSnapshotSchema = z.object({
@@ -269,6 +289,7 @@ export const clipRequestSchema = z.object({
   job: clipJobSchema,
   backend: renderBackendSchema.default("turbo"),
   speechMode: speechModeSchema.default("text"),
+  swapProfile: swapProfileSchema.optional(),
   // Gates the reference backend's dual (identity + current-frame) reference; see consumeIdentityReferenceDue.
   useIdentityReference: z.boolean().default(false),
 });

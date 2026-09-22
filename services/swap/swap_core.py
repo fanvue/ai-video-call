@@ -46,8 +46,13 @@ KPS_SMOOTH_ALPHA = 0.5
 KPS_SMOOTH = False
 # FaceFusion's HyperSwap 1a (256 px, same ArcFace w600k_r50 identity as buffalo_l); the bake-off candidate against inswapper_128.
 HYPERSWAP_URL = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.3.0/hyperswap_1a_256.onnx"
+# Bake-off runners-up (swap-bakeoff REPORT): hyperswap_1c was the sharpest (ArcFace 0.849), ghost_1 the only Apache-2.0 swapper (0.832); picked per session from the Advanced swap profile.
+HYPERSWAP_1C_URL = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.3.0/hyperswap_1c_256.onnx"
+GHOST_1_URL = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/ghost_1_256.onnx"
+# GHOST takes its own identity latent, mapped from the raw ArcFace embedding by this converter.
+CROSSFACE_GHOST_URL = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.4.0/crossface_ghost.onnx"
 SWAP_SIZE = 256
-SWAP_MODELS = ("inswapper", "inswapper_fp16", "hyperswap")
+SWAP_MODELS = ("inswapper", "inswapper_fp16", "hyperswap", "hyperswap_1c", "ghost_1")
 # fp16 matched fp32 at 46.7 dB PSNR and the same ArcFace (0.936) on a 362-frame clip, 13.4 vs 20.8 ms/frame.
 DEFAULT_SWAP_MODEL = "inswapper_fp16"
 # How much of the restored face replaces the swapped one; 1.0 looks waxy, FaceFusion defaults to 0.8. Down from 0.8: at 0.8 on every frame the face read contoured and over-sharpened by the fourth or fifth clip of a session.
@@ -78,6 +83,15 @@ FFHQ_TEMPLATE = [
     [0.50123859, 0.61331904],
     [0.39308822, 0.72541100],
     [0.61150205, 0.72490465],
+]
+
+# FaceFusion's arcface_112_v1 template, the crop GHOST was trained on.
+ARCFACE_112_V1_TEMPLATE = [
+    [0.35473214, 0.45658929],
+    [0.64526786, 0.45658929],
+    [0.50000000, 0.61154464],
+    [0.37913393, 0.77687500],
+    [0.62086607, 0.77687500],
 ]
 
 # FaceFusion's arcface_128 alignment template, the crop HyperSwap was trained on.
@@ -125,6 +139,7 @@ class SwapEngine:
         enhancer_path: str | None = None,
         hyperswap_path: str | None = None,
         inswapper_fp16_path: str | None = None,
+        onnx_swapper_paths: dict[str, str] | None = None,
     ) -> None:
         import insightface
         import numpy as np
@@ -170,21 +185,15 @@ class SwapEngine:
             )
             self.enhancer_input = self.enhancer.get_inputs()[0].name
             print("enhancer providers:", self.enhancer.get_providers())
-        self.hyperswap = None
-        if hyperswap_path and DEFAULT_SWAP_MODEL == "hyperswap":
-            import onnxruntime
-
-            self.hyperswap = onnxruntime.InferenceSession(
-                hyperswap_path, providers=PROVIDERS
-            )
-            # The export is fp16 in places; feed each input in the dtype it declares instead of guessing.
-            self.hyperswap_inputs = {
-                i.name: (np.float16 if "float16" in i.type else np.float32)
-                for i in self.hyperswap.get_inputs()
-            }
-            print("hyperswap providers:", self.hyperswap.get_providers(), self.hyperswap_inputs)
+        # 256 px FaceFusion swappers (HyperSwap, GHOST), loaded on first use so test profiles do not slow the default cold start.
+        self.onnx_swapper_paths = dict(onnx_swapper_paths or {})
+        if hyperswap_path:
+            self.onnx_swapper_paths.setdefault("hyperswap", hyperswap_path)
+        self.onnx_swappers: dict[str, dict[str, Any]] = {}
+        self.onnx_swapper_lock = threading.Lock()
+        if DEFAULT_SWAP_MODEL in self.onnx_swapper_paths:
+            self.onnx_swapper(DEFAULT_SWAP_MODEL)
         self.template = np.array(FFHQ_TEMPLATE, dtype=np.float32) * RESTORE_SIZE
-        self.swap_template = np.array(ARCFACE_128_TEMPLATE, dtype=np.float32) * SWAP_SIZE
         self.warm_up()
 
     def warm_up(self) -> None:
@@ -199,12 +208,41 @@ class SwapEngine:
             self.restorer.run([self.restorer_output], {self.restorer_input: tensor})
         if self.enhancer is not None:
             self.enhance_frame(blank)
-        if self.hyperswap is not None:
+        for swapper in self.onnx_swappers.values():
             feed = {
                 name: np.zeros((1, 512) if name == "source" else (1, 3, SWAP_SIZE, SWAP_SIZE), dtype=dtype)
-                for name, dtype in self.hyperswap_inputs.items()
+                for name, dtype in swapper["inputs"].items()
             }
-            self.hyperswap.run(None, feed)
+            swapper["session"].run([swapper["output"]], feed)
+
+    def has_swap_model(self, model: str) -> bool:
+        return model in ("inswapper", "inswapper_fp16") or model in self.onnx_swapper_paths
+
+    def onnx_swapper(self, model: str) -> dict[str, Any]:
+        import numpy as np
+        import onnxruntime
+
+        with self.onnx_swapper_lock:
+            if model in self.onnx_swappers:
+                return self.onnx_swappers[model]
+            session = onnxruntime.InferenceSession(self.onnx_swapper_paths[model], providers=PROVIDERS)
+            is_ghost = model.startswith("ghost")
+            swapper = {
+                "session": session,
+                # The exports are fp16 in places; feed each input in the dtype it declares instead of guessing.
+                "inputs": {i.name: (np.float16 if "float16" in i.type else np.float32) for i in session.get_inputs()},
+                # Output 0 is the swapped crop; GHOST also returns decoder feature maps that would otherwise be copied to host every frame.
+                "output": session.get_outputs()[0].name,
+                "template": np.array(ARCFACE_112_V1_TEMPLATE if is_ghost else ARCFACE_128_TEMPLATE, dtype=np.float32) * SWAP_SIZE,
+                "converter": (
+                    onnxruntime.InferenceSession(self.onnx_swapper_paths["crossface_ghost"], providers=PROVIDERS)
+                    if is_ghost
+                    else None
+                ),
+            }
+            print(f"{model} providers:", session.get_providers(), swapper["inputs"], flush=True)
+            self.onnx_swappers[model] = swapper
+            return swapper
 
     # A light Gaussian blended in just far enough to bring an over-textured seed back to the target sharpness; the blend weight is bisected so the correction is proportional, never a fixed blur.
     def soften_frame(self, frame, target: float):
@@ -437,13 +475,14 @@ class SwapEngine:
         }
         return stats, self.encode_jpeg(seed_frame)
 
-    # HyperSwap's own crop and tensor contract (FaceFusion face_swapper: arcface_128 template at 256, (x/255 - 0.5)/0.5 RGB in, the inverse out); returns the swapped crop and the frame-to-crop matrix like insightface's paste_back=False path.
-    def hyperswap_patch(self, frame, face, source_face):
+    # FaceFusion face_swapper's crop and tensor contract for HyperSwap and GHOST (model template at 256, (x/255 - 0.5)/0.5 RGB in, the inverse out); returns the swapped crop and the frame-to-crop matrix like insightface's paste_back=False path.
+    def onnx_patch(self, frame, face, source_face, model: str):
         import cv2
         import numpy as np
 
+        swapper = self.onnx_swapper(model)
         matrix, _ = cv2.estimateAffinePartial2D(
-            face.kps.astype(np.float32), self.swap_template, method=cv2.RANSAC, ransacReprojThreshold=100
+            face.kps.astype(np.float32), swapper["template"], method=cv2.RANSAC, ransacReprojThreshold=100
         )
         if matrix is None:
             return None, None
@@ -452,12 +491,16 @@ class SwapEngine:
         )
         target = (crop[:, :, ::-1].astype(np.float32) / 255.0 - 0.5) / 0.5
         target = np.transpose(target, (2, 0, 1))[None]
+        if swapper["converter"] is not None:
+            raw = source_face.embedding.astype(np.float32).reshape(1, 512)
+            source = swapper["converter"].run(None, {"input": raw})[0].reshape(1, -1)
+        else:
+            source = source_face.normed_embedding.reshape(1, -1)
         feed = {
-            "source": source_face.normed_embedding.reshape(1, -1).astype(self.hyperswap_inputs["source"]),
-            "target": target.astype(self.hyperswap_inputs["target"]),
+            "source": source.astype(swapper["inputs"]["source"]),
+            "target": target.astype(swapper["inputs"]["target"]),
         }
-        # Output 0 is the swapped crop; the export carries extra outputs after it.
-        output = self.hyperswap.run(None, feed)[0]
+        output = swapper["session"].run([swapper["output"]], feed)[0]
         swapped = output[0].astype(np.float32).transpose(1, 2, 0) * 0.5 + 0.5
         swapped = (np.clip(swapped, 0.0, 1.0)[:, :, ::-1] * 255.0).astype(np.uint8)
         return swapped, matrix
@@ -476,8 +519,8 @@ class SwapEngine:
         out = frame
         for face in faces:
             started = time.perf_counter()
-            if model == "hyperswap" and self.hyperswap is not None:
-                patch, matrix = self.hyperswap_patch(out, face, source_face)
+            if model in self.onnx_swapper_paths:
+                patch, matrix = self.onnx_patch(out, face, source_face, model)
                 if patch is None:
                     continue
             else:
@@ -830,7 +873,7 @@ def download(url: str, path: str) -> None:
 
 
 def swap_clip_from_url(
-    engine: SwapEngine, video_url: str, reference_data_uri: str
+    engine: SwapEngine, video_url: str, reference_data_uri: str, model: str = DEFAULT_SWAP_MODEL
 ) -> dict[str, Any]:
     with tempfile.TemporaryDirectory() as directory:
         source_path = os.path.join(directory, "source.mp4")
@@ -838,11 +881,11 @@ def swap_clip_from_url(
         download(video_url, source_path)
         download_ms = int((time.perf_counter() - started) * 1000)
         with open(source_path, "rb") as file:
-            result = swap_clip_from_bytes(engine, file.read(), reference_data_uri)
+            result = swap_clip_from_bytes(engine, file.read(), reference_data_uri, model)
     result["stats"]["download_ms"] = download_ms
     stats = result["stats"]
     print(
-        f"swapClip: model={DEFAULT_SWAP_MODEL} restored={stats['restored']} frames={stats['frames']} download_ms={download_ms} swap_ms={stats['swap_ms']} "
+        f"swapClip: model={model} restored={stats['restored']} frames={stats['frames']} download_ms={download_ms} swap_ms={stats['swap_ms']} "
         f"ms_per_frame={stats['ms_per_frame']} similarity={stats['similarity_before']}->{stats['similarity_after']} "
         f"enhance_ms={stats['enhance_ms']} sharpness={stats['sharpness_before']}->{stats['sharpness_after']}",
         flush=True,
@@ -979,9 +1022,9 @@ def swap_clip_from_bytes(
     # Response: base64 mp4 + base64 PNG of the swapped last frame (the next clip's seed) + stats.
     if model not in SWAP_MODELS:
         raise ValueError(f"unknown swap model {model!r}")
-    # HyperSwap is only loaded when it is the default; fail instead of silently swapping with inswapper under its name.
-    if model == "hyperswap" and engine.hyperswap is None:
-        raise ValueError("hyperswap is not loaded on this engine")
+    # Fail instead of silently swapping with inswapper under another model's name.
+    if not engine.has_swap_model(model):
+        raise ValueError(f"{model} is not available on this engine")
     source_face = engine.reference_face(reference_data_uri)
     with tempfile.TemporaryDirectory() as directory:
         source_path = os.path.join(directory, "source.mp4")
@@ -1025,6 +1068,6 @@ def profile_networks(engine: SwapEngine, video: bytes, reference_data_uri: str, 
     }
     if engine.restorer is not None:
         result["restore_ms"] = timed(lambda: engine.restore_face(frame, face, source_face))
-    if engine.hyperswap is not None:
-        result["hyperswap_ms"] = timed(lambda: engine.hyperswap_patch(frame, face, source_face))
+    for model in list(engine.onnx_swappers):
+        result[f"{model}_ms"] = timed(lambda: engine.onnx_patch(frame, face, source_face, model))
     return result
