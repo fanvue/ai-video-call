@@ -1489,10 +1489,14 @@ const IDLE_LIFE_VARIANTS: readonly string[] = [
 const IDLE_PHONE_VARIANT =
   "glancing down at the phone already in her hand, thumb moving briefly like she's reading something, then looking back up at the lens";
 
-const idleLifeLine = (elapsedSec: number, hasPhone: boolean): string => {
+const idleLifeLine = (
+  elapsedSec: number,
+  hasPhone: boolean,
+  variant?: number,
+): string => {
   if (hasPhone) return IDLE_PHONE_VARIANT;
   const index =
-    Math.floor(elapsedSec / LIVE_TUNABLES.IDLE_CLIP_SEC) %
+    (variant ?? Math.floor(elapsedSec / LIVE_TUNABLES.IDLE_CLIP_SEC)) %
     IDLE_LIFE_VARIANTS.length;
   return IDLE_LIFE_VARIANTS[index] ?? (IDLE_LIFE_VARIANTS[0] as string);
 };
@@ -1517,7 +1521,11 @@ const planIdle = (
       : state.body.hands === "holdingProp"
         ? "The current prop stays held still in her hand; she does not use it this clip."
         : "";
-  const lifeLine = idleLifeLine(session.elapsedSec, nextBody.prop === "phone");
+  const lifeLine = idleLifeLine(
+    session.elapsedSec,
+    nextBody.prop === "phone",
+    job.variant,
+  );
   const action = [
     `IDLE, between requests. She stays ${nextBody.pose}, exactly as she is right now, for the entire clip — ` +
       `only minimal, subtle life on top of that fixed pose: ${lifeLine}. Keep every movement small and slow; ` +

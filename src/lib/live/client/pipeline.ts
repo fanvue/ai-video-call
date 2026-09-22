@@ -112,6 +112,9 @@ export class ClipPipeline {
   private idleInflightBySeed = new Map<string, number>();
   // Non-looping idle clips drift their own end frame, so match for playback by the anchor they were rendered FROM.
   private idleAnchorByClipId = new Map<string, string>();
+  // Looping idles already played; they start and end on their anchor, so any of them can follow any other seamlessly (see IDLE_DECK_SIZE).
+  private idleDeck: ClipResult[] = [];
+  private lastIdleClipId: string | null = null;
 
   private chainInflight: { job: ClipJob } | null = null;
   // Seed for the next chain job once the current one resolves; null = chain caught up with anchor.
@@ -384,6 +387,10 @@ export class ClipPipeline {
   // The player hands back a clip it pulled but will not play (an idle displaced by a cut-in).
   requeue(clip: ClipResult): void {
     if (clip.jobKind === "idle") {
+      // A deck replay handed back is still in the deck; a fresh idle goes back to the front of the shelf.
+      if (this.idleDeck.includes(clip)) {
+        return;
+      }
       this.idleReady.unshift(clip);
       return;
     }
@@ -444,10 +451,41 @@ export class ClipPipeline {
           );
     if (idleIndex !== -1) {
       const [clip] = this.idleReady.splice(idleIndex, 1);
+      if (clip) {
+        if (clip.loops) {
+          this.idleDeck.push(clip);
+        }
+        this.lastIdleClipId = clip.clipId;
+      }
       this.fillIdleStockpile();
       return clip;
     }
-    return null;
+    return this.replayFromDeck();
+  }
+
+  // No fresh idle for this anchor: replay a played one, never the one just shown, so the loop reads as varied rather than repeated.
+  private replayFromDeck(): ClipResult | null {
+    const candidates = this.idleDeck.filter(
+      (clip) =>
+        clip.clipId !== this.lastIdleClipId &&
+        this.isPlayable(clip) &&
+        this.sameSeed(
+          this.idleAnchorByClipId.get(clip.clipId) ?? "",
+          this.playoutCursorFrameUrl,
+        ),
+    );
+    const clip = candidates[Math.floor(Math.random() * candidates.length)];
+    if (!clip) {
+      return null;
+    }
+    this.lastIdleClipId = clip.clipId;
+    return clip;
+  }
+
+  private deckCountFor(frameUrl: string): number {
+    return this.idleDeck.filter((clip) =>
+      this.sameSeed(this.idleAnchorByClipId.get(clip.clipId) ?? "", frameUrl),
+    ).length;
   }
 
   private hasPlayable(): boolean {
@@ -455,7 +493,7 @@ export class ClipPipeline {
       (this.chainedReady[0] !== undefined &&
         this.isPlayable(this.chainedReady[0])) ||
       (this.firstChainClipPlayed &&
-        this.idleReady.some(
+        [...this.idleReady, ...this.idleDeck].some(
           (clip) =>
             this.isPlayable(clip) &&
             this.sameSeed(
@@ -537,6 +575,13 @@ export class ClipPipeline {
       newAnchor = { ...tail, frameUrl: trusted };
     }
     this.anchor = newAnchor;
+    // Idles of an earlier pose can never follow this anchor again.
+    this.idleDeck = this.idleDeck.filter((clip) =>
+      this.sameSeed(
+        this.idleAnchorByClipId.get(clip.clipId) ?? "",
+        newAnchor.frameUrl,
+      ),
+    );
     this.onEvent({
       type: "anchorChanged",
       frameUrl: newAnchor.frameUrl,
@@ -724,6 +769,14 @@ export class ClipPipeline {
     return ready + inflight;
   }
 
+  // A settled pose whose deck is full replays it instead of rendering more; a bridge idle for a chain tail only covers until the chain moves on.
+  private deckFull(target: AnchorPoint): boolean {
+    return (
+      this.chainTail === null &&
+      this.deckCountFor(target.frameUrl) >= LIVE_TUNABLES.IDLE_DECK_SIZE
+    );
+  }
+
   private trackIdleInflight(seed: string, delta: number): void {
     this.idleInflightCount += delta;
     const next = (this.idleInflightBySeed.get(seed) ?? 0) + delta;
@@ -757,7 +810,7 @@ export class ClipPipeline {
           target.frameUrl,
         ),
     );
-    if (chainSwapActive && targetCovered) {
+    if ((chainSwapActive && targetCovered) || this.deckFull(target)) {
       return;
     }
     // A bare shelf still needs covering, but the account's swap capacity only sustains one chain swap plus one filler at a time; piling the full idle inflight budget on top of a chain swap is what queued replies 15-20s behind fillers.
@@ -781,7 +834,13 @@ export class ClipPipeline {
         seedFrameUrl: anchorAtSubmit.frameUrl,
         state: anchorAtSubmit.state,
       },
-      job: { kind: "idle", durationSec: this.nextIdleDurationSec() },
+      job: {
+        kind: "idle",
+        durationSec: this.nextIdleDurationSec(),
+        variant:
+          this.idleLaneTargetStockCount() +
+          this.deckCountFor(anchorAtSubmit.frameUrl),
+      },
       // Idle is never committed as canon or reused as a seed, so use the faster turbo backend; swap mode keeps swap, or the filler (most of what plays) would show the unswapped face.
       backend: this.backend === "swap" ? "swap" : "turbo",
       speechMode: this.speechMode,

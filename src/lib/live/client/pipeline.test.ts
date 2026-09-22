@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import { ClipPipeline, type PipelineEvent } from "./pipeline";
 import { LIVE_TUNABLES } from "@/lib/live/contract";
 import type {
@@ -1442,9 +1450,14 @@ describe("ClipPipeline", () => {
     expect(bridge?.jobKind).toBe("idle");
     expect(bridge?.seedFrameUrl).toBe(reply?.seedFrameUrl);
 
-    // Drain every idle: the ANCHOR_0 stock must be reachable behind the drifted tail, never stranded.
+    // Drain every fresh idle: the ANCHOR_0 stock must be reachable behind the drifted tail, never stranded. Stops at the first deck replay, which never runs dry.
     const seeds = new Set<string>();
+    const played = new Set<string>();
     for (let clip = pipeline.nextClip(); clip; clip = pipeline.nextClip()) {
+      if (played.has(clip.clipId)) {
+        break;
+      }
+      played.add(clip.clipId);
       expect(clip.jobKind).toBe("idle");
       seeds.add(clip.seedFrameUrl);
     }
@@ -2203,6 +2216,13 @@ describe("ClipPipeline", () => {
   });
 
   it("sizes the next idle to the slowest recent idle production plus headroom, within the clip bounds", async () => {
+    // Five idles play on one anchor here; a full deck would stop the renders this test measures.
+    const tunables = LIVE_TUNABLES as { IDLE_DECK_SIZE: number };
+    const deckSize = tunables.IDLE_DECK_SIZE;
+    tunables.IDLE_DECK_SIZE = 99;
+    onTestFinished(() => {
+      tunables.IDLE_DECK_SIZE = deckSize;
+    });
     const requests: ClipRequest[] = [];
     const queue = makeJobQueue();
     let productionMs = 14_000;
@@ -2492,5 +2512,118 @@ describe("ClipPipeline", () => {
     pipeline.onRequestEnqueued();
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
     expect(upscaleSeed).not.toHaveBeenCalled();
+  });
+
+  describe("idle deck", () => {
+    const idleRequestsOn = (requests: ClipRequest[], frameUrl: string) =>
+      requests.filter(
+        (r) => r.job.kind === "idle" && r.session.seedFrameUrl === frameUrl,
+      );
+
+    it("stops rendering idles once a settled pose has a full deck, and replays it without repeating one back to back", async () => {
+      const requests: ClipRequest[] = [];
+      const queue = makeJobQueue();
+      const pipeline = trackedPipeline({
+        now: nowFn,
+        onEvent: () => {},
+        render: async (req) => {
+          requests.push(req);
+          return delayed(() => chainAdvancingResult(req));
+        },
+      });
+      pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+      await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+      const greeting = pipeline.nextClip();
+      pipeline.onClipStarted(greeting!.seedFrameUrl);
+
+      const played: string[] = [];
+      for (let i = 0; i < 12; i += 1) {
+        await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+        const clip = pipeline.nextClip();
+        expect(clip?.jobKind).toBe("idle");
+        played.push(clip!.clipId);
+      }
+      const rendered = idleRequestsOn(requests, ANCHOR_0).length;
+      // The deck plus at most the buffer that was already stocked or in flight when it filled.
+      expect(rendered).toBeLessThanOrEqual(
+        LIVE_TUNABLES.IDLE_DECK_SIZE +
+          LIVE_TUNABLES.IDLE_BUFFER_TARGET +
+          LIVE_TUNABLES.IDLE_MAX_INFLIGHT,
+      );
+      await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS * 10);
+      expect(idleRequestsOn(requests, ANCHOR_0)).toHaveLength(rendered);
+      for (let i = 1; i < played.length; i += 1) {
+        expect(played[i]).not.toBe(played[i - 1]);
+      }
+      expect(new Set(played).size).toBeGreaterThanOrEqual(
+        LIVE_TUNABLES.IDLE_DECK_SIZE,
+      );
+    });
+
+    it("gives each idle of one pose its own variant, so the deck's cards carry different actions", async () => {
+      const requests: ClipRequest[] = [];
+      const queue = makeJobQueue();
+      const pipeline = trackedPipeline({
+        now: nowFn,
+        onEvent: () => {},
+        render: async (req) => {
+          requests.push(req);
+          return delayed(() => chainAdvancingResult(req));
+        },
+      });
+      pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+      await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+      pipeline.onClipStarted(pipeline.nextClip()!.seedFrameUrl);
+      for (let i = 0; i < 6; i += 1) {
+        await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+        pipeline.nextClip();
+      }
+      const variants = idleRequestsOn(requests, ANCHOR_0)
+        .slice(0, LIVE_TUNABLES.IDLE_DECK_SIZE)
+        .map((r) => (r.job as Extract<ClipJob, { kind: "idle" }>).variant);
+      expect(new Set(variants).size).toBe(LIVE_TUNABLES.IDLE_DECK_SIZE);
+    });
+
+    it("drops an earlier pose's deck once a reply moves the anchor, and renders idles for the new pose", async () => {
+      const requests: ClipRequest[] = [];
+      const queue = makeJobQueue();
+      const pipeline = trackedPipeline({
+        now: nowFn,
+        onEvent: () => {},
+        render: async (req) => {
+          requests.push(req);
+          return delayed(() => lookChangingResult(req));
+        },
+      });
+      pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+      await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+      pipeline.onClipStarted(pipeline.nextClip()!.seedFrameUrl);
+      for (let i = 0; i < 8; i += 1) {
+        await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+        pipeline.nextClip();
+      }
+
+      queue.push(REPLY_JOB);
+      pipeline.onRequestEnqueued();
+      await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+      let reply = pipeline.nextClip();
+      while (reply && reply.jobKind !== "reply") {
+        await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+        reply = pipeline.nextClip();
+      }
+      expect(reply?.jobKind).toBe("reply");
+      pipeline.onClipStarted(reply!.seedFrameUrl);
+      pipeline.pollChain();
+
+      for (let i = 0; i < 4; i += 1) {
+        await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+        const clip = pipeline.nextClip();
+        expect(clip?.jobKind).toBe("idle");
+        expect(clip?.seedFrameUrl).toBe(reply!.seedFrameUrl);
+      }
+      expect(
+        idleRequestsOn(requests, reply!.seedFrameUrl).length,
+      ).toBeGreaterThan(0);
+    });
   });
 });

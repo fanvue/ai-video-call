@@ -134,6 +134,18 @@ describe("planClip: idle", () => {
     expect(plan.prompt).toMatch(/never leaves the pose she starts in/);
     expect(plan.prompt).toMatch(/settled back in that exact starting pose/);
   });
+
+  it("gives each deck variant its own small action at the same moment in the session", () => {
+    const prompts = [0, 1, 2].map(
+      (variant) =>
+        planClip({
+          session: session(),
+          job: { kind: "idle", variant },
+          speechMode: "text",
+        }).prompt,
+    );
+    expect(new Set(prompts).size).toBe(3);
+  });
 });
 
 describe("planClip: framing", () => {

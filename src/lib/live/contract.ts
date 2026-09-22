@@ -203,6 +203,8 @@ export const clipJobSchema = z.discriminatedUnion("kind", [
     kind: z.literal("idle"),
     // Set by the pipeline from measured idle production time so a filler plays at least as long as the next one takes to make.
     durationSec: z.number().int().min(10).max(15).optional(),
+    // Deck position: each idle made from one pose gets its own small action, so replaying the deck does not read as one clip on repeat.
+    variant: z.number().int().min(0).max(50).optional(),
   }),
   z.object({ kind: z.literal("checkIn"), channel: inputChannelSchema }),
   z.object({
@@ -369,6 +371,8 @@ export const LIVE_TUNABLES = {
   SWAP_IDLE_BUFFER_TARGET: 2,
   // One more than the target so a bridge idle for a fresh chain tail can start while two old-anchor idles are still in flight.
   SWAP_IDLE_MAX_INFLIGHT: 3,
+  // Looping idles kept per settled pose and replayed in shuffled order; once full, no more idles render until the pose changes. Prod rendered one every 5 to 10 s while nobody typed, most of the spend and the swap queue replies waited behind.
+  IDLE_DECK_SIZE: 3,
   // Swap latency is per frame (~40 ms), so a 15 s reply cost ~5 s more to swap than an 11 s one. Bridge idles from the reply's tail start when it renders, well before it plays, so it no longer needs the extra length to cover the next clip.
   SWAP_ACTION_CLIP_SEC: 11,
   // The first idle seeds from the greeting's tail and needs render + swap (~12 s) before it can play; an 11 s greeting ended 0.4 s before that landed and prod held 3.5 s on its last frame, so the greeting runs the full clip length to cover it.
