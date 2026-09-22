@@ -62,8 +62,8 @@ class SwapClipRequest(BaseModel):
     max_containers=4,
     # Prod showed 8 to 15 s of queueing per clip when a fourth swap arrived and its container was still starting; keep two warm spares while the app has traffic.
     buffer_containers=2,
-    # A cold boot measured 93 s in prod; one container stays warm at all times so the join never waits on it.
-    min_containers=1,
+    # One swap per container needs 2 warm GPUs or a greeting+reply overlap queues; prod measured that compounding to 15-28s on 1.
+    min_containers=2,
     timeout=600,
 )
 # One clip per container at a time: 3 packed onto one GPU measured ~3x slower per frame, not free concurrency.
