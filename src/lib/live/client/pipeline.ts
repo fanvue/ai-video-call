@@ -117,6 +117,8 @@ export class ClipPipeline {
   // Clips still having their full swap finished: they hold their queue position but are not playable yet.
   private pendingSwapClipIds = new Set<string>();
   private pendingChainSwaps = 0;
+  // Chain swaps waiting for the one before them to land; see beginPendingSwap.
+  private queuedChainSwaps: Array<() => void> = [];
   // First settled frame per look (the upload for the initial one); a finished plan re-seeds from it, so generated descendants never stack deeper than one plan.
   private trustedSeedByLook = new Map<string, string>();
   // Drifted tail frame -> the trusted frame it was re-seeded to; idles rendered from the trusted frame must stay playable after the tail's own clip.
@@ -215,43 +217,51 @@ export class ClipPipeline {
       this.pendingChainSwaps += 1;
     }
     this.onEvent({ type: "clipRendered", result, lane });
-    finalizeSwap(result)
-      .then(
-        (swapped) => {
-          result.videoUrl = swapped.videoUrl;
-          result.swap = swapped.report;
-          result.costUsd += swapped.costUsd;
-          this.addCost(swapped.costUsd);
-        },
-        (error: unknown) => {
-          result.swap = {
-            status: "failed",
-            swapMs: 0,
-            frames: 0,
-            framesWithFace: 0,
-            msPerFrame: 0,
-            similarityBefore: null,
-            similarityAfter: null,
-            restored: false,
-            reason: (error instanceof Error
-              ? error.message
-              : String(error)
-            ).slice(0, 300),
-          };
-        },
-      )
-      .then(() => {
-        if (this.disposed) {
-          return;
-        }
-        this.pendingSwapClipIds.delete(result.clipId);
-        if (lane === "chained") {
-          this.pendingChainSwaps -= 1;
-        }
-        this.onEvent({ type: "clipReady", result, lane });
-        this.announceIfRecovered();
-        this.fillIdleStockpile();
-      });
+    const runSwap = () =>
+      finalizeSwap(result)
+        .then(
+          (swapped) => {
+            result.videoUrl = swapped.videoUrl;
+            result.swap = swapped.report;
+            result.costUsd += swapped.costUsd;
+            this.addCost(swapped.costUsd);
+          },
+          (error: unknown) => {
+            result.swap = {
+              status: "failed",
+              swapMs: 0,
+              frames: 0,
+              framesWithFace: 0,
+              msPerFrame: 0,
+              similarityBefore: null,
+              similarityAfter: null,
+              restored: false,
+              reason: (error instanceof Error
+                ? error.message
+                : String(error)
+              ).slice(0, 300),
+            };
+          },
+        )
+        .then(() => {
+          if (this.disposed) {
+            return;
+          }
+          this.pendingSwapClipIds.delete(result.clipId);
+          if (lane === "chained") {
+            this.pendingChainSwaps -= 1;
+            this.queuedChainSwaps.shift()?.();
+          }
+          this.onEvent({ type: "clipReady", result, lane });
+          this.announceIfRecovered();
+          this.fillIdleStockpile();
+        });
+    // Chain clips play in order and the swap account fits two clips at a time, so a beat swapping alongside the reply ahead of it only took the GPU that reply was queueing for; chain swaps run one at a time and the next starts when the last lands.
+    if (lane === "chained" && this.pendingChainSwaps > 1) {
+      this.queuedChainSwaps.push(runSwap);
+    } else {
+      void runSwap();
+    }
     return true;
   }
 

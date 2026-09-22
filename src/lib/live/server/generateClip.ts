@@ -25,7 +25,6 @@ import {
   SWAP_BUDGET_MS,
   SWAP_GREETING_BUDGET_MS,
   swapClip,
-  swapTail,
 } from "./swapClip";
 import { writeCheckIn, writeReply } from "./writeReply";
 
@@ -331,32 +330,14 @@ export const generateClip = async (
     `generateClip: renderMs=${renderMs} kind=${job.kind} backend=${backend} dualRef=${useIdentityReference}`,
   );
 
-  // Swap backend: the swapped clip replaces turbo's output for playback, checks and the next seed.
+  // Swap backend: the swapped clip replaces turbo's output for playback and checks.
   let videoUrl = rendered.videoUrl;
   let costUsd = rendered.costUsd;
   let swapReport: ClipSwapReport | undefined;
   let swappedLastFrameUrl: string | null = null;
   if (backend === "swap" && LIVE_TUNABLES.SWAP_DEFER_CLIP) {
-    // Two-phase swap: only the tail is swapped here, so the chain can render its next clip about 1.5 s after this render instead of after the 7 s clip swap. The client swaps the full clip before it plays (api/live/swap). An anchored loop returns to its seed and needs no tail at all.
+    // Two-phase swap: the clip comes back unswapped and pending, so the chain renders its next clip right after this render instead of after the 7 s clip swap; the client swaps the full clip before it plays (api/live/swap). The next seed is the raw render's last frame on purpose: seeding from a swapped tail had turbo re-render an already swapped and restored face that was then swapped again, and that stacking is what drifted the face over a session.
     swapReport = pendingSwapReport();
-    if (!keepsSessionSeed) {
-      const tailStarted = Date.now();
-      try {
-        const tail = await swapTail({
-          videoUrl,
-          referenceImageUrl: session.anchorFrameUrl,
-          jobKind: job.kind,
-        });
-        swappedLastFrameUrl = tail.lastFrameUrl;
-        costUsd += tail.costUsd;
-      } catch (error) {
-        // The raw last frame seeds the next clip instead; the swap of the clip itself is unaffected.
-        console.warn(
-          `generateClip: swapTail failed after ${Date.now() - tailStarted}ms, seeding from the raw frame`,
-          error,
-        );
-      }
-    }
   } else if (backend === "swap") {
     const swapStarted = Date.now();
     try {

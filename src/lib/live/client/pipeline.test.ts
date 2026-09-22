@@ -1798,6 +1798,80 @@ describe("ClipPipeline", () => {
     expect(played?.swap?.reason).toMatch(/503/);
   });
 
+  it("two-phase swap: chain swaps run one at a time, so the clip behind a reply only starts swapping once the reply's swap lands", async () => {
+    const queue = makeJobQueue();
+    const finalize = new Map<
+      string,
+      Deferred<{
+        videoUrl: string;
+        costUsd: number;
+        report: ClipResult["swap"] & object;
+      }>
+    >();
+    const finalizeOrder: string[] = [];
+    const pipeline = trackedPipeline({
+      backend: "swap",
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) =>
+        delayed(() => ({
+          ...chainAdvancingResult(req),
+          swap: {
+            status: "pending" as const,
+            swapMs: 0,
+            frames: 0,
+            framesWithFace: 0,
+            msPerFrame: 0,
+            similarityBefore: null,
+            similarityAfter: null,
+            restored: false,
+            reason: null,
+          },
+        })),
+      finalizeSwap: (result) => {
+        // Fillers swap on their own lane; only the chain order is under test.
+        if (result.jobKind !== "idle") {
+          finalizeOrder.push(result.jobKind);
+        }
+        const deferred = defer<{
+          videoUrl: string;
+          costUsd: number;
+          report: ClipResult["swap"] & object;
+        }>();
+        finalize.set(result.jobKind, deferred);
+        return deferred.promise;
+      },
+    });
+
+    queue.push(REPLY_JOB);
+    queue.push({ kind: "checkIn", channel: "chat" });
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting rendered, plays unswapped
+    pipeline.nextClip();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // reply rendered: its swap starts
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // checkIn rendered behind it: its swap must wait
+    expect(finalizeOrder).toEqual(["greeting", "reply"]);
+
+    finalize.get("reply")?.resolve({
+      videoUrl: "https://example.com/reply-swapped.mp4",
+      costUsd: 0.004,
+      report: {
+        status: "swapped",
+        swapMs: 6000,
+        frames: 360,
+        framesWithFace: 360,
+        msPerFrame: 16,
+        similarityBefore: 0.6,
+        similarityAfter: 0.9,
+        restored: true,
+        reason: null,
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(finalizeOrder).toEqual(["greeting", "reply", "checkIn"]);
+    expect(pipeline.nextClip()?.jobKind).toBe("reply");
+  });
+
   it("sizes the next idle to the slowest recent idle production plus headroom, within the clip bounds", async () => {
     const requests: ClipRequest[] = [];
     const queue = makeJobQueue();

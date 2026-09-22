@@ -39,7 +39,6 @@ vi.mock("./swapClip", () => ({
   SWAP_BUDGET_MS: 150_000,
   SWAP_GREETING_BUDGET_MS: 20_000,
   swapClip: (...args: unknown[]) => swapClip(...args),
-  swapTail: vi.fn(),
   pendingSwapReport: () => ({ status: "pending" }),
   failedSwapReport: (swapMs: number, error: Error) => ({
     status: "failed",
