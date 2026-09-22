@@ -2,6 +2,8 @@
 import { LIVE_TUNABLES, type SpeechMode } from "@/lib/live/contract";
 
 const SWAP_LEAD_SEC = LIVE_TUNABLES.SWAP_LEAD_SEC;
+const CUT_IN_WAIT_MAX_SEC = LIVE_TUNABLES.CUT_IN_WAIT_MAX_SEC;
+const CUT_IN_LEAD_SEC = LIVE_TUNABLES.CUT_IN_LEAD_SEC;
 const CROSSFADE_MS = 180;
 // Ported from the legacy call page: the model's rendered audio pops for ~1.1s at clip start, so
 // native-speech playback stays silent through that window then ramps volume up over 280ms.
@@ -110,6 +112,7 @@ export class GaplessPlayer {
   private activeSlot: "a" | "b" = "a";
   private preloadedClip: ClipToPlay | null = null;
   private swappingClip: ClipToPlay | null = null;
+  private cutInWaitingForBoundary = false;
   private preloadedSlot: "a" | "b" | null = null;
   private status: PlayerStatus = "empty";
   private disposed = false;
@@ -267,6 +270,7 @@ export class GaplessPlayer {
     if (displaced) {
       this.preloadedClip = null;
       this.preloadedSlot = null;
+      this.cutInWaitingForBoundary = false;
       this.onClipReturned(displaced.id);
     }
     void this.preload(clip);
@@ -312,12 +316,17 @@ export class GaplessPlayer {
       return;
     }
     this.preloadedSlot = targetSlot;
-    if (
-      this.status === "holding" ||
-      (clip.interrupts && this.currentClipLoops)
-    ) {
+    if (this.status === "holding") {
       void this.performSwap(clip);
       return;
+    }
+    if (clip.interrupts && this.currentClipLoops) {
+      const remaining = this.currentDurationSec - this.currentTimeSec;
+      if (remaining > CUT_IN_WAIT_MAX_SEC) {
+        void this.performSwap(clip);
+        return;
+      }
+      this.cutInWaitingForBoundary = true;
     }
     void this.warmDecode(inactive, clip, generation);
   }
@@ -355,6 +364,7 @@ export class GaplessPlayer {
     if (this.preloadedClip === clip) {
       this.preloadedClip = null;
       this.preloadedSlot = null;
+      this.cutInWaitingForBoundary = false;
     }
     if (this.failedOnce.has(clip.id)) {
       this.failedOnce.delete(clip.id);
@@ -512,6 +522,7 @@ export class GaplessPlayer {
     this.showSlot(this.activeSlot);
     this.preloadedSlot = null;
     this.preloadedClip = null;
+    this.cutInWaitingForBoundary = false;
     this.setStatus("playing");
     this.onClipStarted(clip.id);
     this.preloadNextIfNeeded();
@@ -537,11 +548,13 @@ export class GaplessPlayer {
     this.currentDurationSec = el.duration;
     this.currentTimeSec = el.currentTime;
     this.onProgress(el.currentTime, this.currentClipId ?? "");
-    const nearEnd = el.currentTime >= el.duration - SWAP_LEAD_SEC;
+    const lead = this.cutInWaitingForBoundary ? CUT_IN_LEAD_SEC : SWAP_LEAD_SEC;
+    const nearEnd = el.currentTime >= el.duration - lead;
     if (!nearEnd) {
       return;
     }
     if (this.preloadedClip && this.preloadedSlot) {
+      this.cutInWaitingForBoundary = false;
       void this.performSwap(this.preloadedClip);
       return;
     }
@@ -632,6 +645,7 @@ export class GaplessPlayer {
     this.b?.pause();
     this.preloadedClip = null;
     this.preloadedSlot = null;
+    this.cutInWaitingForBoundary = false;
     this.status = "empty";
     this.currentClipId = null;
     this.currentClipLoops = false;

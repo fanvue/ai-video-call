@@ -108,6 +108,25 @@ describe("POST /api/live/reference — staged seed", () => {
     await POST(jsonBody({ imageBase64: "abcd", contentType: "image/jpeg" }));
     expect(stageSeed).not.toHaveBeenCalled();
   });
+
+  it("skips staging when the client opts out, keeping the upload as the seed", async () => {
+    captureOk();
+    const response = await POST(
+      jsonBody({
+        imageBase64: "abcd",
+        contentType: "image/jpeg",
+        sceneId: "bedroom",
+        stage: false,
+      }),
+    );
+    const data = (await response.json()) as {
+      seedFrameUrl: string;
+      staged: boolean;
+    };
+    expect(stageSeed).not.toHaveBeenCalled();
+    expect(data.staged).toBe(false);
+    expect(data.seedFrameUrl).toBe("https://fal.example.com/anchor.jpg");
+  });
 });
 
 describe("POST /api/live/reference — canon wardrobe", () => {

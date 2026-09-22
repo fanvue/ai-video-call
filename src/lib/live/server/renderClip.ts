@@ -111,7 +111,14 @@ export const referenceBackend: VideoBackend = {
   },
 };
 
-export const renderBackendFor = (backend: RenderBackend): VideoBackend => {
+// Swap mode's greeting is the one clip with no in-scene frame to start from: the upload is the wrong room and clothes, and staging a still took 17 to 35 s. Reference-to-video sets the scene from the prompt with the upload as identity only (15 s clip in ~9 s), and its swapped last frame seeds the turbo chain.
+export const renderBackendFor = (
+  backend: RenderBackend,
+  options: { greetingFromReference?: boolean } = {},
+): VideoBackend => {
+  if (backend === "swap" && options.greetingFromReference) {
+    return referenceBackend;
+  }
   // Director is a live WebRTC stream, handled entirely client-side by DirectorSession; it must
   // never reach the clip pipeline — fail loud rather than silently rendering a turbo/reference clip.
   if (backend === "director") {

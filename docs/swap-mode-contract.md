@@ -35,6 +35,7 @@ The earlier per-frame JPEG-over-WebSocket transport (2 to 3 fps effective, 330 t
 - `generateClip`: render, then `swapClip` (fetch reference as a data URI, call the service, rehost the mp4 and last frame on fal storage), then frame checks and seed extraction run on the swapped clip. GPU cost is `swap_ms` at `LIVE_TUNABLES.SWAP_COST_PER_SEC_USD`.
 - `clipResultSchema.swap` carries the report to the client; `StudioOverlay` renders it on the last-clip line.
 - Env: `SWAP_SERVICE_URL` (https base of the Modal app) and `SWAP_TOKEN`; either missing makes every swap clip report `failed`.
+- Capacity: `max_containers=4`, `buffer_containers=2`, `scaledown_window=600`. A prod session showed `serviceMs` of 14 to 21 s against `swap_ms` of 6 s: the fourth concurrent clip queued behind a ~15 s cold start, the beat and bridge idles were late, and the player fell back to cuts. Two warm spares absorb that; the log line carries `downloadMs` so a slow fal fetch is told apart from queueing.
 
 ## Open decisions
 

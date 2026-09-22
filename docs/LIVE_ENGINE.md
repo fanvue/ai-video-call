@@ -80,7 +80,13 @@ one-in-flight chain cannot hold a buffer. The chain therefore has two modes:
   means self-hosting an edit model (e.g. Qwen-Image-Edit Lightning) on the swap GPU. The setup screen therefore runs it (`session.prepare`) as soon as a photo and scene are
   picked, shows the staged still in the preview when it lands, and holds "Go live" until it has
   settled; the connect itself is then the greeting render plus its swap. In the product this is a
-  one-time persona setup, not a per-call cost.
+  one-time persona setup, not a per-call cost. Swap mode skips the still altogether (the client
+  posts `stage: false`): its raw-upload greeting renders through `minimax/h3-max/reference-to-video`
+  (`renderBackendFor("swap", { greetingFromReference: true })`), which sets the scene from the
+  prompt with the upload as identity only (prompt prefix "Image 1 is the woman's identity only…"
+  plus the scene's room text from `sceneRooms.ts`; 15 s clip in 9.3 s, 10 s in 6.1 s, measured).
+  The swapped last frame of that greeting seeds the turbo chain, so no in-scene still is needed
+  and the join is one render plus one swap.
 - **Chained action.** `greeting` (off a raw upload), `reply`, `beat` and `checkIn` are
   seeded from the frame currently on the anchor and chain frame to frame. Their last frame
   (guarded against both canon and the identity anchor) becomes the new anchor. When the anchor
@@ -114,6 +120,13 @@ Invariants:
   asks the pipeline for `nextFallbackClip()`: an idle of the same look from an earlier anchor,
   played as a cut. A cut beats a frozen frame; it is logged (`boundaryFallback`) so it can be
   counted.
+- **Deferred cut-in.** A requested clip landing while an idle loops used to take the screen at
+  once, mid-motion, which read as a pose and camera jump. If the loop is within
+  `CUT_IN_WAIT_MAX_SEC` (6 s) of wrapping, the player now preloads and warms the reply and swaps at
+  the loop boundary, where the anchored idle is back on its anchor pose; further out it still cuts
+  immediately, since reply latency beats one seam. The deferred swap uses the wider
+  `CUT_IN_LEAD_SEC` (0.35 s) window because a 0.12 s window on a wrapping loop is missed between
+  ~250 ms timeupdates.
 - The reference backend has no end-frame parameter, so idle loops are not available on it; it
   falls back to a strict one-in-flight chain and is marked experimental in the UI.
 

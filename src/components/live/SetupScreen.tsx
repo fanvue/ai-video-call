@@ -22,7 +22,7 @@ export type SetupSubmit = {
 type SetupScreenProps = {
   busy: boolean;
   error: string | null;
-  onPrepare?: (file: File, sceneId: SceneId) => void;
+  onPrepare?: (file: File, sceneId: SceneId, stage: boolean) => void;
   preparation?: { status: PrepareStatus; seedUrl: string | null };
   onSubmit: (values: SetupSubmit) => void;
 };
@@ -34,6 +34,7 @@ const PREPARATION_LABEL: Record<PrepareStatus, string | null> = {
   idle: null,
   staging: "Staging her scene, 20 to 35 seconds",
   ready: "Scene ready",
+  uploaded: "Photo ready",
   unstaged: "Scene staging unavailable, she starts from your photo",
   failed: "Could not prepare the photo, it will be retried on start",
 };
@@ -70,11 +71,11 @@ export const SetupScreen = ({
       return;
     }
     const timeoutId = setTimeout(
-      () => onPrepare(file, sceneId),
+      () => onPrepare(file, sceneId, backend !== "swap"),
       PREPARE_DEBOUNCE_MS,
     );
     return () => clearTimeout(timeoutId);
-  }, [file, sceneId, onPrepare]);
+  }, [file, sceneId, backend, onPrepare]);
 
   return (
     <div className="mx-auto flex min-h-dvh w-full max-w-sm flex-col justify-center gap-6 px-4 py-8">

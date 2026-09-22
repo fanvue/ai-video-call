@@ -113,6 +113,18 @@ describe("renderBackendFor", () => {
 
   it("routes swap to the turbo clip backend for the same reason", () => {
     expect(renderBackendFor("swap")).toBe(turboBackend);
+    expect(renderBackendFor("swap", { greetingFromReference: false })).toBe(
+      turboBackend,
+    );
+  });
+
+  it("routes a swap greeting off a raw upload to reference-to-video, which sets the scene from the prompt", () => {
+    expect(renderBackendFor("swap", { greetingFromReference: true })).toBe(
+      referenceBackend,
+    );
+    expect(renderBackendFor("turbo", { greetingFromReference: true })).toBe(
+      turboBackend,
+    );
   });
 
   it("routes turbo and reference to themselves", () => {

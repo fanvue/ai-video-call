@@ -3,6 +3,7 @@ import {
   pollSceneStillUntilComplete,
   submitSceneStill,
 } from "@/lib/fal/requestSceneStill";
+import { STAGE_ROOM_BY_SCENE } from "./sceneRooms";
 
 // Seedream v4 edit list price per image.
 export const STAGE_SEED_COST_USD = 0.03;
@@ -11,18 +12,6 @@ export const STAGE_SEED_COST_USD = 0.03;
 const STILL_SIZE = { width: 1024, height: 1820 };
 
 export type StagedSeed = { url: string; costUsd: number };
-
-// Room descriptions for the still only. SURROUNDINGS_BY_SCENE (used by the clip prompts) mentions laptops and webcams, and any "webcam" or "laptop camera" wording made the editors draw her on a laptop screen instead of in the room.
-const STAGE_ROOM_BY_SCENE: Record<SceneId, string> = {
-  bedroom:
-    "She sits on the edge of her bed in a cosy bedroom, a made bed and a plain wall behind her, soft warm lamp light.",
-  office:
-    "She sits at her desk in a small home office, a bookshelf behind her, daylight through a blind.",
-  livingRoom:
-    "She sits in the corner of a living room couch, a lamp and a plant behind her, warm evening light.",
-  kitchen:
-    "She sits at a kitchen counter, a tidy kitchen behind her, bright morning light.",
-};
 
 const buildStagePrompt = (sceneId: SceneId, lookLock: string): string =>
   [

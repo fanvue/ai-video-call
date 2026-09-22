@@ -91,6 +91,7 @@ export type UseLiveSessionDeps = {
   uploadReference: (
     file: File,
     sceneId: SceneId,
+    stage?: boolean,
   ) => Promise<ReferenceUploadResult>;
   upscaleSeed?: (
     frameUrl: string,
@@ -116,7 +117,7 @@ export type UseLiveSessionDeps = {
 
 // Staging state of the reference step started from the setup screen: "unstaged" is a completed step whose still was refused or failed, so the greeting starts on the photo.
 export type PrepareStatus =
-  "idle" | "staging" | "ready" | "unstaged" | "failed";
+  "idle" | "staging" | "ready" | "uploaded" | "unstaged" | "failed";
 
 // A join that has not shown the greeting by now is the "stuck in connecting" report; log where it stalled.
 const CONNECT_STALL_MS = 60_000;
@@ -208,6 +209,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   const preparedReferenceRef = useRef<{
     file: File;
     sceneId: SceneId;
+    stage: boolean;
     promise: Promise<ReferenceUploadResult>;
   } | null>(null);
   const [prepareStatus, setPrepareStatus] = useState<PrepareStatus>("idle");
@@ -1005,13 +1007,18 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   // The reference step (upload, look capture, staged still) is 20 to 25 s of the join; kicking it off from the setup screen hides it behind option-picking. A failure is dropped so start() retries it and reports the error itself.
   const uploadReference = deps.uploadReference;
   const prepare = useCallback(
-    (file: File, sceneId: SceneId) => {
+    (file: File, sceneId: SceneId, stage = true) => {
       const current = preparedReferenceRef.current;
-      if (current && current.file === file && current.sceneId === sceneId) {
+      if (
+        current &&
+        current.file === file &&
+        current.sceneId === sceneId &&
+        current.stage === stage
+      ) {
         return;
       }
-      const promise = uploadReference(file, sceneId);
-      const entry = { file, sceneId, promise };
+      const promise = uploadReference(file, sceneId, stage);
+      const entry = { file, sceneId, stage, promise };
       preparedReferenceRef.current = entry;
       setPrepareStatus("staging");
       setPreparedSeedUrl(null);
@@ -1020,7 +1027,9 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
           if (preparedReferenceRef.current !== entry) {
             return;
           }
-          setPrepareStatus(reference.staged ? "ready" : "unstaged");
+          setPrepareStatus(
+            reference.staged ? "ready" : stage ? "unstaged" : "uploaded",
+          );
           setPreparedSeedUrl(reference.staged ? reference.seedFrameUrl : null);
         })
         .catch(() => {
@@ -1078,11 +1087,16 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       privateModeRef.current = false;
       setPrivateModeState(false);
       player.reset();
+      // Swap mode sets the scene inside its reference-to-video greeting, so it skips the 17 to 35 s still.
+      const stage = options.backend !== "swap";
       const prepared = preparedReferenceRef.current;
       const reference =
-        prepared && prepared.file === file && prepared.sceneId === sceneId
+        prepared &&
+        prepared.file === file &&
+        prepared.sceneId === sceneId &&
+        prepared.stage === stage
           ? await prepared.promise
-          : await deps.uploadReference(file, sceneId);
+          : await deps.uploadReference(file, sceneId, stage);
       preparedReferenceRef.current = null;
       setPrepareStatus("idle");
       setPreparedSeedUrl(null);

@@ -18,6 +18,7 @@ import { guardFrame } from "./frameGuard";
 import { planClip, typingLeadSecFor } from "./planClip";
 import { reconcilePose, reconcileWardrobe } from "./reconcileState";
 import { renderBackendFor } from "./renderClip";
+import { STAGE_ROOM_BY_SCENE } from "./sceneRooms";
 import {
   failedSwapReport,
   SWAP_BUDGET_MS,
@@ -263,7 +264,11 @@ export const generateClip = async (
   const plan = planClip({ session, job, speechMode, backend });
   const planMs = Date.now() - planStarted;
 
-  const videoBackend = renderBackendFor(backend);
+  const greetingFromReference =
+    backend === "swap" &&
+    job.kind === "greeting" &&
+    session.seedFrameUrl === session.anchorFrameUrl;
+  const videoBackend = renderBackendFor(backend, { greetingFromReference });
   // Only idle loops on the anchor; every other job chains forward from a real generated frame, single-image-seed style — pinning a hold's end frame to the seed never stopped it from drifting mid-clip, it only masked the seam for the next clip.
   // The greeting also loops when its seed is a staged in-scene still (seed differs from the identity photo), so the idles pre-stocked from that frame stay playable after it. On the raw upload it chains: the photo's clothes and room contradict the prompt and every loop back to it popped.
   const greetingLoops =
@@ -278,8 +283,12 @@ export const generateClip = async (
   const isExplicitNonWardrobe = plan.wardrobeIntent === null && plan.explicit;
 
   const renderStarted = Date.now();
+  // The reference model has no first frame to inherit the room from, so the prompt establishes it and pins the upload to identity only.
+  const prompt = greetingFromReference
+    ? `Image 1 is the woman's identity only: face, hair, skin tone and build. Do not copy its pose, clothing or background. Scene: ${STAGE_ROOM_BY_SCENE[session.creator.sceneId]} ${plan.prompt}`
+    : plan.prompt;
   const renderPromise = videoBackend.render({
-    prompt: plan.prompt,
+    prompt,
     seedFrameUrl: session.seedFrameUrl,
     durationSec: plan.durationSec,
     endFrameUrl: isAnchoredLoop ? session.seedFrameUrl : undefined,

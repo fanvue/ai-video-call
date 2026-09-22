@@ -53,6 +53,7 @@ export const upscaleSeed = async (
 export const uploadReference = async (
   file: File,
   sceneId: SceneId,
+  stage = true,
 ): Promise<ReferenceUploadResult> => {
   const imageBase64 = await readFileAsBase64(file);
   // The server only accepts jpeg/png; HEIC and webp are rejected upfront rather than as a 400.
@@ -64,6 +65,7 @@ export const uploadReference = async (
     imageBase64,
     contentType,
     sceneId,
+    stage,
   });
 };
 

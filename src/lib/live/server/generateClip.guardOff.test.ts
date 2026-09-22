@@ -6,8 +6,10 @@ import {
 } from "../contract";
 
 const render = vi.fn();
+const renderBackendFor = vi.fn(() => ({ render, supportsEndFrame: true }));
 vi.mock("./renderClip", () => ({
-  renderBackendFor: () => ({ render, supportsEndFrame: true }),
+  renderBackendFor: (...args: unknown[]) =>
+    (renderBackendFor as (...a: unknown[]) => unknown)(...args),
 }));
 
 const extractLastFrameUrl = vi.fn();
@@ -251,6 +253,32 @@ describe("generateClip on the swap backend", () => {
     expect(result.videoUrl).toBe("https://example.com/swapped.mp4");
     expect(result.loops).toBe(false);
     expect(result.seedFrameUrl).toBe("https://example.com/swapped-last.jpg");
+  });
+
+  it("renders a raw-upload swap greeting through reference-to-video with the upload pinned to identity and the scene set by the prompt", async () => {
+    swapClip.mockResolvedValue(swapped);
+    await generateClip({
+      ...swapRequest({ kind: "greeting" }),
+      session: { ...session, seedFrameUrl: session.anchorFrameUrl },
+    });
+    expect(renderBackendFor).toHaveBeenLastCalledWith("swap", {
+      greetingFromReference: true,
+    });
+    const prompt = render.mock.calls.at(-1)?.[0].prompt as string;
+    expect(prompt).toMatch(/^Image 1 is the woman's identity only/);
+    expect(prompt).toMatch(/bed/);
+  });
+
+  it("keeps a staged-seed swap greeting and every later swap clip on turbo", async () => {
+    swapClip.mockResolvedValue(swapped);
+    await generateClip(swapRequest({ kind: "greeting" }));
+    expect(renderBackendFor).toHaveBeenLastCalledWith("swap", {
+      greetingFromReference: false,
+    });
+    await generateClip(swapRequest({ kind: "idle" }));
+    expect(renderBackendFor).toHaveBeenLastCalledWith("swap", {
+      greetingFromReference: false,
+    });
   });
 
   it("a staged-seed greeting in swap mode loops and plays from the staged still", async () => {

@@ -18,6 +18,8 @@ const bodySchema = z.object({
   contentType: z.union([z.literal("image/jpeg"), z.literal("image/png")]),
   // Selected room; with it the reference step also stages the in-scene still the greeting starts on.
   sceneId: sceneIdSchema.optional(),
+  // Swap mode sets the scene in its reference-to-video greeting instead, so it skips the still.
+  stage: z.boolean().optional(),
 });
 
 // She always starts a session in lingerie — top/bottom start off, bra/panties white, regardless of what capture reports.
@@ -100,7 +102,7 @@ export async function POST(request: Request) {
   // The still only needs the upload and the room, so it runs alongside the capture rather than after it.
   const [capture, staged] = await Promise.all([
     captureLook(),
-    LIVE_TUNABLES.STAGE_SEED && sceneId
+    LIVE_TUNABLES.STAGE_SEED && sceneId && parsed.data.stage !== false
       ? stageSeed({
           referenceUrl: anchorFrameUrl,
           sceneId,

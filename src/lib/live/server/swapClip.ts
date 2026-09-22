@@ -20,6 +20,7 @@ const swapServiceResponseSchema = z.object({
     similarity_before: z.number().nullable(),
     similarity_after: z.number().nullable(),
     restored: z.boolean(),
+    download_ms: z.number().int().min(0).optional(),
     enhanced: z.boolean().optional(),
     enhance_ms: z.number().int().min(0).optional(),
     sharpness_before: z.number().nullable().optional(),
@@ -115,7 +116,7 @@ export const swapClip = async ({
   ]);
   const { stats } = parsed;
   console.log(
-    `swapClip: kind=${jobKind} serviceMs=${serviceMs} (swap ${stats.swap_ms}) rehostMs=${Date.now() - stamp} frames=${stats.frames} enhanceMs=${stats.enhance_ms ?? 0} sharpness=${stats.sharpness_before ?? "?"}->${stats.sharpness_after ?? "?"}`,
+    `swapClip: kind=${jobKind} serviceMs=${serviceMs} (swap ${stats.swap_ms}) rehostMs=${Date.now() - stamp} downloadMs=${stats.download_ms ?? 0} frames=${stats.frames} enhanceMs=${stats.enhance_ms ?? 0} sharpness=${stats.sharpness_before ?? "?"}->${stats.sharpness_after ?? "?"}`,
   );
   return {
     videoUrl: swappedVideoUrl,

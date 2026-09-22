@@ -55,9 +55,11 @@ class SwapClipRequest(BaseModel):
     cpu=4,
     secrets=[modal.Secret.from_name("ai-video-swap-token")],
     # Long enough to survive the gap between a fan's sessions; a cold start is 60s+ (image pull + CUDA init).
-    scaledown_window=300,
+    scaledown_window=600,
     # Two idle fillers and a reply can be swapping at the same time; each container takes one clip at a time, plus one spare.
     max_containers=4,
+    # Prod showed 8 to 15 s of queueing per clip when a fourth swap arrived and its container was still starting; keep two warm spares while the app has traffic.
+    buffer_containers=2,
     timeout=600,
 )
 class SwapService:
