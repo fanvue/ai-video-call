@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createGroqVisionCompletion } from "@/lib/groq";
+import { createGroqVisionCompletion, stripThinkBlock } from "@/lib/groq";
 import type {
   FrameGuardReport,
   GarmentId,
@@ -87,7 +87,9 @@ const expectedColor = (description: string): string | null =>
   ) ?? null;
 
 const parseVisionReport = (raw: string): VisionReport | null => {
-  const cleaned = raw.replace(/^```json\s*|\s*```$/g, "").trim();
+  const cleaned = stripThinkBlock(raw)
+    .replace(/^```json\s*|\s*```$/g, "")
+    .trim();
   const objectMatch = cleaned.match(/\{[\s\S]*\}/);
   let json: unknown;
   try {

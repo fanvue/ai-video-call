@@ -4,7 +4,10 @@ import type { LiveState } from "../contract";
 import { guardFrame } from "./frameGuard";
 
 const createGroqVisionCompletion = vi.fn();
-vi.mock("@/lib/groq", () => ({
+vi.mock("@/env", () => ({ env: {} }));
+vi.mock("@/lib/groq", async (importOriginal) => ({
+  stripThinkBlock: (await importOriginal<typeof import("@/lib/groq")>())
+    .stripThinkBlock,
   GROQ_VISION_MODEL: "test-vision-model",
   createGroqVisionCompletion: (...args: unknown[]) =>
     createGroqVisionCompletion(...args),
@@ -80,6 +83,21 @@ describe("guardFrame", () => {
     expect(result.observed).toEqual({
       wardrobe: { top: true, bottom: true, bra: true, panties: true },
     });
+  });
+
+  it("parses the report after a Qwen3 <think> block", async () => {
+    createGroqVisionCompletion.mockResolvedValue(
+      completionWith(
+        `<think>top looks {"top":"absent"} maybe</think>\n${JSON.stringify(fullReport())}`,
+      ),
+    );
+    const result = await guardFrame({
+      frameUrl: "https://x/frame.jpg",
+      expected,
+      anchorFrameUrl: ANCHOR_URL,
+    });
+    expect(result.checked).toBe(true);
+    expect(result.issues).toEqual([]);
   });
 
   it("sends the anchor frame as a reference image ahead of the checked frame", async () => {

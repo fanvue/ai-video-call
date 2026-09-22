@@ -123,6 +123,41 @@ describe("planClip: idle", () => {
     expect(plan.durationSec).toBe(LIVE_TUNABLES.IDLE_CLIP_SEC);
     expect(plan.prompt).toMatch(/nothing sexual happens/i);
   });
+
+  it("asks for minimal motion that returns to the starting pose", () => {
+    const plan = planClip({
+      session: session(),
+      job: { kind: "idle" },
+      speechMode: "text",
+    });
+    expect(plan.prompt).toMatch(/minimal, subtle life/);
+    expect(plan.prompt).toMatch(/never leaves the pose she starts in/);
+    expect(plan.prompt).toMatch(/settled back in that exact starting pose/);
+  });
+});
+
+describe("planClip: framing", () => {
+  it.each([
+    ["wider", "wide shot, her body from head to knees in frame"],
+    ["medium", "medium shot, framed from head to hips"],
+    ["torso", "close medium shot, framed from head to waist"],
+  ] as const)(
+    "names the %s shot size in the camera lock and the NOW line, camera still static",
+    (framing, shot) => {
+      const plan = planClip({
+        session: session({ state: state({ body: body({ framing }) }) }),
+        job: { kind: "idle" },
+        speechMode: "text",
+      });
+      expect(
+        plan.prompt.startsWith(
+          `FIXED WEBCAM: static laptop webcam, ${shot}, no zoom`,
+        ),
+      ).toBe(true);
+      expect(plan.prompt).toMatch(/no camera movement of any kind/);
+      expect(plan.prompt).toContain(`hands empty, ${shot}.`);
+    },
+  );
 });
 
 describe("planClip: checkIn", () => {

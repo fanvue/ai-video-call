@@ -15,7 +15,11 @@ vi.mock("../contract", async (importOriginal) => {
 });
 
 const render = vi.fn();
-const renderBackendFor = vi.fn(() => ({ render, supportsEndFrame: true }));
+const renderBackendFor = vi.fn(() => ({
+  render,
+  supportsEndFrame: true,
+  supportsIdentityReference: true,
+}));
 vi.mock("./renderClip", () => ({
   renderBackendFor: (...args: unknown[]) =>
     (renderBackendFor as (...a: unknown[]) => unknown)(...args),
@@ -211,6 +215,23 @@ describe("generateClip with the vision guard off (default)", () => {
     expect(render).toHaveBeenCalledWith(
       expect.objectContaining({ identityReferenceUrl: session.anchorFrameUrl }),
     );
+  });
+
+  it("never forwards identityReferenceUrl to a backend without identity-reference support, and logs dualRef=n/a", async () => {
+    renderBackendFor.mockReturnValueOnce({
+      render,
+      supportsEndFrame: true,
+      supportsIdentityReference: false,
+    });
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await generateClip(request({ kind: "idle" }, true));
+    expect(render).toHaveBeenCalledWith(
+      expect.objectContaining({ identityReferenceUrl: undefined }),
+    );
+    expect(
+      log.mock.calls.some((call) => String(call[0]).includes("dualRef=n/a")),
+    ).toBe(true);
+    log.mockRestore();
   });
 });
 

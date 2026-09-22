@@ -78,7 +78,8 @@ describe("swapClip", () => {
       reference_image: `data:image/png;base64,${Buffer.from([1, 2, 3]).toString("base64")}`,
     });
     expect(uploadToFal.mock.calls[0][2]).toBe("video/mp4");
-    expect(uploadToFal.mock.calls[1][2]).toBe("image/jpeg");
+    expect(uploadToFal.mock.calls[1][1]).toMatch(/-last\.png$/);
+    expect(uploadToFal.mock.calls[1][2]).toBe("image/png");
     expect(outcome.videoUrl).toBe("https://fal.test/swap.mp4");
     expect(outcome.lastFrameUrl).toBe("https://fal.test/last.jpg");
     expect(outcome.report).toMatchObject({

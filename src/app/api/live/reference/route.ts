@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { uploadReferenceImageToFal } from "@/lib/fal/uploadImage";
 import { getCurrentUser } from "@/lib/fanvue";
-import { createGroqVisionCompletion } from "@/lib/groq";
+import { createGroqVisionCompletion, stripThinkBlock } from "@/lib/groq";
 import { SURROUNDINGS_BY_SCENE } from "@/lib/live/client/defaultLiveState";
 import {
   LIVE_TUNABLES,
@@ -52,7 +52,9 @@ type WardrobeCapture = {
 const FRAMING_VALUES = new Set(["wider", "medium", "torso"]);
 
 const parseCapture = (raw: string): WardrobeCapture | null => {
-  const cleaned = raw.replace(/^```json\s*|\s*```$/g, "").trim();
+  const cleaned = stripThinkBlock(raw)
+    .replace(/^```json\s*|\s*```$/g, "")
+    .trim();
   const objectMatch = cleaned.match(/\{[\s\S]*\}/);
   try {
     return JSON.parse(objectMatch?.[0] ?? cleaned) as WardrobeCapture;
@@ -99,12 +101,14 @@ export async function POST(request: Request) {
     uploadReferenceImageToFal(Buffer.from(imageBase64, "base64"), contentType),
     captureLook(),
   ]);
+  const lookLock =
+    capture?.lookLock?.slice(0, 600) || "an adult woman with a natural build";
   const staged =
     LIVE_TUNABLES.STAGE_SEED && sceneId && parsed.data.stage !== false
       ? await stageSeed({
           referenceUrl: anchorFrameUrl,
           sceneId,
-          lookLock: "an adult woman with a natural build",
+          lookLock,
         })
       : null;
   const captured = capture !== null;
@@ -119,8 +123,7 @@ export async function POST(request: Request) {
     staged: staged !== null,
     stageCostUsd: staged?.costUsd ?? 0,
     wardrobe: DEFAULT_WARDROBE,
-    lookLock:
-      capture?.lookLock?.slice(0, 600) || "an adult woman with a natural build",
+    lookLock,
     // Staged: the still is the room, so its preset describes what the first clip shows; otherwise the photo's own background.
     surroundings:
       staged && sceneId

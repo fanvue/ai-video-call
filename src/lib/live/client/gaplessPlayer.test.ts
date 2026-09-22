@@ -300,7 +300,7 @@ describe("GaplessPlayer", () => {
     player.setInterruptReadyHandler(() => queue.some((c) => c.interrupts));
     player.start();
     await flush();
-    a.fireTimeUpdate(0.8);
+    a.fireTimeUpdate(0.3);
     await flush();
 
     queue.unshift(clip("reply", false, true));
@@ -310,6 +310,23 @@ describe("GaplessPlayer", () => {
     b.fire("playing");
     await flush();
     expect(player.getActiveSlot()).toBe("b");
+  });
+
+  it("holds a reply that lands once the idle has moved off its anchor pose until the next wrap", async () => {
+    const queue: ClipToPlay[] = [clip("loop1", true)];
+    const { a, b, player } = setup(queue);
+    player.setInterruptReadyHandler(() => queue.some((c) => c.interrupts));
+    player.start();
+    await flush();
+    a.fireTimeUpdate(0.8);
+    await flush();
+
+    queue.unshift(clip("reply", false, true));
+    player.checkForClip();
+    await flush();
+    b.fire("playing");
+    await flush();
+    expect(player.getActiveSlot()).toBe("a");
   });
 
   it("does not reveal a boundary swap on a still first frame: a preloaded readyState alone is not a presented frame", async () => {
