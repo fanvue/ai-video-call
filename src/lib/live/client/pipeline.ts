@@ -197,6 +197,19 @@ export class ClipPipeline {
     if (result.swap?.status !== "pending" || !finalizeSwap) {
       return false;
     }
+    // The greeting has nothing else buffered yet, so gating it on its own full swap (or the budget timeout) is dead air on first join; play it unswapped now and let the swap land in the background.
+    if (result.jobKind === "greeting") {
+      finalizeSwap(result).then(
+        (swapped) => {
+          result.videoUrl = swapped.videoUrl;
+          result.swap = swapped.report;
+          result.costUsd += swapped.costUsd;
+          this.addCost(swapped.costUsd);
+        },
+        () => undefined,
+      );
+      return false;
+    }
     this.pendingSwapClipIds.add(result.clipId);
     if (lane === "chained") {
       this.pendingChainSwaps += 1;

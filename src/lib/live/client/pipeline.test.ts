@@ -1615,7 +1615,59 @@ describe("ClipPipeline", () => {
     expect(pipeline.getBufferStats().idleInflight).toBeGreaterThan(0);
   });
 
-  it("two-phase swap: the chain advances off a pending clip's tail at once, the clip plays only once its swap lands, and fillers wait for it", async () => {
+  it("two-phase swap: the greeting plays as soon as it renders, unswapped, with nothing buffered to hold it back", async () => {
+    const events: PipelineEvent[] = [];
+    const queue = makeJobQueue();
+    const finalize = new Map<
+      string,
+      Deferred<{
+        videoUrl: string;
+        costUsd: number;
+        report: ClipResult["swap"] & object;
+      }>
+    >();
+    const pipeline = trackedPipeline({
+      backend: "swap",
+      now: nowFn,
+      onEvent: (event) => events.push(event),
+      render: async (req) =>
+        delayed(() => ({
+          ...chainAdvancingResult(req),
+          swap: {
+            status: "pending" as const,
+            swapMs: 0,
+            frames: 0,
+            framesWithFace: 0,
+            msPerFrame: 0,
+            similarityBefore: null,
+            similarityAfter: null,
+            restored: false,
+            reason: null,
+          },
+        })),
+      finalizeSwap: (result) => {
+        const deferred = defer<{
+          videoUrl: string;
+          costUsd: number;
+          report: ClipResult["swap"] & object;
+        }>();
+        finalize.set(result.clipId, deferred);
+        return deferred.promise;
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting rendered: pending swap, but nothing gates it
+    // Nothing else was ever buffered before it, so it must be playable the instant it renders.
+    const played = pipeline.nextClip();
+    expect(played?.jobKind).toBe("greeting");
+    expect(played?.swap?.status).toBe("pending");
+    expect(events.filter((e) => e.type === "clipReady").length).toBe(1);
+    // The background finalize call still ran; landing it later doesn't need another clipReady.
+    expect(finalize.size).toBe(1);
+  });
+
+  it("two-phase swap: a chained clip after the greeting plays only once its swap lands, and fillers wait for it", async () => {
     const requests: ClipRequest[] = [];
     const events: PipelineEvent[] = [];
     const queue = makeJobQueue();
@@ -1661,21 +1713,30 @@ describe("ClipPipeline", () => {
 
     queue.push(REPLY_JOB);
     pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
-    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting rendered: pending swap, tail is the seed
-    const greetingId =
-      requests[0] &&
-      events.find((e) => e.type === "clipRendered")?.result.clipId;
-    expect(greetingId).toBeDefined();
-    // The reply already renders from the greeting's tail while the greeting swap is still pending.
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting rendered and plays immediately, unswapped
+    pipeline.nextClip(); // greeting leaves the shelf
+    // The reply already renders from the greeting's tail while the greeting's own swap is still pending.
     const reply = requests.find((r) => r.job.kind === "reply");
     expect(reply).toBeDefined();
     expect(reply?.session.seedFrameUrl).toBe(snapshot.seedFrameUrl);
-    // Fillers hold while a chain swap is pending and the shelf is not bare: none were submitted yet with nothing playable, so they do start here (bare shelf).
-    expect(pipeline.nextClip()).toBeNull();
-    expect(events.some((e) => e.type === "clipReady")).toBe(false);
 
-    finalize.get(greetingId as string)?.resolve({
-      videoUrl: "https://example.com/greeting-swapped.mp4",
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // reply rendered: pending swap, tail is the seed
+    const replyId = events.find(
+      (e) => e.type === "clipRendered" && e.result.jobKind === "reply",
+    );
+    expect(replyId).toBeDefined();
+    // Fillers hold while a chain swap is pending and the shelf is not bare.
+    expect(pipeline.nextClip()).toBeNull();
+    expect(
+      events.some(
+        (e) => e.type === "clipReady" && e.result.jobKind === "reply",
+      ),
+    ).toBe(false);
+
+    const pendingReplyId =
+      replyId && (replyId as { result: ClipResult }).result.clipId;
+    finalize.get(pendingReplyId as string)?.resolve({
+      videoUrl: "https://example.com/reply-swapped.mp4",
       costUsd: 0.004,
       report: {
         status: "swapped",
@@ -1691,10 +1752,9 @@ describe("ClipPipeline", () => {
     });
     await vi.advanceTimersByTimeAsync(0);
     const played = pipeline.nextClip();
-    expect(played?.jobKind).toBe("greeting");
-    expect(played?.videoUrl).toBe("https://example.com/greeting-swapped.mp4");
+    expect(played?.jobKind).toBe("reply");
+    expect(played?.videoUrl).toBe("https://example.com/reply-swapped.mp4");
     expect(played?.swap?.status).toBe("swapped");
-    expect(events.filter((e) => e.type === "clipReady").length).toBe(1);
   });
 
   it("two-phase swap: a failed clip swap still plays, unswapped, with a failed report", async () => {
@@ -1718,14 +1778,21 @@ describe("ClipPipeline", () => {
             reason: null,
           },
         })),
-      finalizeSwap: () =>
-        Promise.reject(new Error("Swap service responded 503")),
+      finalizeSwap: (result) =>
+        // The greeting is never gated, so exercise the failure path on the chained clip after it.
+        result.jobKind === "reply"
+          ? Promise.reject(new Error("Swap service responded 503"))
+          : new Promise(() => undefined),
     });
-    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
-    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    const queueWithReply = queue;
+    queueWithReply.push(REPLY_JOB);
+    pipeline.start({ kind: "greeting" }, () => snapshot, queueWithReply.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting rendered and plays immediately
+    pipeline.nextClip(); // greeting leaves the shelf
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // reply rendered
     await vi.advanceTimersByTimeAsync(0);
     const played = pipeline.nextClip();
-    expect(played?.jobKind).toBe("greeting");
+    expect(played?.jobKind).toBe("reply");
     expect(played?.videoUrl).toMatch(/example\.com\/\d+\.mp4$/);
     expect(played?.swap?.status).toBe("failed");
     expect(played?.swap?.reason).toMatch(/503/);
