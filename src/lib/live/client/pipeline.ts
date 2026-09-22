@@ -318,9 +318,10 @@ export class ClipPipeline {
     this.tryAdvanceChain();
   }
 
-  // A requested clip is waiting; the player cuts into a looping idle for it rather than queueing behind it.
+  // A requested clip is waiting; the player cuts into a looping idle for it rather than queueing behind it. Only once it can play: a cut-in for a clip still swapping pulled an idle off the shelf and dropped it.
   hasChainedReady(): boolean {
-    return this.chainedReady.length > 0;
+    const chained = this.chainedReady[0];
+    return chained !== undefined && this.isPlayable(chained);
   }
 
   // The player hands back a clip it pulled but will not play (an idle displaced by a cut-in).
@@ -355,11 +356,8 @@ export class ClipPipeline {
 
   private pickNext(): ClipResult | null {
     const chained = this.chainedReady[0];
-    if (chained && !this.isPlayable(chained)) {
-      // Order is canon: a later clip must not jump ahead of one still being swapped.
-      return null;
-    }
-    if (chained) {
+    // Order is canon: a later chain clip must not jump ahead of one still being swapped. An idle anchored on the cursor is not a jump, it loops back to the frame the pending clip starts from, so it covers the wait instead of a frozen frame (prod held 21 s on the greeting's last frame while a reply swapped).
+    if (chained && this.isPlayable(chained)) {
       this.chainedReady.shift();
       this.firstChainClipPlayed = true;
       this.playoutCursorFrameUrl = chained.seedFrameUrl;

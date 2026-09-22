@@ -1798,6 +1798,96 @@ describe("ClipPipeline", () => {
     expect(played?.swap?.reason).toMatch(/503/);
   });
 
+  it("two-phase swap: an idle anchored on the cursor covers a reply still swapping instead of a hold, and cut-in waits for the reply to be playable", async () => {
+    const events: PipelineEvent[] = [];
+    const queue = makeJobQueue();
+    const finalize = new Map<
+      string,
+      Deferred<{
+        videoUrl: string;
+        costUsd: number;
+        report: ClipResult["swap"] & object;
+      }>
+    >();
+    const pipeline = trackedPipeline({
+      backend: "swap",
+      now: nowFn,
+      onEvent: (event) => events.push(event),
+      render: async (req) =>
+        delayed(() => ({
+          ...chainAdvancingResult(req),
+          swap: {
+            status: "pending" as const,
+            swapMs: 0,
+            frames: 0,
+            framesWithFace: 0,
+            msPerFrame: 0,
+            similarityBefore: null,
+            similarityAfter: null,
+            restored: false,
+            reason: null,
+          },
+        })),
+      finalizeSwap: (result) => {
+        const deferred = defer<{
+          videoUrl: string;
+          costUsd: number;
+          report: ClipResult["swap"] & object;
+        }>();
+        finalize.set(result.clipId, deferred);
+        return deferred.promise;
+      },
+    });
+    const swappedReport = {
+      status: "swapped" as const,
+      swapMs: 6000,
+      frames: 240,
+      framesWithFace: 240,
+      msPerFrame: 25,
+      similarityBefore: 0.6,
+      similarityAfter: 0.9,
+      restored: true,
+      reason: null,
+    };
+
+    queue.push(REPLY_JOB);
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting rendered
+    pipeline.nextClip(); // greeting plays; bridge idles render from its tail alongside the reply
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // reply and idles rendered, all swaps pending
+    const rendered = (kind: string) =>
+      events.filter(
+        (e): e is Extract<PipelineEvent, { type: "clipRendered" }> =>
+          e.type === "clipRendered" && e.result.jobKind === kind,
+      );
+    const replyId = rendered("reply")[0]?.result.clipId;
+    const idleId = rendered("idle")[0]?.result.clipId;
+    expect(replyId).toBeDefined();
+    expect(idleId).toBeDefined();
+    // Nothing has landed: a hold is all that is left.
+    expect(pipeline.nextClip()).toBeNull();
+    expect(pipeline.hasChainedReady()).toBe(false);
+
+    finalize.get(idleId as string)?.resolve({
+      videoUrl: "https://example.com/idle-swapped.mp4",
+      costUsd: 0.003,
+      report: swappedReport,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    // The idle loops back to the frame the reply starts from, so it covers the wait; the reply is still not a cut-in target.
+    expect(pipeline.hasChainedReady()).toBe(false);
+    expect(pipeline.nextClip()?.clipId).toBe(idleId);
+
+    finalize.get(replyId as string)?.resolve({
+      videoUrl: "https://example.com/reply-swapped.mp4",
+      costUsd: 0.004,
+      report: swappedReport,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pipeline.hasChainedReady()).toBe(true);
+    expect(pipeline.nextClip()?.clipId).toBe(replyId);
+  });
+
   it("two-phase swap: chain swaps run one at a time, so the clip behind a reply only starts swapping once the reply's swap lands", async () => {
     const queue = makeJobQueue();
     const finalize = new Map<
