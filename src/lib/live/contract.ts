@@ -226,6 +226,8 @@ export const liveSessionSnapshotSchema = z.object({
   seedFrameUrl: z.url(),
   // Untouched upload. Identity anchor the guard compares every checked frame against.
   anchorFrameUrl: z.url(),
+  // The session's first rendered frame (the greeting's tail): every later chain seed has its tone pulled back toward it, so the contrast and colour drift of chained renders stops compounding.
+  toneFrameUrl: z.url().optional(),
   elapsedSec: z
     .number()
     .int()
@@ -359,6 +361,10 @@ export const LIVE_TUNABLES = {
   SWAP_LEAD_SEC: 0.4,
   // A reply arriving while an idle loops waits for the loop boundary whenever the idle wraps within this many seconds. Above any idle length it always waits: the reply is rendered from the idle's anchor frame, so only the boundary is pose-continuous; cutting in at 1.5 s read as a pose jump on every request (avg cost about half an idle, ~5 s).
   CUT_IN_WAIT_MAX_SEC: 30,
+  // Just after a wrap the idle is still on the anchor pose the reply starts from, so a reply that lands moments after the boundary cuts in now instead of waiting the whole loop (prod: landed 1 s late, seen 10 s later).
+  CUT_IN_AFTER_WRAP_SEC: 1.5,
+  // The swap account has two GPUs; a third swap request queues inside Modal and stretched a reply's swap from 9 to 12 s. One slot is reserved for the chain, fillers share the rest.
+  SWAP_MAX_CONCURRENT: 2,
   // Timeupdate fires about four times a second, so a deferred cut-in on a looping element needs a wider boundary window than SWAP_LEAD_SEC or the wrap slips past it.
   CUT_IN_LEAD_SEC: 0.35,
   // Stage an in-scene still (selected room, canon lingerie) from the upload before the greeting; the raw photo's clothes and room otherwise contradict the prompt and the first clip visibly morphs.

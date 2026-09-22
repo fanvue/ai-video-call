@@ -1962,6 +1962,80 @@ describe("ClipPipeline", () => {
     expect(pipeline.nextClip()?.jobKind).toBe("reply");
   });
 
+  it("two-phase swap: fillers share SWAP_MAX_CONCURRENT minus one slot, the chain keeps its own, and a queued filler starts when one lands", async () => {
+    const queue = makeJobQueue();
+    const started: string[] = [];
+    const finalize = new Map<
+      string,
+      Deferred<{
+        videoUrl: string;
+        costUsd: number;
+        report: ClipResult["swap"] & object;
+      }>
+    >();
+    const pipeline = trackedPipeline({
+      backend: "swap",
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) =>
+        delayed(() => ({
+          ...chainAdvancingResult(req),
+          swap: {
+            status: "pending" as const,
+            swapMs: 0,
+            frames: 0,
+            framesWithFace: 0,
+            msPerFrame: 0,
+            similarityBefore: null,
+            similarityAfter: null,
+            restored: false,
+            reason: null,
+          },
+        })),
+      finalizeSwap: (result) => {
+        started.push(result.jobKind);
+        const deferred = defer<{
+          videoUrl: string;
+          costUsd: number;
+          report: ClipResult["swap"] & object;
+        }>();
+        finalize.set(result.clipId, deferred);
+        return deferred.promise;
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting rendered, two fillers submitted
+    pipeline.nextClip();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // both fillers rendered: one swaps, one queues
+    expect(started).toEqual(["idle"]);
+    expect(LIVE_TUNABLES.SWAP_MAX_CONCURRENT).toBe(2);
+
+    queue.push(REPLY_JOB);
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // reply rendered: its reserved slot is free, it does not wait behind the queued filler
+    expect(started).toEqual(["idle", "reply"]);
+
+    const [firstIdle] = [...finalize.entries()];
+    firstIdle?.[1].resolve({
+      videoUrl: "https://example.com/idle-swapped.mp4",
+      costUsd: 0.003,
+      report: {
+        status: "swapped",
+        swapMs: 8000,
+        frames: 240,
+        framesWithFace: 240,
+        msPerFrame: 33,
+        similarityBefore: 0.4,
+        similarityAfter: 0.9,
+        restored: true,
+        reason: null,
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(started).toEqual(["idle", "reply", "idle"]);
+  });
+
   it("two-phase swap: a playable idle on the old anchor does not stop the bridge idle for a new chain tail while that clip's swap is in flight", async () => {
     const requests: ClipRequest[] = [];
     const queue = makeJobQueue();

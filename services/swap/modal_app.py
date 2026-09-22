@@ -55,6 +55,7 @@ class SwapClipRequest(BaseModel):
 
 class LastFrameRequest(BaseModel):
     video_url: str
+    tone_reference_url: str | None = None
 
 
 @app.cls(
@@ -111,7 +112,7 @@ class SwapService:
             if not token_allowed(bearer_token(authorization)):
                 raise HTTPException(status_code=403, detail="unauthorized")
             try:
-                return last_frame_from_url(engine, body.video_url)
+                return last_frame_from_url(engine, body.video_url, body.tone_reference_url)
             except ValueError as error:
                 raise HTTPException(status_code=422, detail=str(error)) from error
 

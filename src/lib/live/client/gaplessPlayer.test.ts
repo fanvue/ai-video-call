@@ -291,6 +291,24 @@ describe("GaplessPlayer", () => {
     expect(player.getActiveSlot()).toBe("b");
   });
 
+  it("cuts a reply into an idle that has only just wrapped, instead of waiting for the next wrap", async () => {
+    const queue: ClipToPlay[] = [clip("loop1", true)];
+    const { a, b, player } = setup(queue);
+    player.setInterruptReadyHandler(() => queue.some((c) => c.interrupts));
+    player.start();
+    await flush();
+    a.fireTimeUpdate(0.8);
+    await flush();
+
+    queue.unshift(clip("reply", false, true));
+    player.checkForClip();
+    await flush();
+    expect(b.src).toBe(clip("reply").videoUrl);
+    b.fire("playing");
+    await flush();
+    expect(player.getActiveSlot()).toBe("b");
+  });
+
   it("does not reveal a boundary swap on a still first frame: a preloaded readyState alone is not a presented frame", async () => {
     const { a, b, player } = setup([clip("c1"), clip("c2")]);
     player.start();

@@ -16,7 +16,11 @@ import {
 // Per-request lifecycle the UI can render (queue strip chip, transcript failure line). Driven by
 // pipeline events; see useLiveSession's handlePipelineEvent for the generating/playing transitions.
 export type RequestStatus =
-  "queued" | "generating" | "playing" | "done" | "failed";
+  | "queued"
+  | "generating"
+  | "playing"
+  | "done"
+  | "failed";
 
 export type DirectorState = {
   creator: CreatorProfile;
@@ -45,6 +49,8 @@ export type DirectorState = {
   // Chain clips committed since the last identity reference; ticks past
   // IDENTITY_REFERENCE_MAX_CHAIN_CLIPS. See consumeIdentityReferenceDue.
   chainClipsSinceIdentityReference: number;
+  // The greeting's tail, the session's first rendered frame; later seeds are tone-locked to it.
+  toneFrameUrl?: string;
 };
 
 export type DirectorInit = {
@@ -211,6 +217,9 @@ export class LiveDirector {
       return;
     }
     this.state = { ...this.state, lastActivityAt: now };
+    if (result.jobKind === "greeting" && !this.state.toneFrameUrl) {
+      this.state = { ...this.state, toneFrameUrl: result.seedFrameUrl };
+    }
     // The pipeline never plays a rejected clip; refuse its state too so a guard failure can't
     // rewrite canon through a caller that forgot to check the verdict.
     if (result.verdict === "rejected") {
@@ -401,6 +410,7 @@ export class LiveDirector {
       state: this.state.liveState,
       seedFrameUrl: this.state.seedFrameUrl,
       anchorFrameUrl: this.state.anchorFrameUrl,
+      toneFrameUrl: this.state.toneFrameUrl,
       elapsedSec: this.elapsedSec(now),
       transcript,
     };

@@ -150,6 +150,7 @@ describe("swapServiceLastFrame", () => {
 
     const url = await swapServiceLastFrame({
       videoUrl: "https://fal.test/turbo.mp4",
+      toneReferenceUrl: "https://fal.test/first-seed.png",
     });
 
     const [target, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
@@ -159,6 +160,7 @@ describe("swapServiceLastFrame", () => {
     );
     expect(JSON.parse(init.body as string)).toEqual({
       video_url: "https://fal.test/turbo.mp4",
+      tone_reference_url: "https://fal.test/first-seed.png",
     });
     expect(uploadToFal.mock.calls[0][1]).toMatch(/^seed-.*\.png$/);
     expect(uploadToFal.mock.calls[0][2]).toBe("image/png");

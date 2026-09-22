@@ -392,7 +392,10 @@ export const generateClip = async (
           (await withTimeout(
             backend === "swap"
               ? // The swap service decodes the tail in about 1 s; fal's ffmpeg-api took 5 to 6 s of the reply path. It stays the fallback.
-                swapServiceLastFrame({ videoUrl }).catch((error: unknown) => {
+                swapServiceLastFrame({
+                  videoUrl,
+                  toneReferenceUrl: session.toneFrameUrl,
+                }).catch((error: unknown) => {
                   console.warn(
                     "generateClip: swap service lastFrame failed, using fal extract",
                     error,

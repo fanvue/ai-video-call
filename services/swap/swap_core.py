@@ -29,6 +29,8 @@ ENHANCE_MAX_SHARPNESS = 80.0
 SEED_SHARPNESS_MAX = 95.0
 SEED_SHARPNESS_TARGET = 75.0
 SOFTEN_SIGMA = 1.2
+# Chained renders also inflate contrast and saturation and warm the skin (see the degrade-gen sheet). Each seed's LAB moments are pulled halfway back toward the session's first frame: a leaky correction that bounds the drift but still lets a real scene change (a garment coming off) shift the tone.
+TONE_LOCK_BLEND = 0.5
 # FaceFusion's HyperSwap 1a (256 px, same ArcFace w600k_r50 identity as buffalo_l); the bake-off candidate against inswapper_128.
 HYPERSWAP_URL = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.3.0/hyperswap_1a_256.onnx"
 SWAP_SIZE = 256
@@ -197,6 +199,27 @@ class SwapEngine:
                 high = alpha
             best = candidate
         return best
+
+    @staticmethod
+    def frame_lab_stats(frame):
+        import cv2
+
+        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB).astype("float32").reshape(-1, 3)
+        return lab.mean(axis=0), lab.std(axis=0)
+
+    # Whole-frame version of color_lock against the session's first frame, blended by TONE_LOCK_BLEND.
+    def tone_lock(self, frame, ref_stats):
+        import cv2
+        import numpy as np
+
+        ref_mean, ref_std = ref_stats
+        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB).astype(np.float32)
+        flat = lab.reshape(-1, 3)
+        mean = flat.mean(axis=0)
+        std = np.where(flat.std(axis=0) < 1e-3, 1.0, flat.std(axis=0))
+        locked = np.clip((lab - mean) / std * ref_std + ref_mean, 0, 255).astype(np.uint8)
+        locked = cv2.cvtColor(locked, cv2.COLOR_LAB2BGR)
+        return cv2.addWeighted(locked, TONE_LOCK_BLEND, frame, 1.0 - TONE_LOCK_BLEND, 0)
 
     @staticmethod
     def sharpness(frame) -> float:
@@ -641,18 +664,50 @@ def swap_tail_from_url(
     return {"last_frame_base64": base64.b64encode(seed_jpeg).decode("ascii"), "stats": stats}
 
 
+# The session's first frame is the same URL for every seed of that session, so its LAB moments are computed once per container.
+_tone_stats_cache: dict[str, Any] = {}
+_tone_stats_lock = threading.Lock()
+
+
+def tone_reference_stats(engine: SwapEngine, url: str):
+    with _tone_stats_lock:
+        cached = _tone_stats_cache.get(url)
+    if cached is not None:
+        return cached
+    with urllib.request.urlopen(url, timeout=30) as response:
+        image = engine.decode_image(response.read())
+    if image is None:
+        raise ValueError("tone reference is not an image")
+    stats = engine.frame_lab_stats(image)
+    with _tone_stats_lock:
+        if len(_tone_stats_cache) >= 16:
+            _tone_stats_cache.clear()
+        _tone_stats_cache[url] = stats
+    return stats
+
+
 # The raw last frame, unswapped, finished like every other seed (enhanced once the chain has blurred it): the next chain clip's seed. fal's ffmpeg-api took 5 to 6 s for the same frame on the reply path.
-def last_frame_from_url(engine: SwapEngine, video_url: str) -> dict[str, Any]:
+def last_frame_from_url(
+    engine: SwapEngine, video_url: str, tone_reference_url: str | None = None
+) -> dict[str, Any]:
     with tempfile.TemporaryDirectory() as directory:
         source_path = os.path.join(directory, "source.mp4")
         started = time.perf_counter()
         download(video_url, source_path)
         download_ms = int((time.perf_counter() - started) * 1000)
         frame = engine.read_tail_frame(source_path)
+    tone_locked = False
+    if tone_reference_url:
+        # Tone is a quality feature, not a guard: a reference that fails to load leaves the seed as rendered.
+        try:
+            frame = engine.tone_lock(frame, tone_reference_stats(engine, tone_reference_url))
+            tone_locked = True
+        except Exception as error:  # noqa: BLE001
+            print(f"lastFrame: tone reference failed: {error}", flush=True)
     seed_frame, enhance_ms, enhanced, sharpness_before, sharpness_after = engine.finish_seed(frame)
     total_ms = int((time.perf_counter() - started) * 1000)
     print(
-        f"lastFrame: download_ms={download_ms} enhance_ms={enhance_ms} enhanced={enhanced} "
+        f"lastFrame: download_ms={download_ms} tone_locked={tone_locked} enhance_ms={enhance_ms} enhanced={enhanced} "
         f"sharpness={sharpness_before}->{sharpness_after} total_ms={total_ms}",
         flush=True,
     )
@@ -660,6 +715,7 @@ def last_frame_from_url(engine: SwapEngine, video_url: str) -> dict[str, Any]:
         "last_frame_base64": base64.b64encode(engine.encode_png(seed_frame)).decode("ascii"),
         "stats": {
             "download_ms": download_ms,
+            "tone_locked": tone_locked,
             "enhance_ms": enhance_ms,
             "enhanced": enhanced,
             "sharpness_before": sharpness_before,

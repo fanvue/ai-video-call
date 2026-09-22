@@ -146,9 +146,11 @@ const lastFrameResponseSchema = z.object({
 // The clip's raw last frame from the swap service, rehosted for the next render.
 export const swapServiceLastFrame = async ({
   videoUrl,
+  toneReferenceUrl,
   budgetMs = LAST_FRAME_BUDGET_MS,
 }: {
   videoUrl: string;
+  toneReferenceUrl?: string;
   budgetMs?: number;
 }): Promise<string> => {
   if (!env.SWAP_SERVICE_URL || !env.SWAP_TOKEN) {
@@ -161,7 +163,10 @@ export const swapServiceLastFrame = async ({
       Authorization: `Bearer ${env.SWAP_TOKEN}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ video_url: videoUrl }),
+    body: JSON.stringify({
+      video_url: videoUrl,
+      ...(toneReferenceUrl ? { tone_reference_url: toneReferenceUrl } : {}),
+    }),
     signal: AbortSignal.timeout(budgetMs),
   });
   if (!response.ok) {

@@ -4,6 +4,7 @@ import { LIVE_TUNABLES, type SpeechMode } from "@/lib/live/contract";
 const SWAP_LEAD_SEC = LIVE_TUNABLES.SWAP_LEAD_SEC;
 const CUT_IN_WAIT_MAX_SEC = LIVE_TUNABLES.CUT_IN_WAIT_MAX_SEC;
 const CUT_IN_LEAD_SEC = LIVE_TUNABLES.CUT_IN_LEAD_SEC;
+const CUT_IN_AFTER_WRAP_SEC = LIVE_TUNABLES.CUT_IN_AFTER_WRAP_SEC;
 // Boundary dissolve. 180 ms read as a hard cut once the incoming slot faded in on top; the two clips share the boundary frame, so a longer overlap costs no continuity.
 const CROSSFADE_MS = 320;
 // A cut-in lands mid-motion on a clip rendered from a different moment, so it dissolves longer to soften the pose change; boundaries are frame-continuous and stay short.
@@ -346,8 +347,10 @@ export class GaplessPlayer {
       return;
     }
     if (clip.interrupts && this.currentClipLoops) {
-      const remaining = this.currentDurationSec - this.currentTimeSec;
-      if (remaining > CUT_IN_WAIT_MAX_SEC) {
+      // The element's own clock, not the last timeupdate: a wrap may have happened since the last tick.
+      const atSec = this.getActive()?.currentTime ?? this.currentTimeSec;
+      const remaining = this.currentDurationSec - atSec;
+      if (remaining > CUT_IN_WAIT_MAX_SEC || atSec <= CUT_IN_AFTER_WRAP_SEC) {
         void this.performSwap(clip, false);
         return;
       }

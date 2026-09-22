@@ -117,8 +117,11 @@ export class ClipPipeline {
   // Clips still having their full swap finished: they hold their queue position but are not playable yet.
   private pendingSwapClipIds = new Set<string>();
   private pendingChainSwaps = 0;
+  private activeSwaps = 0;
+  private activeChainSwaps = 0;
+  private queuedSwaps: Array<{ lane: "idle" | "chained"; run: () => void }> =
+    [];
   // Chain swaps waiting for the one before them to land; see beginPendingSwap.
-  private queuedChainSwaps: Array<() => void> = [];
   // First settled frame per look (the upload for the initial one); a finished plan re-seeds from it, so generated descendants never stack deeper than one plan.
   private trustedSeedByLook = new Map<string, string>();
   // Drifted tail frame -> the trusted frame it was re-seeded to; idles rendered from the trusted frame must stay playable after the tail's own clip.
@@ -239,21 +242,53 @@ export class ClipPipeline {
             return;
           }
           this.pendingSwapClipIds.delete(result.clipId);
+          this.activeSwaps -= 1;
           if (lane === "chained") {
             this.pendingChainSwaps -= 1;
-            this.queuedChainSwaps.shift()?.();
+            this.activeChainSwaps -= 1;
           }
+          this.dispatchSwaps();
           this.onEvent({ type: "clipReady", result, lane });
           this.announceIfRecovered();
           this.fillIdleStockpile();
         });
-    // Chain clips play in order and the swap account fits two clips at a time, so a beat swapping alongside the reply ahead of it only took the GPU that reply was queueing for; chain swaps run one at a time and the next starts when the last lands.
-    if (lane === "chained" && this.pendingChainSwaps > 1) {
-      this.queuedChainSwaps.push(runSwap);
-    } else {
-      void runSwap();
-    }
+    this.queuedSwaps.push({ lane, run: runSwap });
+    this.dispatchSwaps();
     return true;
+  }
+
+  // Swaps run at most SWAP_MAX_CONCURRENT at a time (one per GPU; a third request queued inside Modal and stretched a reply's swap to 12 s). One slot is always kept for the chain so a reply never waits behind fillers; chain clips play in order, so chain swaps also run one at a time.
+  private dispatchSwaps(): void {
+    const max = LIVE_TUNABLES.SWAP_MAX_CONCURRENT;
+    for (;;) {
+      const chainIndex = this.queuedSwaps.findIndex(
+        (q) => q.lane === "chained",
+      );
+      const idleIndex = this.queuedSwaps.findIndex((q) => q.lane === "idle");
+      const activeIdleSwaps = this.activeSwaps - this.activeChainSwaps;
+      let index = -1;
+      if (
+        chainIndex !== -1 &&
+        this.activeChainSwaps === 0 &&
+        this.activeSwaps < max
+      ) {
+        index = chainIndex;
+      } else if (idleIndex !== -1 && activeIdleSwaps < max - 1) {
+        index = idleIndex;
+      }
+      if (index === -1) {
+        return;
+      }
+      const [next] = this.queuedSwaps.splice(index, 1);
+      if (!next) {
+        return;
+      }
+      this.activeSwaps += 1;
+      if (next.lane === "chained") {
+        this.activeChainSwaps += 1;
+      }
+      next.run();
+    }
   }
 
   // Kicks off the chain with the initial (greeting) job and wires the sources for later steps.
