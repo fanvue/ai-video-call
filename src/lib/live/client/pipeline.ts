@@ -45,9 +45,12 @@ export type ClipPipelineOptions = {
   // Whether the next chain job should include the dual identity reference (see consumeIdentityReferenceDue).
   needsIdentityReference?: () => boolean;
   // Swap mode: finishes a clip whose swap.status is "pending" (the full face swap) before it may play.
-  finalizeSwap?: (
-    result: ClipResult,
-  ) => Promise<{ videoUrl: string; costUsd: number; report: ClipSwapReport }>;
+  finalizeSwap?: (result: ClipResult) => Promise<{
+    videoUrl: string;
+    lastFrameUrl?: string;
+    costUsd: number;
+    report: ClipSwapReport;
+  }>;
 };
 
 export type SnapshotSource = () => LiveSessionSnapshot;
@@ -218,6 +221,9 @@ export class ClipPipeline {
           (swapped) => {
             result.videoUrl = swapped.videoUrl;
             result.swap = swapped.report;
+            if (swapped.lastFrameUrl && swapped.report.status === "swapped") {
+              result.swappedLastFrameUrl = swapped.lastFrameUrl;
+            }
             result.costUsd += swapped.costUsd;
             this.addCost(swapped.costUsd);
           },

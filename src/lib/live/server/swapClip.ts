@@ -172,8 +172,8 @@ export const swapClip = async ({
     ),
     uploadToFal(
       Buffer.from(parsed.last_frame_base64, "base64"),
-      `swap-${stamp}-last.jpg`,
-      "image/jpeg",
+      `swap-${stamp}-last.png`,
+      "image/png",
     ),
   ]);
   const { stats } = parsed;

@@ -295,6 +295,11 @@ export const generateClip = async (
       ? session.stateFrames?.[stateFrameKey(plan.expectedState)]
       : undefined;
 
+  const identityReferenceUrl =
+    videoBackend.supportsIdentityReference && useIdentityReference
+      ? session.anchorFrameUrl
+      : undefined;
+
   const renderStarted = Date.now();
   // The reference model has no first frame to inherit the room from, so the prompt establishes it and pins the upload to identity only.
   const prompt = greetingFromReference
@@ -305,9 +310,7 @@ export const generateClip = async (
     seedFrameUrl: session.seedFrameUrl,
     durationSec: plan.durationSec,
     endFrameUrl: isAnchoredLoop ? session.seedFrameUrl : bankedEndFrameUrl,
-    identityReferenceUrl: useIdentityReference
-      ? session.anchorFrameUrl
-      : undefined,
+    identityReferenceUrl,
   });
 
   const replyTextPromise: Promise<{ text: string; nextWorld: string } | null> =
@@ -339,7 +342,7 @@ export const generateClip = async (
   const rendered = await renderPromise;
   const renderMs = Date.now() - renderStarted;
   console.log(
-    `generateClip: renderMs=${renderMs} kind=${job.kind} backend=${backend} dualRef=${useIdentityReference} bankedEnd=${!!bankedEndFrameUrl}`,
+    `generateClip: renderMs=${renderMs} kind=${job.kind} backend=${backend} dualRef=${videoBackend.supportsIdentityReference ? useIdentityReference : "n/a"} bankedEnd=${!!bankedEndFrameUrl}`,
   );
 
   // Swap backend: the swapped clip replaces turbo's output for playback and checks.

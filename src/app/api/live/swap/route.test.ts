@@ -74,6 +74,7 @@ describe("POST /api/live/swap", () => {
     const response = await POST(jsonBody(body));
     const data = (await response.json()) as {
       videoUrl: string;
+      lastFrameUrl: string;
       costUsd: number;
       report: { status: string };
     };
@@ -81,6 +82,7 @@ describe("POST /api/live/swap", () => {
       expect.objectContaining({ budgetMs: 150_000, jobKind: "reply" }),
     );
     expect(data.videoUrl).toBe("https://v3.fal.media/files/swapped.mp4");
+    expect(data.lastFrameUrl).toBe("https://v3.fal.media/files/last.jpg");
     expect(data.report.status).toBe("swapped");
   });
 

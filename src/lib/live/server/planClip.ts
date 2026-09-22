@@ -93,8 +93,15 @@ export const typingLeadSecFor = (text: string): number => {
 
 // --- Universal locks -------------------------------------------------------
 
-const CAMERA_LOCK =
-  "FIXED WEBCAM: static laptop webcam, no zoom, no pan, no push-in, no cut, no camera movement of any kind.";
+// A concrete shot size, since "webcam" alone let the model pick its own crop per clip.
+const FRAMING_DESCRIPTION: Record<Body["framing"], string> = {
+  wider: "wide shot, her body from head to knees in frame",
+  medium: "medium shot, framed from head to hips",
+  torso: "close medium shot, framed from head to waist",
+};
+
+const cameraLockLine = (framing: Body["framing"]): string =>
+  `FIXED WEBCAM: static laptop webcam, ${FRAMING_DESCRIPTION[framing]}, no zoom, no pan, no push-in, no cut, no camera movement of any kind.`;
 
 const ANATOMY_LOCK =
   "ANATOMY LOCK: exactly one adult woman — one head, two arms, two hands, ten fingers, two legs, two feet. " +
@@ -220,7 +227,7 @@ const describeState = (wardrobe: Wardrobe, body: Body): string => {
     body.prop !== "none" && body.prop !== "fetching"
       ? `, holding ${PROP_LABEL[body.prop]}`
       : "";
-  return `${POSE_DESCRIPTION[body.pose]}, ${FACING_TRANSITION_LABEL[body.facing]}, hands ${HANDS_DESC[body.hands]}${propPart}. ${clothing}`;
+  return `${POSE_DESCRIPTION[body.pose]}, ${FACING_TRANSITION_LABEL[body.facing]}, hands ${HANDS_DESC[body.hands]}${propPart}, ${FRAMING_DESCRIPTION[body.framing]}. ${clothing}`;
 };
 
 const wardrobeUnchanged = (a: Wardrobe, b: Wardrobe): boolean =>
@@ -268,7 +275,7 @@ const buildPrompt = (params: {
     wardrobeUnchanged(params.state.wardrobe, params.nextWardrobe) &&
     !HAS_WARDROBE_LOCK_RE.test(params.action);
   const setupLines = [
-    CAMERA_LOCK,
+    cameraLockLine(params.state.body.framing),
     ANATOMY_LOCK,
     lookLockLine(params.creator.lookLock),
     `ROOM: ${params.state.surroundings}`,
@@ -1513,8 +1520,8 @@ const planIdle = (
   const lifeLine = idleLifeLine(session.elapsedSec, nextBody.prop === "phone");
   const action = [
     `IDLE, between requests. She stays ${nextBody.pose}, exactly as she is right now, for the entire clip — ` +
-      `only small grounded life on top of that fixed pose: ${lifeLine}. This is a static hold, not a scene ` +
-      "with a beginning and an end.",
+      `only minimal, subtle life on top of that fixed pose: ${lifeLine}. Keep every movement small and slow; ` +
+      "she never leaves the pose she starts in. This is a static hold, not a scene with a beginning and an end.",
     `FORBIDDEN this clip: no change of pose category (if she is ${nextBody.pose} now, she never sits, stands, ` +
       "kneels, or lies down — she stays exactly that way start to finish), no clothing change, no new prop, " +
       "no sexual act starting or continuing, no leaving frame.",
@@ -1522,6 +1529,7 @@ const planIdle = (
     pauseLine,
     "The clip must END in the same pose, framing, expression baseline, and hand position it started in — " +
       "treat any motion as a small excursion that always returns to the exact start.",
+    "By the last second she is settled back in that exact starting pose, still.",
   ]
     .filter(Boolean)
     .join(" ");

@@ -4,7 +4,12 @@ vi.mock("@/lib/fal/uploadImage", () => ({
   uploadReferenceImageToFal: vi.fn(),
 }));
 vi.mock("@/lib/fanvue", () => ({ getCurrentUser: vi.fn() }));
-vi.mock("@/lib/groq", () => ({ createGroqVisionCompletion: vi.fn() }));
+vi.mock("@/env", () => ({ env: {} }));
+vi.mock("@/lib/groq", async (importOriginal) => ({
+  createGroqVisionCompletion: vi.fn(),
+  stripThinkBlock: (await importOriginal<typeof import("@/lib/groq")>())
+    .stripThinkBlock,
+}));
 vi.mock("@/lib/live/server/stageSeed", () => ({ stageSeed: vi.fn() }));
 
 const { uploadReferenceImageToFal } = await import("@/lib/fal/uploadImage");
@@ -70,6 +75,7 @@ describe("POST /api/live/reference — staged seed", () => {
       expect.objectContaining({
         referenceUrl: "https://fal.example.com/anchor.jpg",
         sceneId: "bedroom",
+        lookLock: "long dark hair",
       }),
     );
     expect(data.anchorFrameUrl).toBe("https://fal.example.com/anchor.jpg");
@@ -100,6 +106,53 @@ describe("POST /api/live/reference — staged seed", () => {
     expect(data.seedFrameUrl).toBe("https://fal.example.com/anchor.jpg");
     expect(data.staged).toBe(false);
     expect(data.surroundings).toBe("a grey studio backdrop");
+    expect(data.framing).toBe("torso");
+  });
+
+  it("stages with the fallback look when the capture fails", async () => {
+    vi.mocked(createGroqVisionCompletion).mockRejectedValue(
+      new Error("refused"),
+    );
+    await POST(
+      jsonBody({
+        imageBase64: "abcd",
+        contentType: "image/jpeg",
+        sceneId: "bedroom",
+      }),
+    );
+    expect(stageSeed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        lookLock: "an adult woman with a natural build",
+      }),
+    );
+  });
+
+  it("reads the capture after a Qwen3 <think> block", async () => {
+    vi.mocked(createGroqVisionCompletion).mockResolvedValue({
+      choices: [
+        {
+          message: {
+            content: `<think>is it {"framing":"wider"}?</think>\n${JSON.stringify(
+              {
+                lookLock: "short red hair",
+                surroundings: "a white wall",
+                framing: "torso",
+              },
+            )}`,
+          },
+        },
+      ],
+    } as never);
+    const response = await POST(
+      jsonBody({ imageBase64: "abcd", contentType: "image/jpeg" }),
+    );
+    const data = (await response.json()) as {
+      lookLock: string;
+      framing: string;
+      captured: boolean;
+    };
+    expect(data.captured).toBe(true);
+    expect(data.lookLock).toBe("short red hair");
     expect(data.framing).toBe("torso");
   });
 

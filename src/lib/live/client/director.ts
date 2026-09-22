@@ -307,6 +307,29 @@ export class LiveDirector {
     };
   }
 
+  // The bank entry a chain clip banked is its raw tail; once its full swap lands, the swapped last frame is the identity-correct keyframe for re-entering that state. Only the bank changes: the live seed and anchors stay put.
+  swappedLastFrameLanded(result: ClipResult): void {
+    if (
+      result.jobKind === "idle" ||
+      result.jobKind === "greeting" ||
+      result.swap?.status !== "swapped" ||
+      !result.swappedLastFrameUrl
+    ) {
+      return;
+    }
+    const stateKey = stateFrameKey(result.state);
+    if (this.state.stateFrames[stateKey] !== result.seedFrameUrl) {
+      return;
+    }
+    this.state = {
+      ...this.state,
+      stateFrames: {
+        ...this.state.stateFrames,
+        [stateKey]: result.swappedLastFrameUrl,
+      },
+    };
+  }
+
   // Drops queued beats owned by an abandoned request; `null` targets only ownerless beats.
   abandonRequest(requestId: string | null): void {
     const jobQueue = this.state.jobQueue.filter((job) => {

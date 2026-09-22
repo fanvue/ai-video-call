@@ -132,6 +132,11 @@ describe("renderBackendFor", () => {
     expect(renderBackendFor("reference")).toBe(referenceBackend);
   });
 
+  it("only the reference backend takes a second identity reference", () => {
+    expect(turboBackend.supportsIdentityReference).toBe(false);
+    expect(referenceBackend.supportsIdentityReference).toBe(true);
+  });
+
   it("throws for director — it never reaches the clip pipeline", () => {
     expect(() => renderBackendFor("director")).toThrow(/live-stream backend/);
   });

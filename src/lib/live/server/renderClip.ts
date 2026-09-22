@@ -41,10 +41,13 @@ export type VideoBackend = {
   }) => Promise<VideoRenderResult>;
   // Whether `render`'s endFrameUrl is honoured. The reference backend has no end-frame parameter.
   supportsEndFrame: boolean;
+  // Whether `render`'s identityReferenceUrl is honoured. Turbo is single-image-to-video.
+  supportsIdentityReference: boolean;
 };
 
 export const turboBackend: VideoBackend = {
   supportsEndFrame: true,
+  supportsIdentityReference: false,
   render: async ({ prompt, seedFrameUrl, durationSec, endFrameUrl }) => {
     const submitted = await submitH3MaxVideoGeneration({
       prompt,
@@ -75,6 +78,7 @@ const IDENTITY_REFERENCE_PROMPT_PREFIX =
 
 export const referenceBackend: VideoBackend = {
   supportsEndFrame: false,
+  supportsIdentityReference: true,
   // endFrameUrl is intentionally ignored: the reference-to-video model has no end-frame parameter.
   render: async ({
     prompt,

@@ -52,6 +52,7 @@ export async function POST(request: Request) {
     });
     return NextResponse.json({
       videoUrl: swapped.videoUrl,
+      lastFrameUrl: swapped.lastFrameUrl,
       costUsd: swapped.costUsd,
       report: swapped.report,
     });

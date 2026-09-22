@@ -46,6 +46,8 @@ export const renderClip = async (req: ClipRequest): Promise<ClipResult> => {
 
 const swapResultSchema = z.object({
   videoUrl: z.string().min(1),
+  // Absent when the swap failed open to the unswapped clip.
+  lastFrameUrl: z.string().min(1).optional(),
   costUsd: z.number().min(0),
   report: clipSwapReportSchema,
 });

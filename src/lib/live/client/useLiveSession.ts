@@ -808,6 +808,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       if (!canonAdvancedRef.current.delete(result.clipId)) {
         director.clipCompleted(result, Date.now());
       }
+      director.swappedLastFrameLanded(result);
       refreshRequestStatuses();
       if (result.reply) {
         pendingRevealRef.current = {

@@ -40,13 +40,17 @@ export const createGroqChatCompletion = async ({
   });
 
 // Groq retires vision models without notice (scout 404s in prod); try each in order, remember the first that works.
-export const GROQ_VISION_MODELS = [
-  "meta-llama/llama-4-maverick-17b-128e-instruct",
-  "meta-llama/llama-4-scout-17b-16e-instruct",
-  "llama-3.2-11b-vision-preview",
-] as const;
+export const GROQ_VISION_MODELS = ["qwen/qwen3.8-27b"] as const;
 export const GROQ_VISION_MODEL = GROQ_VISION_MODELS[0];
 let visionModelIndex = 0;
+
+// Qwen3 reasons before answering; hidden keeps the <think> block out of the JSON content.
+const isReasoningVisionModel = (model: string): boolean =>
+  model.startsWith("qwen/qwen3");
+
+// A reasoning model can still emit its <think> block inline, and its braces would break the JSON match.
+export const stripThinkBlock = (raw: string): string =>
+  raw.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
 
 const isModelNotFound = (error: unknown): boolean =>
   typeof error === "object" &&
@@ -89,6 +93,10 @@ export const createGroqVisionCompletion = async ({
         model: candidate,
         response_format: responseFormat,
         messages: [{ role: "user", content }],
+        // Groq-only param, absent from the OpenAI SDK's types; a spread skips the excess-property check.
+        ...(isReasoningVisionModel(candidate)
+          ? { reasoning_format: "hidden" }
+          : {}),
       });
       if (!model) {
         visionModelIndex += offset;
