@@ -1962,6 +1962,91 @@ describe("ClipPipeline", () => {
     expect(pipeline.nextClip()?.jobKind).toBe("reply");
   });
 
+  it("two-phase swap: a playable idle on the old anchor does not stop the bridge idle for a new chain tail while that clip's swap is in flight", async () => {
+    const requests: ClipRequest[] = [];
+    const queue = makeJobQueue();
+    const finalize: Array<{
+      result: ClipResult;
+      deferred: Deferred<{
+        videoUrl: string;
+        costUsd: number;
+        report: ClipResult["swap"] & object;
+      }>;
+    }> = [];
+    const landed = (result: ClipResult) => ({
+      videoUrl: `${result.videoUrl}.swapped.mp4`,
+      costUsd: 0.004,
+      report: {
+        status: "swapped" as const,
+        swapMs: 6000,
+        frames: 264,
+        framesWithFace: 264,
+        msPerFrame: 22,
+        similarityBefore: 0.6,
+        similarityAfter: 0.9,
+        restored: true,
+        reason: null,
+      },
+    });
+    const pipeline = trackedPipeline({
+      backend: "swap",
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        requests.push(req);
+        return delayed(() => ({
+          ...chainAdvancingResult(req),
+          swap: {
+            status: "pending" as const,
+            swapMs: 0,
+            frames: 0,
+            framesWithFace: 0,
+            msPerFrame: 0,
+            similarityBefore: null,
+            similarityAfter: null,
+            restored: false,
+            reason: null,
+          },
+        }));
+      },
+      finalizeSwap: (result) => {
+        const deferred = defer<{
+          videoUrl: string;
+          costUsd: number;
+          report: ClipResult["swap"] & object;
+        }>();
+        finalize.push({ result, deferred });
+        return deferred.promise;
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting rendered, plays unswapped
+    pipeline.nextClip();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // fillers on the greeting tail rendered
+    for (const entry of finalize) {
+      if (entry.result.jobKind === "idle") {
+        entry.deferred.resolve(landed(entry.result));
+      }
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pipeline.getBufferStats().idleReady).toBeGreaterThan(0);
+
+    queue.push(REPLY_JOB);
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // reply rendered: new tail, its swap in flight
+    const reply = finalize.find((e) => e.result.jobKind === "reply")?.result;
+    expect(reply).toBeDefined();
+    // The old-anchor idles cannot follow the reply, so the bridge idle from its tail is submitted now, not after the swap lands.
+    expect(
+      requests.some(
+        (r) =>
+          r.job.kind === "idle" &&
+          r.session.seedFrameUrl === reply?.seedFrameUrl,
+      ),
+    ).toBe(true);
+  });
+
   it("sizes the next idle to the slowest recent idle production plus headroom, within the clip bounds", async () => {
     const requests: ClipRequest[] = [];
     const queue = makeJobQueue();

@@ -9,7 +9,7 @@ type Listener = (event: { currentTarget: FakeVideo }) => void;
 // Minimal stand-in for HTMLVideoElement: enough surface for the player's load/play/swap path.
 class FakeVideo {
   src = "";
-  style: { opacity: string } = { opacity: "" };
+  style = { opacity: "", zIndex: "", transitionDuration: "" };
   loop = false;
   muted = false;
   volume = 1;
@@ -149,11 +149,15 @@ describe("GaplessPlayer", () => {
     expect(b.paused).toBe(false);
     // The swapped-in slot must become the visible one or the viewer sees black.
     expect(b.style.opacity).toBe("1");
-    expect(a.style.opacity).toBe("0");
+    // The incoming slot fades in on top; the outgoing stays opaque under it until the fade ends.
+    expect(b.style.zIndex).toBe("-1");
+    expect(a.style.zIndex).toBe("-2");
+    expect(a.style.opacity).toBe("1");
     expect(a.src).toBe(clip("c3").videoUrl);
 
-    // The deferred outgoing-slot cleanup must not clobber that preload.
+    // The deferred outgoing-slot cleanup hides it but must not clobber that preload.
     vi.advanceTimersByTime(500);
+    expect(a.style.opacity).toBe("0");
     expect(a.src).toBe(clip("c3").videoUrl);
 
     // c2 ends: c3 plays from a instead of the stream dying.
@@ -216,6 +220,8 @@ describe("GaplessPlayer", () => {
     expect(player.getActiveSlot()).toBe("b");
     expect(b.paused).toBe(false);
     expect(b.style.opacity).toBe("1");
+    expect(b.style.transitionDuration).toBe("450ms");
+    vi.advanceTimersByTime(450);
     expect(a.style.opacity).toBe("0");
   });
 
@@ -251,6 +257,8 @@ describe("GaplessPlayer", () => {
     a.fireTimeUpdate(9.92);
     await flush();
     expect(player.getActiveSlot()).toBe("b");
+    expect(b.style.transitionDuration).toBe("180ms");
+    vi.advanceTimersByTime(180);
     expect(a.style.opacity).toBe("0");
   });
 
@@ -269,6 +277,7 @@ describe("GaplessPlayer", () => {
     b.fire("playing");
     await flush();
     expect(player.getActiveSlot()).toBe("b");
+    vi.advanceTimersByTime(450);
     expect(a.style.opacity).toBe("0");
   });
 

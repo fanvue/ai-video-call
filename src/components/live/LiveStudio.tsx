@@ -327,7 +327,7 @@ export const LiveStudio = () => {
           ) : null}
         </div>
       ) : null}
-      <div className="relative min-h-0 flex-1 bg-black">
+      <div className="relative isolate min-h-0 flex-1 bg-black">
         <video
           ref={bindVideoA}
           playsInline

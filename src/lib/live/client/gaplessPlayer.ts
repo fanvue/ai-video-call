@@ -5,6 +5,11 @@ const SWAP_LEAD_SEC = LIVE_TUNABLES.SWAP_LEAD_SEC;
 const CUT_IN_WAIT_MAX_SEC = LIVE_TUNABLES.CUT_IN_WAIT_MAX_SEC;
 const CUT_IN_LEAD_SEC = LIVE_TUNABLES.CUT_IN_LEAD_SEC;
 const CROSSFADE_MS = 180;
+// A cut-in lands mid-motion on a clip rendered from a different moment, so it dissolves longer to soften the pose change; boundaries are frame-continuous and stay short.
+const CUT_IN_CROSSFADE_MS = 450;
+// The incoming slot fades in above the outgoing one, which stays opaque until the fade ends, so a late first paint shows the outgoing's last frame instead of black. Negative so the studio chrome (z auto) stays above both; the container is `isolate`.
+const Z_INCOMING = "-1";
+const Z_OUTGOING = "-2";
 // The outgoing clip counts as on its last frame this close to its end (about two frames at 24 fps); rAF polls at 60 Hz so the reveal lands within a frame of the boundary.
 const REVEAL_EPS_SEC = 0.1;
 // If the outgoing element never reports its end (a stalled decoder), reveal anyway rather than hold two playing clips.
@@ -216,12 +221,21 @@ export class GaplessPlayer {
   }
 
   // The player owns slot visibility: React never re-renders on a swap, so it is done on the DOM.
-  private showSlot(slot: "a" | "b"): void {
-    if (this.a) {
-      this.a.style.opacity = slot === "a" ? "1" : "0";
+  // With fadeMs the outgoing slot stays opaque underneath for the caller to hide once the fade ends; without it (attach, first play, reset) it is hidden at once.
+  private showSlot(slot: "a" | "b", fadeMs?: number): void {
+    const incoming = slot === "a" ? this.a : this.b;
+    const outgoing = slot === "a" ? this.b : this.a;
+    if (incoming) {
+      incoming.style.transitionDuration =
+        fadeMs === undefined ? "" : `${fadeMs}ms`;
+      incoming.style.zIndex = Z_INCOMING;
+      incoming.style.opacity = "1";
     }
-    if (this.b) {
-      this.b.style.opacity = slot === "b" ? "1" : "0";
+    if (outgoing) {
+      outgoing.style.zIndex = Z_OUTGOING;
+      if (fadeMs === undefined) {
+        outgoing.style.opacity = "0";
+      }
     }
   }
 
@@ -567,7 +581,8 @@ export class GaplessPlayer {
     this.currentDurationSec = clip.durationSec;
     this.currentTimeSec = 0;
     this.activeSlot = this.activeSlot === "a" ? "b" : "a";
-    this.showSlot(this.activeSlot);
+    const fadeMs = atBoundary ? CROSSFADE_MS : CUT_IN_CROSSFADE_MS;
+    this.showSlot(this.activeSlot, fadeMs);
     this.preloadedSlot = null;
     this.preloadedClip = null;
     this.cutInWaitingForBoundary = false;
@@ -578,6 +593,8 @@ export class GaplessPlayer {
       if (!outgoing) {
         return;
       }
+      // Hidden only now, under an already opaque incoming slot, so the fade never dips to black.
+      outgoing.style.opacity = "0";
       // preloadNextIfNeeded above usually re-targets this element with the next clip's src;
       // clearing it here would wipe that preload and leave the following swap with nothing.
       if (this.preloadedClip && this.getInactive() === outgoing) {
@@ -586,7 +603,7 @@ export class GaplessPlayer {
       outgoing.pause();
       outgoing.removeAttribute("src");
       outgoing.load();
-    }, CROSSFADE_MS);
+    }, fadeMs);
   }
 
   private checkSwapBoundary(el: HTMLVideoElement): void {

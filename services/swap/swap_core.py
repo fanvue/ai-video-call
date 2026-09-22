@@ -25,8 +25,8 @@ ENHANCER_URL = "https://github.com/facefusion/facefusion-assets/releases/downloa
 ENHANCE_BLEND = 0.5
 # Prod frames above this Laplacian variance came out of the enhancer softer (108 -> 98, 128 -> 112): the x2 model denoises texture it did not need to rebuild. Only frames the chain has already blurred go through it.
 ENHANCE_MAX_SHARPNESS = 80.0
-# How much of the restored face replaces the swapped one; 1.0 looks waxy, FaceFusion defaults to 0.8.
-RESTORE_BLEND = 0.8
+# How much of the restored face replaces the swapped one; 1.0 looks waxy, FaceFusion defaults to 0.8. Down from 0.8: at 0.8 on every frame the face read contoured and over-sharpened by the fourth or fifth clip of a session.
+RESTORE_BLEND = 0.5
 # Off: it forced the upload's lighting onto every scene, so the face read as a lighter pasted mask against the neck. The drift it was added for came from seeding the chain with swapped frames, fixed at the source in generateClip.
 COLOR_LOCK_BLEND = 0.0
 MAX_CLIP_FRAMES = 30 * 20

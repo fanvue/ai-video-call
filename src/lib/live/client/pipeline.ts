@@ -690,10 +690,17 @@ export class ClipPipeline {
     const chainSwapActive =
       this.backend === "swap" &&
       (this.chainInflight || this.pendingChainSwaps > 0);
-    if (
-      chainSwapActive &&
-      this.idleReady.some((clip) => this.isPlayable(clip))
-    ) {
+    // Only a playable idle on the current target anchor counts as cover: an old-anchor idle cannot follow the new tail, and counting it left a beat's bridge idle unsubmitted for 39 s in prod, so the beat's end held for 8 s.
+    const target = this.idleLaneTarget();
+    const targetCovered = this.idleReady.some(
+      (clip) =>
+        this.isPlayable(clip) &&
+        this.sameSeed(
+          this.idleAnchorByClipId.get(clip.clipId) ?? "",
+          target.frameUrl,
+        ),
+    );
+    if (chainSwapActive && targetCovered) {
       return;
     }
     // A bare shelf still needs covering, but the account's swap capacity only sustains one chain swap plus one filler at a time; piling the full idle inflight budget on top of a chain swap is what queued replies 15-20s behind fillers.
@@ -702,7 +709,7 @@ export class ClipPipeline {
       this.idleLaneTargetStockCount() < this.idleBufferTarget() &&
       this.idleInflightCount < inflightCap
     ) {
-      this.submitIdleJob(this.idleLaneTarget(), 0);
+      this.submitIdleJob(target, 0);
     }
   }
 
