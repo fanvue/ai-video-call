@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from swap_core import (
     ENHANCER_URL,
+    HYPERSWAP_URL,
     INSWAPPER_URL,
     REQUIREMENTS,
     RESTORER_URL,
@@ -39,6 +40,7 @@ image = (
         f"wget -q -O /models/inswapper_128.onnx {INSWAPPER_URL}",
         f"wget -q -O /models/restorer.onnx {RESTORER_URL}",
         f"wget -q -O /models/real_esrgan_x2.onnx {ENHANCER_URL}",
+        f"wget -q -O /models/hyperswap_1a_256.onnx {HYPERSWAP_URL}",
         # insightface otherwise downloads the 275MB buffalo_l pack on every cold start.
         "python -c \"from insightface.utils.storage import ensure_available; ensure_available('models', 'buffalo_l', root='/root/.insightface')\"",
     )
@@ -81,12 +83,13 @@ class SwapService:
             "/models/inswapper_128.onnx",
             "/models/restorer.onnx",
             "/models/real_esrgan_x2.onnx",
+            "/models/hyperswap_1a_256.onnx",
         )
 
-    # Modal-authenticated path for smoke tests from a laptop, so no clip needs a public URL.
+    # Modal-authenticated path for smoke tests and the swapper bake-off from a laptop, so no clip needs a public URL; prod's web path stays on inswapper.
     @modal.method()
-    def swap_clip_bytes(self, video: bytes, reference_image: str) -> dict:
-        return swap_clip_from_bytes(self.engine, video, reference_image)
+    def swap_clip_bytes(self, video: bytes, reference_image: str, model: str = "inswapper") -> dict:
+        return swap_clip_from_bytes(self.engine, video, reference_image, model)
 
     @modal.method()
     def swap_tail_bytes(self, video: bytes, reference_image: str) -> dict:

@@ -25,6 +25,14 @@ ENHANCER_URL = "https://github.com/facefusion/facefusion-assets/releases/downloa
 ENHANCE_BLEND = 0.5
 # Prod frames above this Laplacian variance came out of the enhancer softer (108 -> 98, 128 -> 112): the x2 model denoises texture it did not need to rebuild. Only frames the chain has already blurred go through it.
 ENHANCE_MAX_SHARPNESS = 80.0
+# The chain drifts the other way too: prod seeds climbed from Laplacian 63 to 160 over a 3 minute session (the blotchy, over-textured torso), and nothing pulled them back. Above the band the seed is softened toward the target before it renders the next clip.
+SEED_SHARPNESS_MAX = 95.0
+SEED_SHARPNESS_TARGET = 75.0
+SOFTEN_SIGMA = 1.2
+# FaceFusion's HyperSwap 1a (256 px, same ArcFace w600k_r50 identity as buffalo_l); the bake-off candidate against inswapper_128.
+HYPERSWAP_URL = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.3.0/hyperswap_1a_256.onnx"
+SWAP_SIZE = 256
+SWAP_MODELS = ("inswapper", "hyperswap")
 # How much of the restored face replaces the swapped one; 1.0 looks waxy, FaceFusion defaults to 0.8. Down from 0.8: at 0.8 on every frame the face read contoured and over-sharpened by the fourth or fifth clip of a session.
 RESTORE_BLEND = 0.5
 # Off: it forced the upload's lighting onto every scene, so the face read as a lighter pasted mask against the neck. The drift it was added for came from seeding the chain with swapped frames, fixed at the source in generateClip.
@@ -51,6 +59,15 @@ FFHQ_TEMPLATE = [
     [0.50123859, 0.61331904],
     [0.39308822, 0.72541100],
     [0.61150205, 0.72490465],
+]
+
+# FaceFusion's arcface_128 alignment template, the crop HyperSwap was trained on.
+ARCFACE_128_TEMPLATE = [
+    [0.36167656, 0.40387734],
+    [0.63696719, 0.40235469],
+    [0.50019687, 0.56044219],
+    [0.38710391, 0.72160547],
+    [0.61507734, 0.72034453],
 ]
 
 
@@ -87,6 +104,7 @@ class SwapEngine:
         inswapper_path: str,
         restorer_path: str | None = None,
         enhancer_path: str | None = None,
+        hyperswap_path: str | None = None,
     ) -> None:
         import insightface
         import numpy as np
@@ -127,7 +145,21 @@ class SwapEngine:
             )
             self.enhancer_input = self.enhancer.get_inputs()[0].name
             print("enhancer providers:", self.enhancer.get_providers())
+        self.hyperswap = None
+        if hyperswap_path:
+            import onnxruntime
+
+            self.hyperswap = onnxruntime.InferenceSession(
+                hyperswap_path, providers=PROVIDERS
+            )
+            # The export is fp16 in places; feed each input in the dtype it declares instead of guessing.
+            self.hyperswap_inputs = {
+                i.name: (np.float16 if "float16" in i.type else np.float32)
+                for i in self.hyperswap.get_inputs()
+            }
+            print("hyperswap providers:", self.hyperswap.get_providers(), self.hyperswap_inputs)
         self.template = np.array(FFHQ_TEMPLATE, dtype=np.float32) * RESTORE_SIZE
+        self.swap_template = np.array(ARCFACE_128_TEMPLATE, dtype=np.float32) * SWAP_SIZE
         self.warm_up()
 
     def warm_up(self) -> None:
@@ -142,6 +174,29 @@ class SwapEngine:
             self.restorer.run([self.restorer_output], {self.restorer_input: tensor})
         if self.enhancer is not None:
             self.enhance_frame(blank)
+        if self.hyperswap is not None:
+            feed = {
+                name: np.zeros((1, 512) if name == "source" else (1, 3, SWAP_SIZE, SWAP_SIZE), dtype=dtype)
+                for name, dtype in self.hyperswap_inputs.items()
+            }
+            self.hyperswap.run(None, feed)
+
+    # A light Gaussian blended in just far enough to bring an over-textured seed back to the target sharpness; the blend weight is bisected so the correction is proportional, never a fixed blur.
+    def soften_frame(self, frame, target: float):
+        import cv2
+
+        blurred = cv2.GaussianBlur(frame, (0, 0), SOFTEN_SIGMA)
+        low, high = 0.0, 1.0
+        best = frame
+        for _ in range(6):
+            alpha = (low + high) / 2
+            candidate = cv2.addWeighted(blurred, alpha, frame, 1.0 - alpha, 0)
+            if self.sharpness(candidate) > target:
+                low = alpha
+            else:
+                high = alpha
+            best = candidate
+        return best
 
     @staticmethod
     def sharpness(frame) -> float:
@@ -274,6 +329,12 @@ class SwapEngine:
             enhance_ms = int((time.perf_counter() - enhance_started) * 1000)
             enhanced = True
             sharpness_after = round(self.sharpness(seed_frame), 1)
+        elif sharpness_before > SEED_SHARPNESS_MAX:
+            enhance_started = time.perf_counter()
+            seed_frame = self.soften_frame(last_swapped, SEED_SHARPNESS_TARGET)
+            enhance_ms = int((time.perf_counter() - enhance_started) * 1000)
+            enhanced = True
+            sharpness_after = round(self.sharpness(seed_frame), 1)
         return seed_frame, enhance_ms, enhanced, sharpness_before, sharpness_after
 
     # Only the clip's last frame, swapped and finished the same way swap_clip finishes it, so the next clip can render while the full swap is still queued. Decodes just the tail with ffmpeg instead of walking the clip.
@@ -328,12 +389,43 @@ class SwapEngine:
         }
         return stats, self.encode_jpeg(seed_frame)
 
-    def swap_frame(self, frame, source_face, faces, timings: dict[str, float] | None = None):
+    # HyperSwap's own crop and tensor contract (FaceFusion face_swapper: arcface_128 template at 256, (x/255 - 0.5)/0.5 RGB in, the inverse out); returns the swapped crop and the frame-to-crop matrix like insightface's paste_back=False path.
+    def hyperswap_patch(self, frame, face, source_face):
+        import cv2
+        import numpy as np
+
+        matrix, _ = cv2.estimateAffinePartial2D(
+            face.kps.astype(np.float32), self.swap_template, method=cv2.RANSAC, ransacReprojThreshold=100
+        )
+        if matrix is None:
+            return None, None
+        crop = cv2.warpAffine(
+            frame, matrix, (SWAP_SIZE, SWAP_SIZE), borderMode=cv2.BORDER_REPLICATE, flags=cv2.INTER_AREA
+        )
+        target = (crop[:, :, ::-1].astype(np.float32) / 255.0 - 0.5) / 0.5
+        target = np.transpose(target, (2, 0, 1))[None]
+        feed = {
+            "source": source_face.normed_embedding.reshape(1, -1).astype(self.hyperswap_inputs["source"]),
+            "target": target.astype(self.hyperswap_inputs["target"]),
+        }
+        (output,) = self.hyperswap.run(None, feed)
+        swapped = output[0].astype(np.float32).transpose(1, 2, 0) * 0.5 + 0.5
+        swapped = (np.clip(swapped, 0.0, 1.0)[:, :, ::-1] * 255.0).astype(np.uint8)
+        return swapped, matrix
+
+    def swap_frame(
+        self, frame, source_face, faces, timings: dict[str, float] | None = None, model: str = "inswapper"
+    ):
         out = frame
         for face in faces:
             started = time.perf_counter()
-            # insightface's own paste_back blends the whole frame in float; paste_patch touches only the face box.
-            patch, matrix = self.swapper.get(out, face, source_face, paste_back=False)
+            if model == "hyperswap" and self.hyperswap is not None:
+                patch, matrix = self.hyperswap_patch(out, face, source_face)
+                if patch is None:
+                    continue
+            else:
+                # insightface's own paste_back blends the whole frame in float; paste_patch touches only the face box.
+                patch, matrix = self.swapper.get(out, face, source_face, paste_back=False)
             out = paste_patch(out, patch, matrix)
             swapped_at = time.perf_counter()
             if self.restorer is not None:
@@ -353,7 +445,7 @@ class SwapEngine:
         return float(np.dot(face.normed_embedding, source_face.normed_embedding))
 
     def swap_clip(
-        self, video_path: str, source_face, output_path: str
+        self, video_path: str, source_face, output_path: str, model: str = "inswapper"
     ) -> tuple[ClipSwapStats, bytes]:
         import cv2
 
@@ -392,7 +484,7 @@ class SwapEngine:
             detect_started = time.perf_counter()
             faces = self.detector.get(frame)
             local["detect"] = time.perf_counter() - detect_started
-            swapped = self.swap_frame(frame, source_face, faces, local)
+            swapped = self.swap_frame(frame, source_face, faces, local, model)
             with timings_lock:
                 for key, value in local.items():
                     timings[key] += value
@@ -589,16 +681,18 @@ def swap_tail_from_bytes(
 
 
 def swap_clip_from_bytes(
-    engine: SwapEngine, video: bytes, reference_data_uri: str
+    engine: SwapEngine, video: bytes, reference_data_uri: str, model: str = "inswapper"
 ) -> dict[str, Any]:
     # Response: base64 mp4 + base64 JPEG of the swapped last frame (the next clip's seed) + stats.
+    if model not in SWAP_MODELS:
+        raise ValueError(f"unknown swap model {model!r}")
     source_face = engine.reference_face(reference_data_uri)
     with tempfile.TemporaryDirectory() as directory:
         source_path = os.path.join(directory, "source.mp4")
         output_path = os.path.join(directory, "swapped.mp4")
         with open(source_path, "wb") as file:
             file.write(video)
-        stats, last_frame = engine.swap_clip(source_path, source_face, output_path)
+        stats, last_frame = engine.swap_clip(source_path, source_face, output_path, model)
         with open(output_path, "rb") as file:
             swapped = file.read()
     return {

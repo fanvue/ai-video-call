@@ -1663,8 +1663,8 @@ describe("ClipPipeline", () => {
     expect(played?.jobKind).toBe("greeting");
     expect(played?.swap?.status).toBe("pending");
     expect(events.filter((e) => e.type === "clipReady").length).toBe(1);
-    // The background finalize call still ran; landing it later doesn't need another clipReady.
-    expect(finalize.size).toBe(1);
+    // No background swap for it either: it would land after the greeting has played, on a GPU the first idles need.
+    expect(finalize.size).toBe(0);
   });
 
   it("two-phase swap: a chained clip after the greeting plays only once its swap lands, and fillers wait for it", async () => {
@@ -1940,7 +1940,7 @@ describe("ClipPipeline", () => {
     pipeline.nextClip();
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // reply rendered: its swap starts
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // checkIn rendered behind it: its swap must wait
-    expect(finalizeOrder).toEqual(["greeting", "reply"]);
+    expect(finalizeOrder).toEqual(["reply"]);
 
     finalize.get("reply")?.resolve({
       videoUrl: "https://example.com/reply-swapped.mp4",
@@ -1958,7 +1958,7 @@ describe("ClipPipeline", () => {
       },
     });
     await vi.advanceTimersByTimeAsync(0);
-    expect(finalizeOrder).toEqual(["greeting", "reply", "checkIn"]);
+    expect(finalizeOrder).toEqual(["reply", "checkIn"]);
     expect(pipeline.nextClip()?.jobKind).toBe("reply");
   });
 

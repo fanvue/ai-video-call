@@ -199,17 +199,8 @@ export class ClipPipeline {
     if (result.swap?.status !== "pending" || !finalizeSwap) {
       return false;
     }
-    // The greeting has nothing else buffered yet, so gating it on its own full swap (or the budget timeout) is dead air on first join; play it unswapped now and let the swap land in the background.
+    // The greeting has nothing else buffered yet, so gating it on its own full swap is dead air on first join; it plays unswapped. Its swap is not run in the background either: prod landed it 0.2 s after the greeting finished, having held one of the two GPUs the first idles were queueing for.
     if (result.jobKind === "greeting") {
-      finalizeSwap(result).then(
-        (swapped) => {
-          result.videoUrl = swapped.videoUrl;
-          result.swap = swapped.report;
-          result.costUsd += swapped.costUsd;
-          this.addCost(swapped.costUsd);
-        },
-        () => undefined,
-      );
       return false;
     }
     this.pendingSwapClipIds.add(result.clipId);

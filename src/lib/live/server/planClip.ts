@@ -55,8 +55,10 @@ const scaleChoreoTimes = (
 };
 
 // Swap mode plays every chain clip at SWAP_ACTION_CLIP_SEC: the swap costs ~40 ms a frame, so a 15 s wardrobe beat sat 5 s longer in the swap than an 11 s one. A longer plan has its choreography compressed to fit; a shorter one holds the settled pose for the remainder.
-const fitForSwap = (plan: ClipPlan): ClipPlan => {
-  const durationSec = LIVE_TUNABLES.SWAP_ACTION_CLIP_SEC;
+const fitForSwap = (
+  plan: ClipPlan,
+  durationSec: number = LIVE_TUNABLES.SWAP_ACTION_CLIP_SEC,
+): ClipPlan => {
   if (plan.durationSec === durationSec) {
     return plan;
   }
@@ -1768,7 +1770,12 @@ export const planClip = ({
   const loopingGreeting =
     job.kind === "greeting" && session.seedFrameUrl !== session.anchorFrameUrl;
   if (backend === "swap" && job.kind !== "idle" && !loopingGreeting) {
-    return fitForSwap(plan);
+    return fitForSwap(
+      plan,
+      job.kind === "greeting"
+        ? LIVE_TUNABLES.SWAP_GREETING_CLIP_SEC
+        : LIVE_TUNABLES.SWAP_ACTION_CLIP_SEC,
+    );
   }
   // Greeting has no "earlier moment" yet (the reference image IS its starting frame).
   return backend === "reference" && job.kind !== "greeting"

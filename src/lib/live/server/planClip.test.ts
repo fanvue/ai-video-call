@@ -781,18 +781,24 @@ describe("planClip: swap mode clip length", () => {
     expect(LIVE_TUNABLES.SWAP_ACTION_CLIP_SEC).toBe(
       LIVE_TUNABLES.ACTION_CLIP_SEC,
     );
-    // A raw-upload greeting (seed is the anchor) chains forward like a reply.
+    // A raw-upload greeting (seed is the anchor) chains forward like a reply, but runs long enough to cover the first idle's render and swap.
     const greeting = planClip({
       ...base,
       session: session({ seedFrameUrl: "https://example.com/anchor.jpg" }),
       job: { kind: "greeting" },
       backend: "swap",
     });
-    expect(greeting.durationSec).toBe(LIVE_TUNABLES.SWAP_ACTION_CLIP_SEC);
+    expect(LIVE_TUNABLES.SWAP_GREETING_CLIP_SEC).toBeGreaterThan(
+      LIVE_TUNABLES.SWAP_ACTION_CLIP_SEC,
+    );
+    expect(greeting.durationSec).toBe(LIVE_TUNABLES.SWAP_GREETING_CLIP_SEC);
     expect(greeting.prompt).toContain(
       `By ${LIVE_TUNABLES.ACTION_CLIP_SEC}s she is`,
     );
-    expect(greeting.prompt).toContain("The clip ends there.");
+    expect(greeting.prompt).toContain(
+      `until the clip ends at ${LIVE_TUNABLES.SWAP_GREETING_CLIP_SEC}s.`,
+    );
+    expect(greeting.prompt).not.toContain("The clip ends there.");
 
     const idle = planClip({ ...base, job: { kind: "idle" }, backend: "swap" });
     expect(idle.durationSec).toBe(LIVE_TUNABLES.IDLE_CLIP_SEC);

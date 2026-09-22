@@ -345,6 +345,8 @@ export const LIVE_TUNABLES = {
   SWAP_IDLE_MAX_INFLIGHT: 3,
   // Swap latency is per frame (~40 ms), so a 15 s reply cost ~5 s more to swap than an 11 s one. Bridge idles from the reply's tail start when it renders, well before it plays, so it no longer needs the extra length to cover the next clip.
   SWAP_ACTION_CLIP_SEC: 11,
+  // The first idle seeds from the greeting's tail and needs render + swap (~12 s) before it can play; an 11 s greeting ended 0.4 s before that landed and prod held 3.5 s on its last frame, so the greeting runs the full clip length to cover it.
+  SWAP_GREETING_CLIP_SEC: 15,
   // Two-phase swap: the server swaps only the clip's last frame (about 1.5 s) so the next chain clip renders at once, and the client swaps the full clip in parallel before playing it. Off, the render call waits for the whole swap (about 7 s) before the chain can move.
   SWAP_DEFER_CLIP: true,
   // Next idle length = measured idle production time + this headroom, clamped to the clip bounds.
