@@ -15,14 +15,9 @@ from typing import Any
 
 # inswapper_128 is research-only licensed (commercial license needed before this leaves the spike); deepinsight's repo is gated so this is a public mirror.
 INSWAPPER_URL = "https://huggingface.co/ezioruan/inswapper_128.onnx/resolve/main/inswapper_128.onnx"
-# FaceFusion's ONNX exports of GPEN-BFR, a restorer that runs on the onnxruntime we already have (gfpgan's basicsr build is broken on Python 3.11 images).
-# 256 is plenty for a 480P clip where the face is ~150px wide and runs ~4x faster than 512 (140 ms/frame on an A10G).
-GPEN_URLS = {
-    256: "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/gpen_bfr_256.onnx",
-    512: "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/gpen_bfr_512.onnx",
-}
-RESTORE_SIZE = 256
-GPEN_URL = GPEN_URLS[RESTORE_SIZE]
+# GPEN-BFR (the prior restorer) is also Non-Commercial per FaceFusion's license listing; RestoreFormer++ is Apache-2.0 and drops into the same ffhq_512 preprocessing, but only ships at 512, not GPEN's faster 256.
+RESTORER_URL = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/restoreformer_plus_plus.onnx"
+RESTORE_SIZE = 512
 # FaceFusion's Real-ESRGAN x2 export (float32, dynamic shape): restores the clip's last frame before it seeds the next
 # clip, so the chain stops compounding the i2v blur. Runs on the GPU that is already warm; the fal upscaler timed out.
 ENHANCER_URL = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/real_esrgan_x2_fp16.onnx"
@@ -32,6 +27,9 @@ ENHANCE_BLEND = 0.5
 ENHANCE_MAX_SHARPNESS = 80.0
 # How much of the restored face replaces the swapped one; 1.0 looks waxy, FaceFusion defaults to 0.8.
 RESTORE_BLEND = 0.8
+# Pulls the swapped face's LAB tone back toward the original upload's own face crop every frame, so per-clip
+# restoration bias (warmth, saturation) never compounds across a long session into a "clown makeup" drift.
+COLOR_LOCK_BLEND = 0.5
 MAX_CLIP_FRAMES = 30 * 20
 # Typical turbo clip size, used only for the warm-up pass.
 INPUT_WIDTH = 542
@@ -88,7 +86,7 @@ class SwapEngine:
     def __init__(
         self,
         inswapper_path: str,
-        gpen_path: str | None = None,
+        restorer_path: str | None = None,
         enhancer_path: str | None = None,
     ) -> None:
         import insightface
@@ -111,11 +109,11 @@ class SwapEngine:
             inswapper_path, providers=PROVIDERS
         )
         self.restorer = None
-        if gpen_path:
+        if restorer_path:
             import onnxruntime
 
             self.restorer = onnxruntime.InferenceSession(
-                gpen_path, providers=PROVIDERS
+                restorer_path, providers=PROVIDERS
             )
             self.restorer_input = self.restorer.get_inputs()[0].name
             print("restorer providers:", self.restorer.get_providers())
@@ -196,9 +194,42 @@ class SwapEngine:
             faces = self.identity.get(padded)
         if len(faces) != 1:
             raise ValueError(f"reference must contain exactly one face, found {len(faces)}")
-        return faces[0]
+        face = faces[0]
+        face.ref_lab = self.face_lab_stats(image, face)
+        return face
 
-    def restore_face(self, frame, face):
+    # LAB mean/std of the reference photo's own aligned face crop, so every later frame can be pulled back toward it.
+    def face_lab_stats(self, frame, face):
+        import cv2
+        import numpy as np
+
+        matrix, _ = cv2.estimateAffinePartial2D(
+            face.kps.astype(np.float32), self.template, method=cv2.LMEDS
+        )
+        if matrix is None:
+            return None
+        crop = cv2.warpAffine(
+            frame, matrix, (RESTORE_SIZE, RESTORE_SIZE), borderMode=cv2.BORDER_REPLICATE
+        )
+        lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB).astype(np.float32).reshape(-1, 3)
+        return lab.mean(axis=0), lab.std(axis=0)
+
+    # Pulls a swapped/restored crop's LAB tone toward the reference photo's own, so per-clip restoration bias
+    # (warmth, saturation) never compounds across a long session instead of resetting from the true upload each time.
+    def color_lock(self, crop, ref_lab):
+        import cv2
+        import numpy as np
+
+        if ref_lab is None:
+            return crop
+        ref_mean, ref_std = ref_lab
+        lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB).astype(np.float32)
+        mean = lab.reshape(-1, 3).mean(axis=0)
+        std = np.where(lab.reshape(-1, 3).std(axis=0) < 1e-3, 1.0, lab.reshape(-1, 3).std(axis=0))
+        locked = np.clip((lab - mean) / std * ref_std + ref_mean, 0, 255).astype(np.uint8)
+        return cv2.cvtColor(locked, cv2.COLOR_LAB2BGR)
+
+    def restore_face(self, frame, face, source_face):
         import cv2
         import numpy as np
 
@@ -216,6 +247,8 @@ class SwapEngine:
         restored = np.clip((output[0].transpose(1, 2, 0) + 1.0) * 127.5, 0, 255)
         restored = restored[:, :, ::-1].astype(np.uint8)
         blended = cv2.addWeighted(restored, RESTORE_BLEND, crop, 1.0 - RESTORE_BLEND, 0)
+        locked = self.color_lock(blended, getattr(source_face, "ref_lab", None))
+        blended = cv2.addWeighted(locked, COLOR_LOCK_BLEND, blended, 1.0 - COLOR_LOCK_BLEND, 0)
         return paste_patch(frame, blended, matrix)
 
     # The next clip's seed: the swapped last frame, restored only when the chain has already blurred it.
@@ -289,7 +322,7 @@ class SwapEngine:
             out = paste_patch(out, patch, matrix)
             swapped_at = time.perf_counter()
             if self.restorer is not None:
-                out = self.restore_face(out, face)
+                out = self.restore_face(out, face, source_face)
             if timings is not None:
                 timings["swap"] += swapped_at - started
                 timings["restore"] += time.perf_counter() - swapped_at

@@ -6,9 +6,9 @@ from pydantic import BaseModel
 
 from swap_core import (
     ENHANCER_URL,
-    GPEN_URL,
     INSWAPPER_URL,
     REQUIREMENTS,
+    RESTORER_URL,
     SwapEngine,
     bearer_token,
     swap_clip_from_bytes,
@@ -36,7 +36,7 @@ image = (
     .run_commands(
         "mkdir -p /models",
         f"wget -q -O /models/inswapper_128.onnx {INSWAPPER_URL}",
-        f"wget -q -O /models/gpen_bfr.onnx {GPEN_URL}",
+        f"wget -q -O /models/restorer.onnx {RESTORER_URL}",
         f"wget -q -O /models/real_esrgan_x2.onnx {ENHANCER_URL}",
         # insightface otherwise downloads the 275MB buffalo_l pack on every cold start.
         "python -c \"from insightface.utils.storage import ensure_available; ensure_available('models', 'buffalo_l', root='/root/.insightface')\"",
@@ -73,7 +73,7 @@ class SwapService:
     def setup(self) -> None:
         self.engine = SwapEngine(
             "/models/inswapper_128.onnx",
-            "/models/gpen_bfr.onnx",
+            "/models/restorer.onnx",
             "/models/real_esrgan_x2.onnx",
         )
 

@@ -8,9 +8,9 @@ from pydantic import BaseModel
 
 from swap_core import (
     ENHANCER_URL,
-    GPEN_URL,
     INSWAPPER_URL,
     REQUIREMENTS,
+    RESTORER_URL,
     SwapEngine,
     bearer_token,
     swap_clip_from_url,
@@ -30,9 +30,9 @@ class SwapApp(fal.App, keep_alive=120, min_concurrency=0, max_concurrency=2):
 
     def setup(self) -> None:
         inswapper = download_file(INSWAPPER_URL, target_dir="/data/models")
-        gpen = download_file(GPEN_URL, target_dir="/data/models")
+        restorer = download_file(RESTORER_URL, target_dir="/data/models")
         enhancer = download_file(ENHANCER_URL, target_dir="/data/models")
-        self.engine = SwapEngine(str(inswapper), str(gpen), str(enhancer))
+        self.engine = SwapEngine(str(inswapper), str(restorer), str(enhancer))
 
     @fal.endpoint("/swapClip")
     def swap_clip(
