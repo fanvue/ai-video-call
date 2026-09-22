@@ -340,7 +340,10 @@ export const LIVE_TUNABLES = {
   IDLE_MAX_INFLIGHT: 1,
   // Swap mode makes a filler in 13 to 17s (render 3 to 4s + swap 8 to 13s), longer than it plays, so two are built at once or the buffer runs dry by a few seconds every clip.
   SWAP_IDLE_BUFFER_TARGET: 2,
-  SWAP_IDLE_MAX_INFLIGHT: 2,
+  // One more than the target so a bridge idle for a fresh chain tail can start while two old-anchor idles are still in flight.
+  SWAP_IDLE_MAX_INFLIGHT: 3,
+  // Swap mode chain clips run the maximum length: the next clip seeds from this one's last frame so it cannot start early, and it takes 10 to 17s to make.
+  SWAP_ACTION_CLIP_SEC: 15,
   // Next idle length = measured idle production time + this headroom, clamped to the clip bounds.
   IDLE_HEADROOM_SEC: 1,
   // Swap mode re-seeds a finished plan from the look's trusted frame at most this often: the face is locked per clip but the picture around it blurs as generations chain, and the cut is acceptable at a settle point.

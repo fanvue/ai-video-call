@@ -228,8 +228,29 @@ describe("generateClip: idle", () => {
 });
 
 describe("generateClip: hold clips other than idle", () => {
-  it("greeting checks both the midpoint and last frame, and is rejected when the last frame shows extra limbs", async () => {
+  it("greeting on an end-frame backend loops on the upload like an idle: midpoint check only, session seed kept", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    guardFrame.mockResolvedValue({
+      checked: true,
+      issues: [],
+      observed: { wardrobe: {} },
+    });
+    const req = clipRequest({ job: { kind: "greeting" } });
+
+    const result = await generateClip(req);
+
+    expect(render).toHaveBeenCalledWith(
+      expect.objectContaining({ endFrameUrl: req.session.seedFrameUrl }),
+    );
+    expect(extractLastFrameUrl).not.toHaveBeenCalled();
+    expect(guardFrame).toHaveBeenCalledTimes(1);
+    expect(result.loops).toBe(true);
+    expect(result.seedFrameUrl).toBe(req.session.seedFrameUrl);
+  });
+
+  it("checkIn checks both the midpoint and last frame, and is rejected when the last frame shows extra limbs", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    writeCheckIn.mockResolvedValue(null);
     guardFrame.mockImplementation(
       guardByFrame({
         [MID_URL]: { issues: [], observed: { wardrobe: {} } },
@@ -239,7 +260,7 @@ describe("generateClip: hold clips other than idle", () => {
         },
       }),
     );
-    const req = clipRequest({ job: { kind: "greeting" } });
+    const req = clipRequest({ job: { kind: "checkIn", channel: "chat" } });
 
     const result = await generateClip(req);
 
@@ -250,14 +271,15 @@ describe("generateClip: hold clips other than idle", () => {
     expect(result.verdict).toBe("rejected");
   });
 
-  it("greeting approves and uses the last frame as its next seed when both checks pass clean", async () => {
+  it("checkIn approves and uses the last frame as its next seed when both checks pass clean", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    writeCheckIn.mockResolvedValue(null);
     guardFrame.mockResolvedValue({
       checked: true,
       issues: [],
       observed: { wardrobe: {} },
     });
-    const req = clipRequest({ job: { kind: "greeting" } });
+    const req = clipRequest({ job: { kind: "checkIn", channel: "chat" } });
 
     const result = await generateClip(req);
 

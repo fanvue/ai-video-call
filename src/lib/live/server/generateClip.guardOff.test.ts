@@ -118,8 +118,10 @@ describe("generateClip with the vision guard off (default)", () => {
     expect(LIVE_TUNABLES.VERIFY_FRAMES).toBe(false);
   });
 
-  it("greeting: extracts only the last frame as the next seed, never calls vision, approves with the planned state", async () => {
-    const result = await generateClip(request({ kind: "greeting" }));
+  it("checkIn: extracts only the last frame as the next seed, never calls vision, approves with the planned state", async () => {
+    const result = await generateClip(
+      request({ kind: "checkIn", channel: "chat" }),
+    );
     expect(result.verdict).toBe("approved");
     expect(result.seedFrameUrl).toBe("https://example.com/last.jpg");
     expect(extractLastFrameUrl).toHaveBeenCalledTimes(1);
@@ -127,6 +129,16 @@ describe("generateClip with the vision guard off (default)", () => {
     expect(guardFrame).not.toHaveBeenCalled();
     expect(result.guard.checked).toBe(false);
     expect(result.state.wardrobe.bra.on).toBe(true);
+  });
+
+  it("greeting: loops on the upload frame like an idle, so it needs no extraction and plays from the session seed", async () => {
+    const result = await generateClip(request({ kind: "greeting" }));
+    expect(render).toHaveBeenCalledWith(
+      expect.objectContaining({ endFrameUrl: session.seedFrameUrl }),
+    );
+    expect(result.loops).toBe(true);
+    expect(result.seedFrameUrl).toBe(session.seedFrameUrl);
+    expect(extractLastFrameUrl).not.toHaveBeenCalled();
   });
 
   it("idle: no extraction at all, plays from the session seed", async () => {
@@ -155,7 +167,9 @@ describe("generateClip with the vision guard off (default)", () => {
 
   it("still rejects when the last frame cannot be extracted, since the next clip would have no seed", async () => {
     extractLastFrameUrl.mockRejectedValue(new Error("fal down"));
-    const result = await generateClip(request({ kind: "greeting" }));
+    const result = await generateClip(
+      request({ kind: "checkIn", channel: "chat" }),
+    );
     expect(result.verdict).toBe("rejected");
     expect(result.rejectReason).toMatch(/extraction failed/);
     expect(result.seedFrameUrl).toBe(session.seedFrameUrl);
@@ -199,17 +213,28 @@ describe("generateClip on the swap backend", () => {
 
   it("plays the swapped clip, seeds the next clip from its swapped last frame without a fal extract, and adds the GPU cost", async () => {
     swapClip.mockResolvedValue(swapped);
-    const result = await generateClip(swapRequest({ kind: "greeting" }));
+    const result = await generateClip(
+      swapRequest({ kind: "checkIn", channel: "chat" }),
+    );
     expect(swapClip).toHaveBeenCalledWith({
       videoUrl: "https://example.com/clip.mp4",
       referenceImageUrl: session.anchorFrameUrl,
-      budgetMs: 25_000,
+      budgetMs: 150_000,
     });
     expect(result.videoUrl).toBe("https://example.com/swapped.mp4");
     expect(result.seedFrameUrl).toBe("https://example.com/swapped-last.jpg");
     expect(extractLastFrameUrl).not.toHaveBeenCalled();
     expect(result.costUsd).toBeCloseTo(0.279, 6);
     expect(result.swap?.status).toBe("swapped");
+  });
+
+  it("gives the greeting only the short swap budget and, as a loop, keeps the session seed", async () => {
+    swapClip.mockResolvedValue(swapped);
+    const result = await generateClip(swapRequest({ kind: "greeting" }));
+    expect(swapClip.mock.calls[0][0].budgetMs).toBe(25_000);
+    expect(result.videoUrl).toBe("https://example.com/swapped.mp4");
+    expect(result.loops).toBe(true);
+    expect(result.seedFrameUrl).toBe(session.seedFrameUrl);
   });
 
   it("idle clips are swapped too, with the full budget, but still play from the session seed", async () => {
@@ -222,7 +247,9 @@ describe("generateClip on the swap backend", () => {
 
   it("falls back to the unswapped clip and the fal last frame when the service fails, reporting the reason", async () => {
     swapClip.mockRejectedValue(new Error("Swap service responded 503"));
-    const result = await generateClip(swapRequest({ kind: "greeting" }));
+    const result = await generateClip(
+      swapRequest({ kind: "checkIn", channel: "chat" }),
+    );
     expect(result.verdict).toBe("approved");
     expect(result.videoUrl).toBe("https://example.com/clip.mp4");
     expect(result.seedFrameUrl).toBe("https://example.com/last.jpg");

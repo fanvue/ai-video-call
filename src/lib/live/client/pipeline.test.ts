@@ -1562,8 +1562,9 @@ describe("ClipPipeline", () => {
     });
 
     pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    // The spare in-flight slot is for a bridge idle later, not for a third filler from the same anchor.
     expect(pipeline.getBufferStats().idleInflight).toBe(
-      LIVE_TUNABLES.SWAP_IDLE_MAX_INFLIGHT,
+      LIVE_TUNABLES.SWAP_IDLE_BUFFER_TARGET,
     );
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
@@ -1664,5 +1665,52 @@ describe("ClipPipeline", () => {
     const thirdReplySeed = pipeline.nextClip()!.seedFrameUrl;
     expect(thirdReplySeed).not.toBe(secondReplySeed);
     expect(lastAnchor()).toBe(thirdReplySeed);
+  });
+
+  it("swap mode starts a bridge idle for a new chain tail while two old-anchor idles are still in flight", async () => {
+    const requests: ClipRequest[] = [];
+    const queue = makeJobQueue();
+    const oldIdles: Deferred<ClipResult>[] = [];
+    const pipeline = trackedPipeline({
+      backend: "swap",
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        requests.push(req);
+        if (req.job.kind === "idle" && req.session.seedFrameUrl === ANCHOR_0) {
+          const deferred = defer<ClipResult>();
+          oldIdles.push(deferred);
+          return deferred.promise; // old-anchor idles stay in flight
+        }
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    pipeline.nextClip();
+    expect(oldIdles.length).toBe(LIVE_TUNABLES.SWAP_IDLE_BUFFER_TARGET);
+
+    queue.push(REPLY_JOB);
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // reply settles on a fresh tail
+    const tail = pipeline.getCurrentAnchorFrameUrl();
+    expect(tail).not.toBe(ANCHOR_0);
+    const bridge = requests.filter(
+      (r) => r.job.kind === "idle" && r.session.seedFrameUrl === tail,
+    );
+    expect(bridge.length).toBe(1);
+    expect(pipeline.getBufferStats().idleInflight).toBe(
+      LIVE_TUNABLES.SWAP_IDLE_MAX_INFLIGHT,
+    );
+
+    // The old idles settle late: they no longer match the anchor and are discarded, freeing their slots.
+    for (const deferred of oldIdles) {
+      deferred.resolve(makeResult("idle", ANCHOR_0));
+    }
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    expect(pipeline.getBufferStats().idleInflight).toBeLessThan(
+      LIVE_TUNABLES.SWAP_IDLE_MAX_INFLIGHT,
+    );
   });
 });

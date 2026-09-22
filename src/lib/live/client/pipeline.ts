@@ -92,6 +92,8 @@ export class ClipPipeline {
 
   private idleReady: ClipResult[] = [];
   private idleInflightCount = 0;
+  // In-flight idles per seed frame, so old-anchor idles still rendering do not block a bridge idle for a new chain tail.
+  private idleInflightBySeed = new Map<string, number>();
   // Non-looping idle clips drift their own end frame, so match for playback by the anchor they were rendered FROM.
   private idleAnchorByClipId = new Map<string, string>();
 
@@ -183,12 +185,7 @@ export class ClipPipeline {
     this.playoutCursorFrameUrl = snapshot.seedFrameUrl;
     this.submitChainJob(initialJob, 0);
     // Idle fillers render alongside the greeting on either backend, so one is ready the moment it ends.
-    while (
-      this.idleInflightCount < this.idleMaxInflight() &&
-      !this.costCapReached
-    ) {
-      this.submitIdleJob(this.anchor, 0);
-    }
+    this.fillIdleStockpile();
   }
 
   // Try to run the just-queued job now; if the chain lane is busy it's picked up when it frees.
@@ -530,14 +527,31 @@ export class ClipPipeline {
 
   // Only stock seeded from the idle lane target counts toward the buffer target; others stay
   // playable until consumed (an old-anchor idle) or promoted (a bridge idle once its tail lands).
-  private idleLaneTargetReadyCount(): number {
+  private idleLaneTargetStockCount(): number {
     const target = this.idleLaneTarget();
-    return this.idleReady.filter((clip) =>
+    const ready = this.idleReady.filter((clip) =>
       this.sameSeed(
         this.idleAnchorByClipId.get(clip.clipId) ?? "",
         target.frameUrl,
       ),
     ).length;
+    let inflight = 0;
+    for (const [seed, count] of this.idleInflightBySeed) {
+      if (this.sameSeed(seed, target.frameUrl)) {
+        inflight += count;
+      }
+    }
+    return ready + inflight;
+  }
+
+  private trackIdleInflight(seed: string, delta: number): void {
+    this.idleInflightCount += delta;
+    const next = (this.idleInflightBySeed.get(seed) ?? 0) + delta;
+    if (next <= 0) {
+      this.idleInflightBySeed.delete(seed);
+    } else {
+      this.idleInflightBySeed.set(seed, next);
+    }
   }
 
   // Runs even while the chain lane is busy: idle filler is what covers a chain render's latency.
@@ -550,8 +564,7 @@ export class ClipPipeline {
       return;
     }
     while (
-      this.idleLaneTargetReadyCount() + this.idleInflightCount <
-        this.idleBufferTarget() &&
+      this.idleLaneTargetStockCount() < this.idleBufferTarget() &&
       this.idleInflightCount < this.idleMaxInflight()
     ) {
       this.submitIdleJob(this.idleLaneTarget(), 0);
@@ -575,7 +588,7 @@ export class ClipPipeline {
       speechMode: this.speechMode,
       useIdentityReference: false,
     };
-    this.idleInflightCount += 1;
+    this.trackIdleInflight(anchorAtSubmit.frameUrl, 1);
     const startedAtMs = this.now();
     this.render(request).then(
       (result) => {
@@ -593,7 +606,7 @@ export class ClipPipeline {
     result: ClipResult | null,
     error: unknown,
   ): void {
-    this.idleInflightCount -= 1;
+    this.trackIdleInflight(anchorAtSubmit.frameUrl, -1);
     if (this.disposed) {
       return;
     }
