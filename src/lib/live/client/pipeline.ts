@@ -677,16 +677,20 @@ export class ClipPipeline {
       return;
     }
     // The swap service takes one clip at a time (6 to 7 s each), and prod showed replies queueing 7 to 15 s behind fillers submitted while they rendered. While a request is in flight, fillers wait unless the shelf is bare.
-    if (
+    const chainSwapActive =
       this.backend === "swap" &&
-      (this.chainInflight || this.pendingChainSwaps > 0) &&
+      (this.chainInflight || this.pendingChainSwaps > 0);
+    if (
+      chainSwapActive &&
       this.idleReady.some((clip) => this.isPlayable(clip))
     ) {
       return;
     }
+    // A bare shelf still needs covering, but the account's swap capacity only sustains one chain swap plus one filler at a time; piling the full idle inflight budget on top of a chain swap is what queued replies 15-20s behind fillers.
+    const inflightCap = chainSwapActive ? 1 : this.idleMaxInflight();
     while (
       this.idleLaneTargetStockCount() < this.idleBufferTarget() &&
-      this.idleInflightCount < this.idleMaxInflight()
+      this.idleInflightCount < inflightCap
     ) {
       this.submitIdleJob(this.idleLaneTarget(), 0);
     }

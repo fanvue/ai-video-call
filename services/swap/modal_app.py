@@ -52,7 +52,8 @@ class SwapClipRequest(BaseModel):
 
 @app.cls(
     image=image,
-    gpu="L40S",
+    # A10G over L40S: ~1.10 vs 1.95 $/hr, and credit is nearly gone; GPEN-256 needs far less GPU headroom than the 512 restorer did.
+    gpu="A10G",
     # Detection, paste-back and the x264 encode are CPU work; Modal's default fractional core starves them.
     cpu=8,
     secrets=[modal.Secret.from_name("ai-video-swap-token")],
@@ -62,7 +63,7 @@ class SwapClipRequest(BaseModel):
     max_containers=4,
     # Prod showed 8 to 15 s of queueing per clip when a fourth swap arrived and its container was still starting; keep two warm spares while the app has traffic.
     buffer_containers=2,
-    # One swap per container needs 2 warm GPUs or a greeting+reply overlap queues; prod measured that compounding to 15-28s on 1.
+    # This account's GPU quota capped out at 2 concurrent L40S workers (Modal: "waiting to be scheduled" above this); re-check headroom before raising it on A10G.
     min_containers=2,
     timeout=600,
 )
