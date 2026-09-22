@@ -4,10 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   composeDirectorPrompt,
   fetchLucyToken,
-  warmSwap,
   renderClip,
+  reportTelemetry,
   uploadReference,
   upscaleSeed,
+  warmSwap,
 } from "@/lib/live/client/api";
 import {
   DEFAULT_TIP_MENU,
@@ -76,6 +77,7 @@ export const LiveStudio = () => {
     composeDirectorPrompt,
     fetchLucyToken,
     warmSwap,
+    reportTelemetry,
   });
   const { bindVideoA, bindVideoB } = videoRefs;
 

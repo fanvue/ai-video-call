@@ -179,13 +179,21 @@ export class ClipPipeline {
     this.getNextJob = getNextJob;
     const snapshot = getSnapshot();
     this.anchor = { frameUrl: snapshot.seedFrameUrl, state: snapshot.state };
-    this.trustedSeedByLook.set(lookKey(snapshot.state), snapshot.seedFrameUrl);
+    // Only reference re-seeds back to the photo; on swap the raw upload pops against generated frames, so its trusted frame is the greeting's tail (registered on promotion).
+    if (this.backend === "reference") {
+      this.trustedSeedByLook.set(
+        lookKey(snapshot.state),
+        snapshot.seedFrameUrl,
+      );
+    }
     this.lastSceneResetAtMs = this.now();
     this.displayAnchorFrameUrl = snapshot.seedFrameUrl;
     this.playoutCursorFrameUrl = snapshot.seedFrameUrl;
     this.submitChainJob(initialJob, 0);
-    // Idle fillers render alongside the greeting on either backend, so one is ready the moment it ends.
-    this.fillIdleStockpile();
+    // Pre-stocked fillers seed from the upload; only reference lands the greeting back on it, elsewhere they would never match the greeting's tail.
+    if (this.backend === "reference") {
+      this.fillIdleStockpile();
+    }
   }
 
   // Try to run the just-queued job now; if the chain lane is busy it's picked up when it frees.

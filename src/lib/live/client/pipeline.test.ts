@@ -220,11 +220,12 @@ describe("ClipPipeline", () => {
     });
 
     pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
-    // On turbo the greeting loops on the reference frame, so idles pre-stock alongside it.
+    // Nothing pre-stocks on turbo: the greeting chains to a fresh frame, so upload-seeded idles would never play.
+    expect(pipeline.getBufferStats().idleInflight).toBe(0);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting resolves, promotes anchor, idles submitted
     expect(pipeline.getBufferStats().idleInflight).toBe(
       LIVE_TUNABLES.IDLE_MAX_INFLIGHT,
     );
-    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting resolves, promotes anchor
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // idle jobs resolve
     const stats = pipeline.getBufferStats();
     expect(stats.idleReady).toBe(LIVE_TUNABLES.IDLE_BUFFER_TARGET);
@@ -237,6 +238,8 @@ describe("ClipPipeline", () => {
     const greetingDeferred = defer<ClipResult>();
     const queue = makeJobQueue();
     const pipeline = trackedPipeline({
+      // Reference pre-stocks fillers from the upload alongside the greeting.
+      backend: "reference",
       now: nowFn,
       onEvent: () => {},
       render: async (req) => {
@@ -554,9 +557,10 @@ describe("ClipPipeline", () => {
     });
 
     pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
-    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting resolves, initial idles submitted
-    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // two idles fail once, retried
-    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // retries succeed, rest resolve normally
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting resolves, initial idle submitted
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // idle fails, retried
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // retry fails, slot dropped and refilled
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // refill succeeds
 
     const stats = pipeline.getBufferStats();
     expect(stats.idleInflight).toBe(0);
@@ -1562,11 +1566,11 @@ describe("ClipPipeline", () => {
     });
 
     pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting resolves, fillers submitted from its tail
     // The spare in-flight slot is for a bridge idle later, not for a third filler from the same anchor.
     expect(pipeline.getBufferStats().idleInflight).toBe(
       LIVE_TUNABLES.SWAP_IDLE_BUFFER_TARGET,
     );
-    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
     const stats = pipeline.getBufferStats();
     expect(stats.idleReady).toBe(LIVE_TUNABLES.SWAP_IDLE_BUFFER_TARGET);
@@ -1595,12 +1599,13 @@ describe("ClipPipeline", () => {
       requests
         .filter((r) => r.job.kind === "idle")
         .map((r) => (r.job as Extract<ClipJob, { kind: "idle" }>).durationSec);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting resolves, first idle submitted
     // No measurement yet: the floor.
     expect(idleJobs()).toEqual([LIVE_TUNABLES.IDLE_CLIP_SEC]);
 
-    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // the idle resolves, having taken 14s
     pipeline.nextClip(); // greeting
-    pipeline.nextClip(); // the 10s idle, which took 14s to make -> refill
+    pipeline.nextClip(); // the 10s idle -> refill
     expect(idleJobs().at(-1)).toBe(LIVE_TUNABLES.MAX_CLIP_SEC);
 
     // A fast one does not shorten the next idle while a slow one is still in the window.

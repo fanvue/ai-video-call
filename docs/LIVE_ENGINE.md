@@ -63,9 +63,10 @@ one-in-flight chain cannot hold a buffer. The chain therefore has two modes:
   bridge idle for a fresh chain tail start while old-anchor idles are still rendering. A rejected anchor frame is never adopted; the anchor only ever advances from an
   approved clip.
 - **Chained action.** `greeting`, `reply`, `beat` and `checkIn` are
-  seeded from the frame currently on the anchor and chain frame to frame. On end-frame backends the
-  greeting is the one chain clip that also loops on its seed (the upload), so the idles pre-stocked
-  from that frame stay playable after it and the intro never holds on a still. Their last frame
+  seeded from the frame currently on the anchor and chain frame to frame. The greeting is a plain
+  chain clip too: looping it on the upload was tried and reverted, because every idle then looped
+  on the raw photo and popped against the generated frames. Idles are pre-stocked from the upload
+  only on the reference backend, where the greeting lands back on it. Their last frame
   (guarded against both canon and the identity anchor) becomes the new anchor. When the anchor
   changes, buffered idle loops from the old anchor are discarded and new ones are rendered from
   the new anchor immediately.

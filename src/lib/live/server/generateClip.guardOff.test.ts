@@ -26,7 +26,7 @@ const swapClip = vi.fn();
 // Fully mocked: the real module pulls in @/env, which validates the server environment at import.
 vi.mock("./swapClip", () => ({
   SWAP_BUDGET_MS: 150_000,
-  SWAP_GREETING_BUDGET_MS: 25_000,
+  SWAP_GREETING_BUDGET_MS: 40_000,
   swapClip: (...args: unknown[]) => swapClip(...args),
   failedSwapReport: (swapMs: number, error: Error) => ({
     status: "failed",
@@ -131,14 +131,13 @@ describe("generateClip with the vision guard off (default)", () => {
     expect(result.state.wardrobe.bra.on).toBe(true);
   });
 
-  it("greeting: loops on the upload frame like an idle, so it needs no extraction and plays from the session seed", async () => {
+  it("greeting: chains like any other action clip, never looping on the upload", async () => {
     const result = await generateClip(request({ kind: "greeting" }));
     expect(render).toHaveBeenCalledWith(
-      expect.objectContaining({ endFrameUrl: session.seedFrameUrl }),
+      expect.objectContaining({ endFrameUrl: undefined }),
     );
-    expect(result.loops).toBe(true);
-    expect(result.seedFrameUrl).toBe(session.seedFrameUrl);
-    expect(extractLastFrameUrl).not.toHaveBeenCalled();
+    expect(result.loops).toBe(false);
+    expect(result.seedFrameUrl).toBe("https://example.com/last.jpg");
   });
 
   it("idle: no extraction at all, plays from the session seed", async () => {
@@ -228,13 +227,13 @@ describe("generateClip on the swap backend", () => {
     expect(result.swap?.status).toBe("swapped");
   });
 
-  it("gives the greeting only the short swap budget and, as a loop, keeps the session seed", async () => {
+  it("gives the greeting only the short swap budget and seeds the next clip from its swapped last frame", async () => {
     swapClip.mockResolvedValue(swapped);
     const result = await generateClip(swapRequest({ kind: "greeting" }));
-    expect(swapClip.mock.calls[0][0].budgetMs).toBe(25_000);
+    expect(swapClip.mock.calls[0][0].budgetMs).toBe(40_000);
     expect(result.videoUrl).toBe("https://example.com/swapped.mp4");
-    expect(result.loops).toBe(true);
-    expect(result.seedFrameUrl).toBe(session.seedFrameUrl);
+    expect(result.loops).toBe(false);
+    expect(result.seedFrameUrl).toBe("https://example.com/swapped-last.jpg");
   });
 
   it("idle clips are swapped too, with the full budget, but still play from the session seed", async () => {

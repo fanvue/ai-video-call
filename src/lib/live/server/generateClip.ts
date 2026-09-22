@@ -265,12 +265,10 @@ export const generateClip = async (
 
   const videoBackend = renderBackendFor(backend);
   // Only idle loops on the anchor; every other job chains forward from a real generated frame, single-image-seed style — pinning a hold's end frame to the seed never stopped it from drifting mid-clip, it only masked the seam for the next clip.
-  // The greeting is the exception: looping it on the upload keeps the idles pre-stocked from that frame playable after it, so the intro never holds on a still.
-  const isAnchoredLoop =
-    (job.kind === "idle" || job.kind === "greeting") &&
-    videoBackend.supportsEndFrame;
-  // Idle never seeds the next clip even where it cannot loop (reference backend); an anchored loop returns to its seed.
-  const keepsSessionSeed = job.kind === "idle" || isAnchoredLoop;
+  // Looping the greeting on the upload was tried and reverted: every idle then looped on the raw photo, a visible pop each clip.
+  const isAnchoredLoop = job.kind === "idle" && videoBackend.supportsEndFrame;
+  // Idle never seeds the next clip even where it cannot loop (reference backend).
+  const keepsSessionSeed = job.kind === "idle";
   // Hold clip (idle/greeting/checkIn/non-wardrobe act/hold/pose transition) — must be verified before it can play; see checkFrame below.
   const isHoldClip = plan.wardrobeIntent === null && !plan.explicit;
   // Explicit act with no wardrobe change of its own (useProp, twerk, ...) — checked like a hold clip but fails open on an unchecked frame; see evaluateFrameChecks.

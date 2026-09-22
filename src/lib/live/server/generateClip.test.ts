@@ -38,7 +38,7 @@ vi.mock("./frameGuard", () => ({
 // Never called on the turbo backend these suites use; mocked because the real module imports @/env.
 vi.mock("./swapClip", () => ({
   SWAP_BUDGET_MS: 150_000,
-  SWAP_GREETING_BUDGET_MS: 25_000,
+  SWAP_GREETING_BUDGET_MS: 40_000,
   swapClip: vi.fn(),
   failedSwapReport: vi.fn(),
 }));
@@ -228,7 +228,7 @@ describe("generateClip: idle", () => {
 });
 
 describe("generateClip: hold clips other than idle", () => {
-  it("greeting on an end-frame backend loops on the upload like an idle: midpoint check only, session seed kept", async () => {
+  it("greeting chains like any other hold clip: midpoint and last frame checked, last frame becomes the seed", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
     guardFrame.mockResolvedValue({
       checked: true,
@@ -240,12 +240,11 @@ describe("generateClip: hold clips other than idle", () => {
     const result = await generateClip(req);
 
     expect(render).toHaveBeenCalledWith(
-      expect.objectContaining({ endFrameUrl: req.session.seedFrameUrl }),
+      expect.objectContaining({ endFrameUrl: undefined }),
     );
-    expect(extractLastFrameUrl).not.toHaveBeenCalled();
-    expect(guardFrame).toHaveBeenCalledTimes(1);
-    expect(result.loops).toBe(true);
-    expect(result.seedFrameUrl).toBe(req.session.seedFrameUrl);
+    expect(guardFrame).toHaveBeenCalledTimes(2);
+    expect(result.loops).toBe(false);
+    expect(result.seedFrameUrl).toBe(LAST_URL);
   });
 
   it("checkIn checks both the midpoint and last frame, and is rejected when the last frame shows extra limbs", async () => {
