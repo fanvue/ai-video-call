@@ -28,7 +28,7 @@ const swapClip = vi.fn();
 // Fully mocked: the real module pulls in @/env, which validates the server environment at import.
 vi.mock("./swapClip", () => ({
   SWAP_BUDGET_MS: 150_000,
-  SWAP_GREETING_BUDGET_MS: 40_000,
+  SWAP_GREETING_BUDGET_MS: 20_000,
   swapClip: (...args: unknown[]) => swapClip(...args),
   failedSwapReport: (swapMs: number, error: Error) => ({
     status: "failed",
@@ -249,7 +249,7 @@ describe("generateClip on the swap backend", () => {
       ...swapRequest({ kind: "greeting" }),
       session: { ...session, seedFrameUrl: session.anchorFrameUrl },
     });
-    expect(swapClip.mock.calls[0][0].budgetMs).toBe(40_000);
+    expect(swapClip.mock.calls[0][0].budgetMs).toBe(20_000);
     expect(result.videoUrl).toBe("https://example.com/swapped.mp4");
     expect(result.loops).toBe(false);
     expect(result.seedFrameUrl).toBe("https://example.com/swapped-last.jpg");

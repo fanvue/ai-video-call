@@ -5,8 +5,8 @@ import { LIVE_TUNABLES, type ClipSwapReport } from "../contract";
 
 // Cold container (60s+) + a 15s clip at ~20ms/frame fit inside this.
 export const SWAP_BUDGET_MS = 150_000;
-// The greeting gates the whole join, so it waits less than a mid-session clip; prod showed 23s for a 15s greeting against a still-starting container, and the unswapped fallback costs a fal frame extract on top.
-export const SWAP_GREETING_BUDGET_MS = 40_000;
+// The greeting gates the whole join, so it waits less than a mid-session clip: a warm swap of a 15 s greeting is 6 s, and past this the container is cold (93 s measured) and the reference-to-video greeting already carries the identity, so the unswapped fallback (one fal frame extract) is the faster join.
+export const SWAP_GREETING_BUDGET_MS = 20_000;
 
 const swapServiceResponseSchema = z.object({
   video_base64: z.string().min(1),

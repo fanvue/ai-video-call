@@ -51,8 +51,8 @@ class SwapClipRequest(BaseModel):
 @app.cls(
     image=image,
     gpu="L40S",
-    # Detection, paste-back and the x264 encode are CPU work; Modal's default fractional core starves them.
-    cpu=4,
+    # Detection, paste-back and the x264 encode are CPU work; Modal's default fractional core starves them, and up to three clips share the container.
+    cpu=8,
     secrets=[modal.Secret.from_name("ai-video-swap-token")],
     # Long enough to survive the gap between a fan's sessions; a cold start is 60s+ (image pull + CUDA init).
     scaledown_window=600,
@@ -60,8 +60,12 @@ class SwapClipRequest(BaseModel):
     max_containers=4,
     # Prod showed 8 to 15 s of queueing per clip when a fourth swap arrived and its container was still starting; keep two warm spares while the app has traffic.
     buffer_containers=2,
+    # A cold boot measured 93 s in prod (image pull dominates; the models load in 5 s) and the autoscaler never added a second container during the burst, so the whole join and first reply waited on it. One container stays warm at all times; this costs an L40S hour for every idle hour.
+    min_containers=1,
     timeout=600,
 )
+# One warm container absorbs the join burst (greeting, two fillers, a reply) instead of serialising it behind 90 s cold boots. The engine holds no per-request state and ONNX sessions are thread-safe.
+@modal.concurrent(max_inputs=3)
 class SwapService:
     @modal.enter()
     def setup(self) -> None:
