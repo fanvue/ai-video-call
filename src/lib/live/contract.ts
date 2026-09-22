@@ -362,8 +362,6 @@ export const LIVE_TUNABLES = {
   TYPING_LEAD_AFTER_IDLE_MS: 8_000,
   // How often the seed a chain job leaves behind gets upscaled in the background (see upscaleChainTailInBackground). Per-clip was too frequent: it competed with actual render calls for fal capacity and slowed clip turnaround.
   UPSCALE_INTERVAL_MS: 60_000,
-  // Swap mode restores every chain tail: the picture around the locked face blurs generation to generation, and SeedVR2 takes ~2s in the background.
-  SWAP_UPSCALE_INTERVAL_MS: 0,
   // Wall-clock trigger for the dual identity reference (see consumeIdentityReferenceDue). Moot while MAX_CHAIN_CLIPS below is 1; kept so raising that count still bounds drift in time.
   IDENTITY_REFERENCE_INTERVAL_MS: 45_000,
   // Second trigger alongside the interval, in chain clips. 1 = every chain clip carries the identity reference: production logs showed dual-reference renders no slower than single (~5s either way), and the face was visibly drifting by clip ~10 when it was periodic. See consumeIdentityReferenceDue.

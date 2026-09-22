@@ -114,6 +114,10 @@ export type UseLiveSessionDeps = {
   ) => void;
 };
 
+// Staging state of the reference step started from the setup screen: "unstaged" is a completed step whose still was refused or failed, so the greeting starts on the photo.
+export type PrepareStatus =
+  "idle" | "staging" | "ready" | "unstaged" | "failed";
+
 // A join that has not shown the greeting by now is the "stuck in connecting" report; log where it stalled.
 const CONNECT_STALL_MS = 60_000;
 
@@ -206,6 +210,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     sceneId: SceneId;
     promise: Promise<ReferenceUploadResult>;
   } | null>(null);
+  const [prepareStatus, setPrepareStatus] = useState<PrepareStatus>("idle");
+  const [preparedSeedUrl, setPreparedSeedUrl] = useState<string | null>(null);
   const [posterUrl, setPosterUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [backend, setBackendState] = useState<RenderBackend>("turbo");
@@ -1007,11 +1013,22 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       const promise = uploadReference(file, sceneId);
       const entry = { file, sceneId, promise };
       preparedReferenceRef.current = entry;
-      promise.catch(() => {
-        if (preparedReferenceRef.current === entry) {
-          preparedReferenceRef.current = null;
-        }
-      });
+      setPrepareStatus("staging");
+      setPreparedSeedUrl(null);
+      promise
+        .then((reference) => {
+          if (preparedReferenceRef.current !== entry) {
+            return;
+          }
+          setPrepareStatus(reference.staged ? "ready" : "unstaged");
+          setPreparedSeedUrl(reference.staged ? reference.seedFrameUrl : null);
+        })
+        .catch(() => {
+          if (preparedReferenceRef.current === entry) {
+            preparedReferenceRef.current = null;
+            setPrepareStatus("failed");
+          }
+        });
     },
     [uploadReference],
   );
@@ -1067,6 +1084,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
           ? await prepared.promise
           : await deps.uploadReference(file, sceneId);
       preparedReferenceRef.current = null;
+      setPrepareStatus("idle");
+      setPreparedSeedUrl(null);
       setConnectStage("capturingLook");
       setPosterUrl(reference.seedFrameUrl);
       console.log(
@@ -1555,6 +1574,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       directorStreamState,
       lucyMetrics,
       lucyStreamState,
+      prepareStatus,
+      preparedSeedUrl,
       prepare,
       start,
       send,
@@ -1596,6 +1617,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       directorStreamState,
       lucyMetrics,
       lucyStreamState,
+      prepareStatus,
+      preparedSeedUrl,
       prepare,
       start,
       send,

@@ -20,6 +20,10 @@ const swapServiceResponseSchema = z.object({
     similarity_before: z.number().nullable(),
     similarity_after: z.number().nullable(),
     restored: z.boolean(),
+    enhanced: z.boolean().optional(),
+    enhance_ms: z.number().int().min(0).optional(),
+    sharpness_before: z.number().nullable().optional(),
+    sharpness_after: z.number().nullable().optional(),
   }),
 });
 
@@ -65,10 +69,12 @@ export const swapClip = async ({
   videoUrl,
   referenceImageUrl,
   budgetMs = SWAP_BUDGET_MS,
+  jobKind = "unknown",
 }: {
   videoUrl: string;
   referenceImageUrl: string;
   budgetMs?: number;
+  jobKind?: string;
 }): Promise<SwapClipOutcome> => {
   if (!env.SWAP_SERVICE_URL || !env.SWAP_TOKEN) {
     throw new Error("Swap service is not configured");
@@ -109,7 +115,7 @@ export const swapClip = async ({
   ]);
   const { stats } = parsed;
   console.log(
-    `swapClip: serviceMs=${serviceMs} (swap ${stats.swap_ms}) rehostMs=${Date.now() - stamp} frames=${stats.frames}`,
+    `swapClip: kind=${jobKind} serviceMs=${serviceMs} (swap ${stats.swap_ms}) rehostMs=${Date.now() - stamp} frames=${stats.frames} enhanceMs=${stats.enhance_ms ?? 0} sharpness=${stats.sharpness_before ?? "?"}->${stats.sharpness_after ?? "?"}`,
   );
   return {
     videoUrl: swappedVideoUrl,

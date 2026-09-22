@@ -294,6 +294,10 @@ export const LiveStudio = () => {
         busy={starting}
         error={startError}
         onPrepare={session.prepare}
+        preparation={{
+          status: session.prepareStatus,
+          seedUrl: session.preparedSeedUrl,
+        }}
         onSubmit={handleSubmitSetup}
       />
     );

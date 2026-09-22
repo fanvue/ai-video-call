@@ -333,6 +333,7 @@ export const generateClip = async (
         referenceImageUrl: session.anchorFrameUrl,
         budgetMs:
           job.kind === "greeting" ? SWAP_GREETING_BUDGET_MS : SWAP_BUDGET_MS,
+        jobKind: job.kind,
       });
       videoUrl = swapped.videoUrl;
       costUsd += swapped.costUsd;

@@ -1766,7 +1766,7 @@ describe("ClipPipeline", () => {
     );
   });
 
-  it("swap mode restores the seed after every chain clip instead of once per UPSCALE_INTERVAL_MS", async () => {
+  it("swap mode never calls the fal upscaler: its own service restores the seed frame", async () => {
     const upscaleSeed = vi.fn(
       async (): Promise<{ url: string | null; costUsd: number }> => ({
         url: "https://example.com/restored.jpg",
@@ -1784,11 +1784,9 @@ describe("ClipPipeline", () => {
 
     pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
-    expect(upscaleSeed).toHaveBeenCalledTimes(1);
-
     queue.push(REPLY_JOB);
     pipeline.onRequestEnqueued();
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
-    expect(upscaleSeed).toHaveBeenCalledTimes(2);
+    expect(upscaleSeed).not.toHaveBeenCalled();
   });
 });

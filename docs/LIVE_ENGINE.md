@@ -70,9 +70,13 @@ one-in-flight chain cannot hold a buffer. The chain therefore has two modes:
   the intro neither morphs from the photo nor holds. If staging fails or is refused, the seed is
   the upload, the greeting chains forward and nothing is pre-stocked (looping on the raw photo was
   tried and popped every clip). Swap mode never pre-stocks at the join: the looping greeting covers
-  the gap and fillers swapping alongside it doubled the join time. The setup screen starts the
-  reference step (`session.prepare`) as soon as a photo and scene are picked, debounced 800 ms,
-  so its 20 to 25 s overlap the fan choosing options rather than the connect.
+  the gap and fillers swapping alongside it doubled the join time. Staging takes 17 to 35 s on every
+  editor measured (Seedream v4 17 to 34 s, Seedream 4.5 75 s, Qwen edit plus 39 s, FLUX.2 edit 16 s;
+  the requested size is ignored and the seed size does not change the render time), so it cannot fit
+  a 15 s join. The setup screen therefore runs it (`session.prepare`) as soon as a photo and scene are
+  picked, shows the staged still in the preview when it lands, and holds "Go live" until it has
+  settled; the connect itself is then the greeting render plus its swap. In the product this is a
+  one-time persona setup, not a per-call cost.
 - **Chained action.** `greeting` (off a raw upload), `reply`, `beat` and `checkIn` are
   seeded from the frame currently on the anchor and chain frame to frame. Their last frame
   (guarded against both canon and the identity anchor) becomes the new anchor. When the anchor

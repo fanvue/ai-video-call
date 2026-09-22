@@ -7,6 +7,7 @@ from fastapi import Header, HTTPException
 from pydantic import BaseModel
 
 from swap_core import (
+    ENHANCER_URL,
     GPEN_URL,
     INSWAPPER_URL,
     REQUIREMENTS,
@@ -30,7 +31,8 @@ class SwapApp(fal.App, keep_alive=120, min_concurrency=0, max_concurrency=2):
     def setup(self) -> None:
         inswapper = download_file(INSWAPPER_URL, target_dir="/data/models")
         gpen = download_file(GPEN_URL, target_dir="/data/models")
-        self.engine = SwapEngine(str(inswapper), str(gpen))
+        enhancer = download_file(ENHANCER_URL, target_dir="/data/models")
+        self.engine = SwapEngine(str(inswapper), str(gpen), str(enhancer))
 
     @fal.endpoint("/swapClip")
     def swap_clip(

@@ -503,11 +503,11 @@ export class ClipPipeline {
     this.addCost(result.costUsd);
     this.announceIfRecovered();
     this.tryAdvanceChain();
-    const upscaleIntervalMs =
-      this.backend === "swap"
-        ? LIVE_TUNABLES.SWAP_UPSCALE_INTERVAL_MS
-        : LIVE_TUNABLES.UPSCALE_INTERVAL_MS;
-    if (this.now() - this.lastUpscaleAtMs >= upscaleIntervalMs) {
+    // Swap mode's service restores the seed frame itself (services/swap enhance_frame); the fal upscaler timed out on every prod call.
+    if (
+      this.backend !== "swap" &&
+      this.now() - this.lastUpscaleAtMs >= LIVE_TUNABLES.UPSCALE_INTERVAL_MS
+    ) {
       this.lastUpscaleAtMs = this.now();
       this.upscaleChainTailInBackground(result.seedFrameUrl);
     }

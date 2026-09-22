@@ -23,6 +23,11 @@ GPEN_URLS = {
 }
 RESTORE_SIZE = 256
 GPEN_URL = GPEN_URLS[RESTORE_SIZE]
+# FaceFusion's Real-ESRGAN x2 export (float32, dynamic shape): restores the clip's last frame before it seeds the next
+# clip, so the chain stops compounding the i2v blur. Runs on the GPU that is already warm; the fal upscaler timed out.
+ENHANCER_URL = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/real_esrgan_x2_fp16.onnx"
+# Full-strength output over-sharpens into a painted look (Laplacian 139 on a frame whose first generation measured 72); half puts a 5th-generation frame back at first-generation sharpness (70).
+ENHANCE_BLEND = 0.5
 # How much of the restored face replaces the swapped one; 1.0 looks waxy, FaceFusion defaults to 0.8.
 RESTORE_BLEND = 0.8
 MAX_CLIP_FRAMES = 30 * 20
@@ -66,6 +71,11 @@ class ClipSwapStats:
     swap_stage_ms: int
     restore_ms: int
     download_ms: int = 0
+    # Seed restoration of the last frame: Laplacian variance before and after, and its cost.
+    enhanced: bool = False
+    enhance_ms: int = 0
+    sharpness_before: float | None = None
+    sharpness_after: float | None = None
 
 
 # The default EXHAUSTIVE cuDNN search made the first clip on a fresh container ~8x slower than the second.
@@ -73,7 +83,12 @@ PROVIDERS = [("CUDAExecutionProvider", {"cudnn_conv_algo_search": "HEURISTIC"})]
 
 
 class SwapEngine:
-    def __init__(self, inswapper_path: str, gpen_path: str | None = None) -> None:
+    def __init__(
+        self,
+        inswapper_path: str,
+        gpen_path: str | None = None,
+        enhancer_path: str | None = None,
+    ) -> None:
         import insightface
         import numpy as np
 
@@ -102,6 +117,15 @@ class SwapEngine:
             )
             self.restorer_input = self.restorer.get_inputs()[0].name
             print("restorer providers:", self.restorer.get_providers())
+        self.enhancer = None
+        if enhancer_path:
+            import onnxruntime
+
+            self.enhancer = onnxruntime.InferenceSession(
+                enhancer_path, providers=PROVIDERS
+            )
+            self.enhancer_input = self.enhancer.get_inputs()[0].name
+            print("enhancer providers:", self.enhancer.get_providers())
         self.template = np.array(FFHQ_TEMPLATE, dtype=np.float32) * RESTORE_SIZE
         self.warm_up()
 
@@ -115,6 +139,29 @@ class SwapEngine:
         if self.restorer is not None:
             tensor = np.zeros((1, 3, RESTORE_SIZE, RESTORE_SIZE), dtype=np.float32)
             self.restorer.run(None, {self.restorer_input: tensor})
+        if self.enhancer is not None:
+            self.enhance_frame(blank)
+
+    @staticmethod
+    def sharpness(frame) -> float:
+        import cv2
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+    # 2x Real-ESRGAN on the whole frame, then back to the clip size: sharpens and denoises without changing the framing.
+    def enhance_frame(self, frame):
+        import cv2
+        import numpy as np
+
+        height, width = frame.shape[:2]
+        tensor = frame[:, :, ::-1].astype(np.float32) / 255.0
+        tensor = np.transpose(tensor, (2, 0, 1))[None]
+        (output,) = self.enhancer.run(None, {self.enhancer_input: tensor})
+        upscaled = np.clip(output[0].transpose(1, 2, 0), 0.0, 1.0) * 255.0
+        upscaled = upscaled[:, :, ::-1].astype(np.uint8)
+        restored = cv2.resize(upscaled, (width, height), interpolation=cv2.INTER_AREA)
+        return cv2.addWeighted(restored, ENHANCE_BLEND, frame, 1.0 - ENHANCE_BLEND, 0)
 
     def decode_image(self, data: bytes):
         import cv2
@@ -273,6 +320,15 @@ class SwapEngine:
             raise ValueError("the clip had no frames")
 
         swap_ms = int((time.perf_counter() - started) * 1000)
+        seed_frame = last_swapped
+        enhance_ms = 0
+        sharpness_before = sharpness_after = None
+        if self.enhancer is not None:
+            enhance_started = time.perf_counter()
+            seed_frame = self.enhance_frame(last_swapped)
+            enhance_ms = int((time.perf_counter() - enhance_started) * 1000)
+            sharpness_before = round(self.sharpness(last_swapped), 1)
+            sharpness_after = round(self.sharpness(seed_frame), 1)
         stats = ClipSwapStats(
             frames=frames,
             frames_with_face=frames_with_face,
@@ -285,8 +341,12 @@ class SwapEngine:
             detect_ms=int(timings["detect"] * 1000),
             swap_stage_ms=int(timings["swap"] * 1000),
             restore_ms=int(timings["restore"] * 1000),
+            enhanced=self.enhancer is not None,
+            enhance_ms=enhance_ms,
+            sharpness_before=sharpness_before,
+            sharpness_after=sharpness_after,
         )
-        return stats, self.encode_jpeg(last_swapped)
+        return stats, self.encode_jpeg(seed_frame)
 
 
 def paste_patch(frame, patch, matrix):
@@ -357,7 +417,8 @@ def swap_clip_from_url(
     stats = result["stats"]
     print(
         f"swapClip: frames={stats['frames']} download_ms={download_ms} swap_ms={stats['swap_ms']} "
-        f"ms_per_frame={stats['ms_per_frame']} similarity={stats['similarity_before']}->{stats['similarity_after']}",
+        f"ms_per_frame={stats['ms_per_frame']} similarity={stats['similarity_before']}->{stats['similarity_after']} "
+        f"enhance_ms={stats['enhance_ms']} sharpness={stats['sharpness_before']}->{stats['sharpness_after']}",
         flush=True,
     )
     return result

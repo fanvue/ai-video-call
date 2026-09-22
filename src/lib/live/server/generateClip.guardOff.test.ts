@@ -232,6 +232,7 @@ describe("generateClip on the swap backend", () => {
       videoUrl: "https://example.com/clip.mp4",
       referenceImageUrl: session.anchorFrameUrl,
       budgetMs: 150_000,
+      jobKind: "checkIn",
     });
     expect(result.videoUrl).toBe("https://example.com/swapped.mp4");
     expect(result.seedFrameUrl).toBe("https://example.com/swapped-last.jpg");

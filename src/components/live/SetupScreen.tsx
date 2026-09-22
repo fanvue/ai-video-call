@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { RenderBackend, SceneId, SpeechMode } from "@/lib/live/contract";
+import type { PrepareStatus } from "@/lib/live/client/useLiveSession";
 
 const SCENES: { id: SceneId; label: string }[] = [
   { id: "bedroom", label: "Bedroom" },
@@ -22,16 +23,26 @@ type SetupScreenProps = {
   busy: boolean;
   error: string | null;
   onPrepare?: (file: File, sceneId: SceneId) => void;
+  preparation?: { status: PrepareStatus; seedUrl: string | null };
   onSubmit: (values: SetupSubmit) => void;
 };
 
 // Long enough that flicking through the scenes does not stage a still ($0.03) for each one.
-const PREPARE_DEBOUNCE_MS = 800;
+const PREPARE_DEBOUNCE_MS = 300;
+
+const PREPARATION_LABEL: Record<PrepareStatus, string | null> = {
+  idle: null,
+  staging: "Staging her scene, about 20 seconds",
+  ready: "Scene ready",
+  unstaged: "Scene staging unavailable, she starts from your photo",
+  failed: "Could not prepare the photo, it will be retried on start",
+};
 
 export const SetupScreen = ({
   busy,
   error,
   onPrepare,
+  preparation,
   onSubmit,
 }: SetupScreenProps) => {
   const [file, setFile] = useState<File | null>(null);
@@ -45,7 +56,14 @@ export const SetupScreen = ({
   const [backend, setBackend] = useState<RenderBackend>("reference");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const canSubmit = Boolean(file) && !busy;
+  // Staging is the slow part of the join (20 to 35 s), so it runs here and the call starts only once it has settled.
+  const staging = preparation?.status === "staging";
+  const canSubmit = Boolean(file) && !busy && !staging;
+  const stagedUrl =
+    preparation?.status === "ready" ? preparation.seedUrl : null;
+  const preparationLabel = preparation
+    ? PREPARATION_LABEL[preparation.status]
+    : null;
 
   useEffect(() => {
     if (!file || !onPrepare) {
@@ -89,15 +107,24 @@ export const SetupScreen = ({
         aria-label="Choose a reference photo"
         className="flex aspect-[3/4] w-full items-center justify-center overflow-hidden rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)]"
       >
-        {previewUrl ? (
+        {(stagedUrl ?? previewUrl) ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={previewUrl} alt="" className="h-full w-full object-cover" />
+          <img
+            src={stagedUrl ?? previewUrl ?? undefined}
+            alt=""
+            className="h-full w-full object-cover"
+          />
         ) : (
           <span className="text-sm text-[var(--muted)]">
             Choose a JPEG or PNG photo
           </span>
         )}
       </button>
+      {preparationLabel ? (
+        <p className="text-xs text-[var(--muted)]" role="status">
+          {preparationLabel}
+        </p>
+      ) : null}
 
       <label className="flex flex-col gap-1">
         <span className="text-sm font-medium text-[var(--foreground)]">
@@ -242,7 +269,7 @@ export const SetupScreen = ({
             : "bg-[var(--surface-raised)] text-[var(--muted)]")
         }
       >
-        {busy ? "Connecting…" : "Go live"}
+        {busy ? "Connecting…" : staging ? "Staging her scene…" : "Go live"}
       </button>
 
       {error ? (
