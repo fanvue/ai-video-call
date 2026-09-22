@@ -1798,6 +1798,51 @@ describe("ClipPipeline", () => {
     expect(played?.swap?.reason).toMatch(/503/);
   });
 
+  it("two-phase swap: an idle whose swap fails is dropped and restocked, never played with the raw face", async () => {
+    const events: PipelineEvent[] = [];
+    const pipeline = trackedPipeline({
+      backend: "swap",
+      now: nowFn,
+      onEvent: (event) => events.push(event),
+      render: async (req) =>
+        delayed(() => ({
+          ...chainAdvancingResult(req),
+          swap: {
+            status: "pending" as const,
+            swapMs: 0,
+            frames: 0,
+            framesWithFace: 0,
+            msPerFrame: 0,
+            similarityBefore: null,
+            similarityAfter: null,
+            restored: false,
+            reason: null,
+          },
+        })),
+      finalizeSwap: () =>
+        Promise.reject(new Error("Swap service responded 500")),
+    });
+    pipeline.start({ kind: "greeting" }, () => snapshot, makeJobQueue().next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting plays unswapped
+    pipeline.nextClip();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // first idles rendered, swaps fail
+    await vi.advanceTimersByTimeAsync(0);
+    const discarded = events.filter(
+      (event) =>
+        event.type === "clipDiscarded" && event.result.jobKind === "idle",
+    );
+    expect(discarded.length).toBeGreaterThan(0);
+    expect(
+      events.some(
+        (event) =>
+          event.type === "clipReady" &&
+          event.result.jobKind === "idle" &&
+          event.result.swap?.status === "failed",
+      ),
+    ).toBe(false);
+    expect(pipeline.nextClip()?.swap?.status).not.toBe("failed");
+  });
+
   it("two-phase swap: an idle anchored on the cursor covers a reply still swapping instead of a hold, and cut-in waits for the reply to be playable", async () => {
     const events: PipelineEvent[] = [];
     const queue = makeJobQueue();

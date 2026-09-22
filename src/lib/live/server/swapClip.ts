@@ -66,7 +66,18 @@ const fetchReference = async (url: string): Promise<string> => {
 
 // Sends a rendered turbo clip through the self-hosted swap service (services/swap) and rehosts
 // the swapped mp4 and its last frame on fal storage so the client and the next render can fetch them.
-const RETRYABLE_SWAP_STATUSES = new Set([408, 502, 503, 504]);
+const RETRYABLE_SWAP_STATUSES = new Set([408, 500, 502, 503, 504]);
+// Healthy swaps return in ~4.5 s; Modal has held a lost input for 36 s before a 500, so a second request races the first after this.
+const SWAP_HEDGE_MS = 8_000;
+
+class SwapServiceError extends Error {
+  constructor(
+    readonly status: number,
+    detail: string,
+  ) {
+    super(`Swap service responded ${status}: ${detail.slice(0, 200)}`);
+  }
+}
 
 export const swapClip = async ({
   videoUrl,
@@ -87,32 +98,68 @@ export const swapClip = async ({
     video_url: videoUrl,
     reference_image: await fetchAsDataUri(referenceImageUrl),
   });
-  const post = () =>
-    fetch(new URL("/swapClip", env.SWAP_SERVICE_URL), {
+  const controllers: AbortController[] = [];
+  const attempt = async () => {
+    const controller = new AbortController();
+    controllers.push(controller);
+    const response = await fetch(new URL("/swapClip", env.SWAP_SERVICE_URL), {
       method: "POST",
       headers: {
         Authorization: `Bearer ${env.SWAP_TOKEN}`,
         "Content-Type": "application/json",
       },
       body,
-      signal: AbortSignal.timeout(
-        Math.max(1, budgetMs - (Date.now() - startedAt)),
-      ),
+      signal: AbortSignal.any([
+        controller.signal,
+        AbortSignal.timeout(Math.max(1, budgetMs - (Date.now() - startedAt))),
+      ]),
     });
-  let response = await post();
-  // Modal occasionally drops an input with 408 mid-run; one retry beats playing the clip unswapped.
-  if (
-    RETRYABLE_SWAP_STATUSES.has(response.status) &&
-    Date.now() - startedAt < budgetMs / 2
-  ) {
-    console.warn(`swapClip: kind=${jobKind} retrying after ${response.status}`);
-    response = await post();
-  }
-  if (!response.ok) {
-    const detail = await response.text().catch(() => "");
-    throw new Error(
-      `Swap service responded ${response.status}: ${detail.slice(0, 200)}`,
-    );
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new SwapServiceError(response.status, detail);
+    }
+    return { response, controller };
+  };
+  const first = attempt();
+  let second = false;
+  const hedge = new Promise<Awaited<ReturnType<typeof attempt>>>(
+    (resolve, reject) => {
+      const launch = (reason: string) => {
+        console.warn(`swapClip: kind=${jobKind} second request, ${reason}`);
+        second = true;
+        attempt().then(resolve, reject);
+      };
+      const timer = setTimeout(
+        () => launch("first not back yet"),
+        SWAP_HEDGE_MS,
+      );
+      first.then(
+        () => clearTimeout(timer),
+        (error: unknown) => {
+          clearTimeout(timer);
+          if (second) return;
+          if (
+            error instanceof SwapServiceError &&
+            RETRYABLE_SWAP_STATUSES.has(error.status) &&
+            Date.now() - startedAt < budgetMs / 2
+          ) {
+            launch(`first failed ${error.status}`);
+          } else {
+            reject(error);
+          }
+        },
+      );
+    },
+  );
+  const { response, controller: winner } = await Promise.any([
+    first,
+    hedge,
+  ]).catch((error: unknown) => {
+    throw error instanceof AggregateError ? error.errors.at(-1) : error;
+  });
+  // Only the loser is cancelled; aborting the winner would cut its body read.
+  for (const controller of controllers) {
+    if (controller !== winner) controller.abort();
   }
   const parsed = swapServiceResponseSchema.parse(await response.json());
   const stamp = Date.now();

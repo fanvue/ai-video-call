@@ -248,6 +248,20 @@ export class ClipPipeline {
             this.activeChainSwaps -= 1;
           }
           this.dispatchSwaps();
+          // An unswapped idle shows the raw render's face for a whole clip; fillers are replaceable, so it is dropped and restocked instead.
+          if (lane === "idle" && result.swap?.status === "failed") {
+            this.idleReady = this.idleReady.filter(
+              (clip) => clip.clipId !== result.clipId,
+            );
+            this.idleAnchorByClipId.delete(result.clipId);
+            this.onEvent({
+              type: "clipDiscarded",
+              result,
+              costUsd: result.costUsd,
+            });
+            this.fillIdleStockpile();
+            return;
+          }
           this.onEvent({ type: "clipReady", result, lane });
           this.announceIfRecovered();
           this.fillIdleStockpile();
