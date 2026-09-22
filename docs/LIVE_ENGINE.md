@@ -63,7 +63,8 @@ one-in-flight chain cannot hold a buffer. The chain therefore has two modes:
   bridge idle for a fresh chain tail start while old-anchor idles are still rendering. A rejected anchor frame is never adopted; the anchor only ever advances from an
   approved clip.
 - **Staged seed.** With `STAGE_SEED` on, the reference step also renders one in-scene still
-  (Seedream v4 edit: the upload's persona in the selected room, canon lingerie, webcam framing,
+  (Seedream v4 edit: the upload's persona in the selected room, canon lingerie, eye-level medium shot;
+  any "webcam" or "laptop camera" wording in the prompt drew her on a laptop screen instead,
   13 to 20 s, $0.03) alongside the look capture, and that still is the session seed; the upload
   stays the identity reference. The greeting then loops on it like an idle (plain
   `ACTION_CLIP_SEC`, never stretched), so the idles pre-stocked from it play straight after and
@@ -73,7 +74,10 @@ one-in-flight chain cannot hold a buffer. The chain therefore has two modes:
   the gap and fillers swapping alongside it doubled the join time. Staging takes 17 to 35 s on every
   editor measured (Seedream v4 17 to 34 s, Seedream 4.5 75 s, Qwen edit plus 39 s, FLUX.2 edit 16 s;
   the requested size is ignored and the seed size does not change the render time), so it cannot fit
-  a 15 s join. The setup screen therefore runs it (`session.prepare`) as soon as a photo and scene are
+  a 15 s join. The fast editors are not an option for this still: FLUX.2 klein 4b/9b and FLUX.2
+  turbo edit refuse the lingerie prompt (or the reference photo) with a content-policy 422, and
+  nano-banana lite/2 return no image; refusals are logged, never reworded or retried. A ~5 s stager
+  means self-hosting an edit model (e.g. Qwen-Image-Edit Lightning) on the swap GPU. The setup screen therefore runs it (`session.prepare`) as soon as a photo and scene are
   picked, shows the staged still in the preview when it lands, and holds "Go live" until it has
   settled; the connect itself is then the greeting render plus its swap. In the product this is a
   one-time persona setup, not a per-call cost.

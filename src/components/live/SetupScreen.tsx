@@ -32,7 +32,7 @@ const PREPARE_DEBOUNCE_MS = 300;
 
 const PREPARATION_LABEL: Record<PrepareStatus, string | null> = {
   idle: null,
-  staging: "Staging her scene, about 20 seconds",
+  staging: "Staging her scene, 20 to 35 seconds",
   ready: "Scene ready",
   unstaged: "Scene staging unavailable, she starts from your photo",
   failed: "Could not prepare the photo, it will be retried on start",

@@ -1,5 +1,4 @@
 import { LIVE_TUNABLES, type SceneId } from "@/lib/live/contract";
-import { SURROUNDINGS_BY_SCENE } from "@/lib/live/client/defaultLiveState";
 import {
   pollSceneStillUntilComplete,
   submitSceneStill,
@@ -13,13 +12,25 @@ const STILL_SIZE = { width: 1024, height: 1820 };
 
 export type StagedSeed = { url: string; costUsd: number };
 
+// Room descriptions for the still only. SURROUNDINGS_BY_SCENE (used by the clip prompts) mentions laptops and webcams, and any "webcam" or "laptop camera" wording made the editors draw her on a laptop screen instead of in the room.
+const STAGE_ROOM_BY_SCENE: Record<SceneId, string> = {
+  bedroom:
+    "She sits on the edge of her bed in a cosy bedroom, a made bed and a plain wall behind her, soft warm lamp light.",
+  office:
+    "She sits at her desk in a small home office, a bookshelf behind her, daylight through a blind.",
+  livingRoom:
+    "She sits in the corner of a living room couch, a lamp and a plant behind her, warm evening light.",
+  kitchen:
+    "She sits at a kitchen counter, a tidy kitchen behind her, bright morning light.",
+};
+
 const buildStagePrompt = (sceneId: SceneId, lookLock: string): string =>
   [
-    "A frame from a live webcam stream, shot from the laptop's built-in camera.",
-    `The same woman as in the photo, identical face, hair, skin tone and build (${lookLock}), sits facing the camera, framed from the waist up, relaxed natural smile, hands resting in her lap.`,
-    "She wears a plain white bra and white panties.",
-    `Behind her: ${SURROUNDINGS_BY_SCENE[sceneId]}`,
-    "Photorealistic, natural indoor light, slightly soft webcam look, no laptop or screen visible, no text, no watermark.",
+    `Candid photo of the same woman as in the reference image, identical face, hair, skin tone and build (${lookLock}).`,
+    STAGE_ROOM_BY_SCENE[sceneId],
+    "She faces the viewer at eye level, medium shot from the waist up, relaxed natural smile, hands resting in her lap.",
+    "She wears a plain white bra and matching plain white panties.",
+    "Photorealistic, natural skin texture, slight soft focus.",
   ].join(" ");
 
 // Best-effort: a refusal, failure or timeout means the greeting starts on the raw upload as before. Rejections are logged, never retried or reworded.
