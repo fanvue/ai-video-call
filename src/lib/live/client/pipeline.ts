@@ -486,10 +486,11 @@ export class ClipPipeline {
     this.addCost(result.costUsd);
     this.announceIfRecovered();
     this.tryAdvanceChain();
-    if (
-      this.now() - this.lastUpscaleAtMs >=
-      LIVE_TUNABLES.UPSCALE_INTERVAL_MS
-    ) {
+    const upscaleIntervalMs =
+      this.backend === "swap"
+        ? LIVE_TUNABLES.SWAP_UPSCALE_INTERVAL_MS
+        : LIVE_TUNABLES.UPSCALE_INTERVAL_MS;
+    if (this.now() - this.lastUpscaleAtMs >= upscaleIntervalMs) {
       this.lastUpscaleAtMs = this.now();
       this.upscaleChainTailInBackground(result.seedFrameUrl);
     }

@@ -1713,4 +1713,30 @@ describe("ClipPipeline", () => {
       LIVE_TUNABLES.SWAP_IDLE_MAX_INFLIGHT,
     );
   });
+
+  it("swap mode restores the seed after every chain clip instead of once per UPSCALE_INTERVAL_MS", async () => {
+    const upscaleSeed = vi.fn(
+      async (): Promise<{ url: string | null; costUsd: number }> => ({
+        url: "https://example.com/restored.jpg",
+        costUsd: 0.002,
+      }),
+    );
+    const queue = makeJobQueue();
+    const pipeline = trackedPipeline({
+      backend: "swap",
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => delayed(() => chainAdvancingResult(req)),
+      upscaleSeed,
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    expect(upscaleSeed).toHaveBeenCalledTimes(1);
+
+    queue.push(REPLY_JOB);
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    expect(upscaleSeed).toHaveBeenCalledTimes(2);
+  });
 });
