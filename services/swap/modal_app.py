@@ -62,8 +62,8 @@ class SwapClipRequest(BaseModel):
     max_containers=4,
     # Prod showed 8 to 15 s of queueing per clip when a fourth swap arrived and its container was still starting; keep two warm spares while the app has traffic.
     buffer_containers=2,
-    # A cold boot measured 93 s in prod (image pull dominates; the models load in 5 s) and the autoscaler never added a second container during the burst, so the whole join and first reply waited on it. One container stays warm at all times; this costs an L40S hour for every idle hour.
-    min_containers=1,
+    # A cold boot measured 93 s in prod (image pull dominates; the models load in 5 s) and the autoscaler never added a second container during the burst, so the whole join and first reply waited on it. Two containers stay warm at all times so a join burst (greeting + 2 fillers + reply, up to 4 real swaps) doesn't queue behind a cold buffer spare; this costs two L40S hours for every idle hour, the lever to turn down when the spike is parked.
+    min_containers=2,
     timeout=600,
 )
 # One warm container absorbs the join burst (greeting, two fillers, a reply) instead of serialising it behind 90 s cold boots. The engine holds no per-request state and ONNX sessions are thread-safe.
