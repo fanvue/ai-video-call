@@ -408,7 +408,8 @@ class SwapEngine:
             "source": source_face.normed_embedding.reshape(1, -1).astype(self.hyperswap_inputs["source"]),
             "target": target.astype(self.hyperswap_inputs["target"]),
         }
-        (output,) = self.hyperswap.run(None, feed)
+        # Output 0 is the swapped crop; the export carries extra outputs after it.
+        output = self.hyperswap.run(None, feed)[0]
         swapped = output[0].astype(np.float32).transpose(1, 2, 0) * 0.5 + 0.5
         swapped = (np.clip(swapped, 0.0, 1.0)[:, :, ::-1] * 255.0).astype(np.uint8)
         return swapped, matrix
