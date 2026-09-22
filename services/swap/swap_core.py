@@ -13,8 +13,10 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from typing import Any
 
-# inswapper_128 is research-only licensed (commercial license needed before this leaves the spike); deepinsight's repo is gated so this is a public mirror.
-INSWAPPER_URL = "https://huggingface.co/ezioruan/inswapper_128.onnx/resolve/main/inswapper_128.onnx"
+# inswapper_128 (the prior swapper) is research-only licensed; UniFace is commercial-safe (FaceFusion lists no restriction)
+# and swaps at 256 native instead of inswapper's 128, so the restorer has less to hallucinate back in.
+SWAPPER_URL = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/uniface_256.onnx"
+SWAP_CROP_SIZE = 256
 # GPEN-BFR (the prior restorer) is also Non-Commercial per FaceFusion's license listing; RestoreFormer++ is Apache-2.0 and drops into the same ffhq_512 preprocessing, but only ships at 512, not GPEN's faster 256.
 RESTORER_URL = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/restoreformer_plus_plus.onnx"
 RESTORE_SIZE = 512
@@ -85,11 +87,13 @@ PROVIDERS = [("CUDAExecutionProvider", {"cudnn_conv_algo_search": "HEURISTIC"})]
 class SwapEngine:
     def __init__(
         self,
-        inswapper_path: str,
+        swapper_path: str,
         restorer_path: str | None = None,
         enhancer_path: str | None = None,
     ) -> None:
         import insightface
+        import onnxruntime
+
         import numpy as np
 
         # Frames only need boxes and landmarks; buffalo_l's other four models would run per face otherwise.
@@ -105,9 +109,9 @@ class SwapEngine:
             providers=PROVIDERS,
         )
         self.identity.prepare(ctx_id=0, det_size=(640, 640))
-        self.swapper = insightface.model_zoo.get_model(
-            inswapper_path, providers=PROVIDERS
-        )
+        # UniFace takes a whole warped reference-photo crop as its "source" input, not an embedding.
+        self.swapper = onnxruntime.InferenceSession(swapper_path, providers=PROVIDERS)
+        self.swap_template = np.array(FFHQ_TEMPLATE, dtype=np.float32) * SWAP_CROP_SIZE
         self.restorer = None
         if restorer_path:
             import onnxruntime
@@ -116,6 +120,8 @@ class SwapEngine:
                 restorer_path, providers=PROVIDERS
             )
             self.restorer_input = self.restorer.get_inputs()[0].name
+            # RestoreFormer++'s export carries internal feature-map outputs after the restored image; only output 0 is the image.
+            self.restorer_output = self.restorer.get_outputs()[0].name
             print("restorer providers:", self.restorer.get_providers())
         self.enhancer = None
         if enhancer_path:
@@ -136,9 +142,11 @@ class SwapEngine:
         blank = np.zeros((INPUT_HEIGHT, INPUT_WIDTH, 3), dtype=np.uint8)
         self.detector.get(blank)
         self.identity.get(blank)
+        swap_tensor = np.zeros((1, 3, SWAP_CROP_SIZE, SWAP_CROP_SIZE), dtype=np.float32)
+        self.swapper.run(None, {"source": swap_tensor, "target": swap_tensor})
         if self.restorer is not None:
             tensor = np.zeros((1, 3, RESTORE_SIZE, RESTORE_SIZE), dtype=np.float32)
-            self.restorer.run(None, {self.restorer_input: tensor})
+            self.restorer.run([self.restorer_output], {self.restorer_input: tensor})
         if self.enhancer is not None:
             self.enhance_frame(blank)
 
@@ -196,7 +204,23 @@ class SwapEngine:
             raise ValueError(f"reference must contain exactly one face, found {len(faces)}")
         face = faces[0]
         face.ref_lab = self.face_lab_stats(image, face)
+        face.source_tensor = self.prepare_swap_source(image, face)
         return face
+
+    # UniFace's "source" input: the reference photo's own aligned crop, plain 0-1 RGB CHW (no mean/std shift).
+    # Static per session, so this is computed once in reference_face rather than every frame.
+    def prepare_swap_source(self, frame, face):
+        import cv2
+        import numpy as np
+
+        matrix, _ = cv2.estimateAffinePartial2D(
+            face.kps.astype(np.float32), self.swap_template, method=cv2.LMEDS
+        )
+        crop = cv2.warpAffine(
+            frame, matrix, (SWAP_CROP_SIZE, SWAP_CROP_SIZE), borderMode=cv2.BORDER_REPLICATE
+        )
+        tensor = crop[:, :, ::-1].astype(np.float32) / 255.0
+        return np.transpose(tensor, (2, 0, 1))[None]
 
     # LAB mean/std of the reference photo's own aligned face crop, so every later frame can be pulled back toward it.
     def face_lab_stats(self, frame, face):
@@ -243,7 +267,7 @@ class SwapEngine:
         )
         tensor = crop[:, :, ::-1].astype(np.float32) / 127.5 - 1.0
         tensor = np.transpose(tensor, (2, 0, 1))[None]
-        (output,) = self.restorer.run(None, {self.restorer_input: tensor})
+        (output,) = self.restorer.run([self.restorer_output], {self.restorer_input: tensor})
         restored = np.clip((output[0].transpose(1, 2, 0) + 1.0) * 127.5, 0, 255)
         restored = restored[:, :, ::-1].astype(np.uint8)
         blended = cv2.addWeighted(restored, RESTORE_BLEND, crop, 1.0 - RESTORE_BLEND, 0)
@@ -313,12 +337,35 @@ class SwapEngine:
         }
         return stats, self.encode_jpeg(seed_frame)
 
+    # UniFace: warp the target frame's face to the same 256 crop as the cached reference source, run both
+    # through the network, denormalize back to 0-255. Returns (patch, matrix) like insightface's swapper.get did.
+    def swap_face(self, frame, face, source_face):
+        import cv2
+        import numpy as np
+
+        matrix, _ = cv2.estimateAffinePartial2D(
+            face.kps.astype(np.float32), self.swap_template, method=cv2.LMEDS
+        )
+        if matrix is None:
+            return frame, None
+        crop = cv2.warpAffine(
+            frame, matrix, (SWAP_CROP_SIZE, SWAP_CROP_SIZE), borderMode=cv2.BORDER_REPLICATE
+        )
+        target = crop[:, :, ::-1].astype(np.float32) / 127.5 - 1.0
+        target = np.transpose(target, (2, 0, 1))[None]
+        (output,) = self.swapper.run(
+            None, {"source": source_face.source_tensor, "target": target}
+        )
+        swapped = np.clip((output[0].transpose(1, 2, 0) * 0.5 + 0.5), 0, 1) * 255.0
+        return swapped[:, :, ::-1].astype(np.uint8), matrix
+
     def swap_frame(self, frame, source_face, faces, timings: dict[str, float] | None = None):
         out = frame
         for face in faces:
             started = time.perf_counter()
-            # insightface's own paste_back blends the whole frame in float; paste_patch touches only the face box.
-            patch, matrix = self.swapper.get(out, face, source_face, paste_back=False)
+            patch, matrix = self.swap_face(out, face, source_face)
+            if matrix is None:
+                continue
             out = paste_patch(out, patch, matrix)
             swapped_at = time.perf_counter()
             if self.restorer is not None:

@@ -1,6 +1,6 @@
 # Swap service (self-hosted)
 
-Implements the service half of `docs/swap-mode-contract.md`: `POST /swapClip` takes a rendered turbo clip URL plus the persona reference and returns the clip with the reference face swapped onto every frame (InsightFace inswapper_128) and restored (GPEN-BFR-512 via ONNX), re-encoded with ffmpeg at the source frame rate with the source audio. One engine (`swap_core.py`), two hosts: Modal (`modal_app.py`, live for the POC) and fal serverless (`app.py`, blocked until the Fanvue team has serverless access).
+Implements the service half of `docs/swap-mode-contract.md`: `POST /swapClip` takes a rendered turbo clip URL plus the persona reference and returns the clip with the reference face swapped onto every frame (UniFace-256 via ONNX) and restored (RestoreFormer++ via ONNX), re-encoded with ffmpeg at the source frame rate with the source audio. One engine (`swap_core.py`), two hosts: Modal (`modal_app.py`, live for the POC) and fal serverless (`app.py`, blocked until the Fanvue team has serverless access).
 
 ## Modal (current POC host)
 
@@ -48,4 +48,4 @@ Billed while the container is warm (`keep_alive=120` adds two minutes after the 
 
 ## Licensing
 
-`inswapper_128.onnx` is research-only. Fine for the spike, blocked for production until a commercial license or a replacement model is chosen.
+Both the swapper (UniFace-256) and restorer (RestoreFormer++) are Apache-2.0 / no-restriction per FaceFusion's model listing, replacing the earlier `inswapper_128.onnx` (research-only) and GPEN-BFR (Non-Commercial).
