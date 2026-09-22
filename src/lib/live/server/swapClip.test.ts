@@ -11,9 +11,8 @@ vi.mock("@/lib/fal/uploadImage", () => ({
   uploadToFal: (...args: unknown[]) => uploadToFal(...args),
 }));
 
-const { failedSwapReport, swapClip, swapServiceLastFrame } = await import(
-  "./swapClip"
-);
+const { failedSwapReport, swapClip, swapServiceLastFrame } =
+  await import("./swapClip");
 
 const serviceStats = {
   frames: 240,
@@ -122,6 +121,47 @@ describe("swapClip", () => {
       }),
     ).rejects.toThrow(/422.*exactly one face/);
     expect(uploadToFal).not.toHaveBeenCalled();
+  });
+
+  it("retries once when the service drops the input with a 408, and not on a 422", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response(new Uint8Array([1])))
+      .mockResolvedValueOnce(new Response("Missing request", { status: 408 }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          video_base64: Buffer.from("video").toString("base64"),
+          last_frame_base64: Buffer.from("frame").toString("base64"),
+          stats: serviceStats,
+        }),
+      );
+    uploadToFal
+      .mockResolvedValueOnce("https://fal.test/swap.mp4")
+      .mockResolvedValueOnce("https://fal.test/last.jpg");
+
+    const outcome = await swapClip({
+      videoUrl: "https://fal.test/turbo.mp4",
+      referenceImageUrl: "https://fal.test/reference-retry.png",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(outcome.report.status).toBe("swapped");
+    expect(fetchMock.mock.calls[2][1].body).toBe(
+      fetchMock.mock.calls[1][1].body,
+    );
+  });
+
+  it("gives up after a second 408", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response(new Uint8Array([1])))
+      .mockResolvedValueOnce(new Response("Missing request", { status: 408 }))
+      .mockResolvedValueOnce(new Response("Missing request", { status: 408 }));
+    await expect(
+      swapClip({
+        videoUrl: "https://fal.test/turbo.mp4",
+        referenceImageUrl: "https://fal.test/reference-retry-twice.png",
+      }),
+    ).rejects.toThrow(/408/);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });
 

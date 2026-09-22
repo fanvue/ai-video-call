@@ -66,6 +66,8 @@ const fetchReference = async (url: string): Promise<string> => {
 
 // Sends a rendered turbo clip through the self-hosted swap service (services/swap) and rehosts
 // the swapped mp4 and its last frame on fal storage so the client and the next render can fetch them.
+const RETRYABLE_SWAP_STATUSES = new Set([408, 502, 503, 504]);
+
 export const swapClip = async ({
   videoUrl,
   referenceImageUrl,
@@ -81,18 +83,31 @@ export const swapClip = async ({
     throw new Error("Swap service is not configured");
   }
   const startedAt = Date.now();
-  const response = await fetch(new URL("/swapClip", env.SWAP_SERVICE_URL), {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.SWAP_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      video_url: videoUrl,
-      reference_image: await fetchAsDataUri(referenceImageUrl),
-    }),
-    signal: AbortSignal.timeout(budgetMs),
+  const body = JSON.stringify({
+    video_url: videoUrl,
+    reference_image: await fetchAsDataUri(referenceImageUrl),
   });
+  const post = () =>
+    fetch(new URL("/swapClip", env.SWAP_SERVICE_URL), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.SWAP_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body,
+      signal: AbortSignal.timeout(
+        Math.max(1, budgetMs - (Date.now() - startedAt)),
+      ),
+    });
+  let response = await post();
+  // Modal occasionally drops an input with 408 mid-run; one retry beats playing the clip unswapped.
+  if (
+    RETRYABLE_SWAP_STATUSES.has(response.status) &&
+    Date.now() - startedAt < budgetMs / 2
+  ) {
+    console.warn(`swapClip: kind=${jobKind} retrying after ${response.status}`);
+    response = await post();
+  }
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
     throw new Error(

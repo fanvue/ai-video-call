@@ -546,9 +546,16 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         refreshRequestStatuses();
         const sentAtMs = requestSentAtMsRef.current.get(requestId);
         if (sentAtMs !== undefined) {
+          const requestMs = Date.now() - sentAtMs;
           console.log(
-            `useLiveSession: request-to-first-visible-frame requestId=${requestId} ms=${Date.now() - sentAtMs}`,
+            `useLiveSession: request-to-first-visible-frame requestId=${requestId} ms=${requestMs}`,
           );
+          // Server logs only see a request once the pipeline dispatches it; this is the time the fan actually waited.
+          reportTelemetry?.("requestVisible", {
+            clipId,
+            kind: result?.jobKind ?? "unknown",
+            ms: requestMs,
+          });
           requestSentAtMsRef.current.delete(requestId);
         }
       }
@@ -738,6 +745,14 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         if (requestId) {
           director.setRequestStatus(requestId, "generating");
           refreshRequestStatuses();
+          const sentAtMs = requestSentAtMsRef.current.get(requestId);
+          // Splits the fan's wait into queueing behind the current clip versus producing the reply.
+          if (sentAtMs !== undefined && job.kind === "reply") {
+            reportTelemetry?.("requestDispatched", {
+              kind: job.kind,
+              ms: Date.now() - sentAtMs,
+            });
+          }
         }
         if (job.kind === "reply") {
           const requestEntry = director
@@ -827,6 +842,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       refreshQueueStrip,
       refreshRequestStatuses,
       maybeGoLive,
+      reportTelemetry,
       setConnectStage,
     ],
   );
