@@ -153,11 +153,14 @@ describe("GaplessPlayer", () => {
     expect(b.style.zIndex).toBe("-1");
     expect(a.style.zIndex).toBe("-2");
     expect(a.style.opacity).toBe("1");
-    expect(a.src).toBe(clip("c3").videoUrl);
+    // Still showing c1's last frame under the fade: reloading it now is what flashed black in prod.
+    expect(a.src).toBe(clip("c1").videoUrl);
+    expect(a.loop).toBe(false);
 
-    // The deferred outgoing-slot cleanup hides it but must not clobber that preload.
+    // Once the fade ends the outgoing slot is hidden, and only then takes the c3 preload.
     vi.advanceTimersByTime(500);
     expect(a.style.opacity).toBe("0");
+    await flush();
     expect(a.src).toBe(clip("c3").videoUrl);
 
     // c2 ends: c3 plays from a instead of the stream dying.

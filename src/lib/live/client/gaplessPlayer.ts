@@ -20,6 +20,8 @@ const REVEAL_TIMEOUT_MS = 1500;
 // native-speech playback stays silent through that window then ramps volume up over 280ms.
 const AUDIO_POP_HIDE_MS = 1100;
 const AUDIO_RAMP_MS = 280;
+// Bounds the wait for a swap that never activates the element (a failed reveal).
+const AUDIO_ACTIVATE_WAIT_MS = 5_000;
 // How long a preloading element gets before its readiness is treated as a failure, not a stall.
 const LOAD_TIMEOUT_MS = 8000;
 // How long play() gets to actually produce a decoded frame before the swap is aborted.
@@ -126,6 +128,9 @@ export class GaplessPlayer {
   private activeSlot: "a" | "b" = "a";
   private preloadedClip: ClipToPlay | null = null;
   private swappingClip: ClipToPlay | null = null;
+  // The element still fading out under a new clip; preloading into it mid-fade blanks it, so that preload waits in deferredPreload.
+  private fadingOut: HTMLVideoElement | null = null;
+  private deferredPreload: ClipToPlay | null = null;
   // A boundary swap whose incoming slot is playing hidden, waiting for the outgoing clip's last frame.
   private revealWaiter: { el: HTMLVideoElement; done: () => void } | null =
     null;
@@ -304,7 +309,7 @@ export class GaplessPlayer {
   }
 
   private preloadNextIfNeeded(): void {
-    if (this.disposed || this.preloadedClip) {
+    if (this.disposed || this.preloadedClip || this.deferredPreload) {
       return;
     }
     const clip = this.getNextClip();
@@ -317,6 +322,10 @@ export class GaplessPlayer {
   private async preload(clip: ClipToPlay): Promise<void> {
     const inactive = this.getInactive();
     if (!inactive) {
+      return;
+    }
+    if (inactive === this.fadingOut) {
+      this.deferredPreload = clip;
       return;
     }
     const targetSlot = this.activeSlot === "a" ? "b" : "a";
@@ -487,9 +496,18 @@ export class GaplessPlayer {
     }
     el.muted = false;
     el.volume = 0;
+    const src = el.src;
     const start = performance.now();
     const ramp = () => {
-      if (this.disposed || this.getActive() !== el) {
+      if (this.disposed || el.src !== src) {
+        return;
+      }
+      // The policy runs before the swap makes this element active; it stays silent until then instead of abandoning the ramp at zero.
+      if (this.getActive() !== el) {
+        el.volume = 0;
+        if (performance.now() - start < AUDIO_ACTIVATE_WAIT_MS) {
+          requestAnimationFrame(ramp);
+        }
         return;
       }
       const elapsed = performance.now() - start;
@@ -592,21 +610,38 @@ export class GaplessPlayer {
     this.cutInWaitingForBoundary = false;
     this.setStatus("playing");
     this.onClipStarted(clip.id);
-    this.preloadNextIfNeeded();
+    // Frozen on its last frame for the fade instead of wrapping back to its loop start underneath.
+    if (outgoing) {
+      outgoing.loop = false;
+    }
+    this.fadingOut = outgoing;
+    const preloadAfterFade = () => {
+      const deferred = this.deferredPreload;
+      this.deferredPreload = null;
+      if (this.disposed) return;
+      if (deferred) void this.preload(deferred);
+      else this.preloadNextIfNeeded();
+    };
     window.setTimeout(() => {
+      if (this.fadingOut === outgoing) {
+        this.fadingOut = null;
+      }
       if (!outgoing) {
+        preloadAfterFade();
+        return;
+      }
+      // A later swap already made this element active again; hiding it would leave both slots dark.
+      if (this.getActive() === outgoing) {
+        preloadAfterFade();
         return;
       }
       // Hidden only now, under an already opaque incoming slot, so the fade never dips to black.
       outgoing.style.opacity = "0";
-      // preloadNextIfNeeded above usually re-targets this element with the next clip's src;
-      // clearing it here would wipe that preload and leave the following swap with nothing.
-      if (this.preloadedClip && this.getInactive() === outgoing) {
-        return;
-      }
       outgoing.pause();
+      // The next preload reuses this element, so it waits until the element is hidden: reloading it mid-fade blanked it under the half-transparent incoming clip.
       outgoing.removeAttribute("src");
       outgoing.load();
+      preloadAfterFade();
     }, fadeMs);
   }
 
