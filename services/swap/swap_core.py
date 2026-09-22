@@ -116,6 +116,8 @@ class SwapEngine:
                 restorer_path, providers=PROVIDERS
             )
             self.restorer_input = self.restorer.get_inputs()[0].name
+            # RestoreFormer++'s export carries internal feature-map outputs after the restored image; only output 0 is the image.
+            self.restorer_output = self.restorer.get_outputs()[0].name
             print("restorer providers:", self.restorer.get_providers())
         self.enhancer = None
         if enhancer_path:
@@ -138,7 +140,7 @@ class SwapEngine:
         self.identity.get(blank)
         if self.restorer is not None:
             tensor = np.zeros((1, 3, RESTORE_SIZE, RESTORE_SIZE), dtype=np.float32)
-            self.restorer.run(None, {self.restorer_input: tensor})
+            self.restorer.run([self.restorer_output], {self.restorer_input: tensor})
         if self.enhancer is not None:
             self.enhance_frame(blank)
 
@@ -243,7 +245,7 @@ class SwapEngine:
         )
         tensor = crop[:, :, ::-1].astype(np.float32) / 127.5 - 1.0
         tensor = np.transpose(tensor, (2, 0, 1))[None]
-        (output,) = self.restorer.run(None, {self.restorer_input: tensor})
+        (output,) = self.restorer.run([self.restorer_output], {self.restorer_input: tensor})
         restored = np.clip((output[0].transpose(1, 2, 0) + 1.0) * 127.5, 0, 255)
         restored = restored[:, :, ::-1].astype(np.uint8)
         blended = cv2.addWeighted(restored, RESTORE_BLEND, crop, 1.0 - RESTORE_BLEND, 0)
