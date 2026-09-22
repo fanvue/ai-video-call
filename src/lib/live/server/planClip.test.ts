@@ -775,9 +775,13 @@ describe("planClip: idle duration", () => {
 });
 
 describe("planClip: swap mode clip length", () => {
-  it("stretches chain clips to SWAP_ACTION_CLIP_SEC with a hold to the new end, leaves idle to the pipeline and other backends alone", () => {
+  it("runs chain clips at SWAP_ACTION_CLIP_SEC, leaves idle to the pipeline and other backends alone", () => {
     const base = { session: session(), speechMode: "text" as const };
-    // A raw-upload greeting (seed is the anchor) chains forward, so it is stretched like a reply.
+    // Swap latency is per frame, so chain clips are no longer stretched past the action's own length.
+    expect(LIVE_TUNABLES.SWAP_ACTION_CLIP_SEC).toBe(
+      LIVE_TUNABLES.ACTION_CLIP_SEC,
+    );
+    // A raw-upload greeting (seed is the anchor) chains forward like a reply.
     const greeting = planClip({
       ...base,
       session: session({ seedFrameUrl: "https://example.com/anchor.jpg" }),
@@ -788,10 +792,7 @@ describe("planClip: swap mode clip length", () => {
     expect(greeting.prompt).toContain(
       `By ${LIVE_TUNABLES.ACTION_CLIP_SEC}s she is`,
     );
-    expect(greeting.prompt).toContain(
-      `until the clip ends at ${LIVE_TUNABLES.SWAP_ACTION_CLIP_SEC}s`,
-    );
-    expect(greeting.prompt).not.toContain("The clip ends there.");
+    expect(greeting.prompt).toContain("The clip ends there.");
 
     const idle = planClip({ ...base, job: { kind: "idle" }, backend: "swap" });
     expect(idle.durationSec).toBe(LIVE_TUNABLES.IDLE_CLIP_SEC);

@@ -27,9 +27,8 @@ ENHANCE_BLEND = 0.5
 ENHANCE_MAX_SHARPNESS = 80.0
 # How much of the restored face replaces the swapped one; 1.0 looks waxy, FaceFusion defaults to 0.8.
 RESTORE_BLEND = 0.8
-# Pulls the swapped face's LAB tone back toward the original upload's own face crop every frame, so per-clip
-# restoration bias (warmth, saturation) never compounds across a long session into a "clown makeup" drift.
-COLOR_LOCK_BLEND = 0.5
+# Off: it forced the upload's lighting onto every scene, so the face read as a lighter pasted mask against the neck. The drift it was added for came from seeding the chain with swapped frames, fixed at the source in generateClip.
+COLOR_LOCK_BLEND = 0.0
 MAX_CLIP_FRAMES = 30 * 20
 # Typical turbo clip size, used only for the warm-up pass.
 INPUT_WIDTH = 542
@@ -269,11 +268,11 @@ class SwapEngine:
         return seed_frame, enhance_ms, enhanced, sharpness_before, sharpness_after
 
     # Only the clip's last frame, swapped and finished the same way swap_clip finishes it, so the next clip can render while the full swap is still queued. Decodes just the tail with ffmpeg instead of walking the clip.
-    def swap_tail(self, video_path: str, source_face) -> tuple[dict[str, Any], bytes]:
+    # Decodes just the clip's last frame with ffmpeg instead of walking the clip.
+    def read_tail_frame(self, video_path: str):
         import cv2
         import numpy as np
 
-        started = time.perf_counter()
         capture = cv2.VideoCapture(video_path)
         if not capture.isOpened():
             raise ValueError("could not open the clip")
@@ -299,6 +298,11 @@ class SwapEngine:
                 break
         if frame is None:
             raise ValueError("the clip had no frames")
+        return frame
+
+    def swap_tail(self, video_path: str, source_face) -> tuple[dict[str, Any], bytes]:
+        started = time.perf_counter()
+        frame = self.read_tail_frame(video_path)
         faces = self.detector.get(frame)
         swapped = self.swap_frame(frame, source_face, faces)
         swap_ms = int((time.perf_counter() - started) * 1000)
@@ -533,6 +537,22 @@ def swap_tail_from_url(
         flush=True,
     )
     return {"last_frame_base64": base64.b64encode(seed_jpeg).decode("ascii"), "stats": stats}
+
+
+# The raw last frame, unswapped: the next chain clip's seed. fal's ffmpeg-api took 5 to 6 s for the same frame on the reply path.
+def last_frame_from_url(engine: SwapEngine, video_url: str) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory() as directory:
+        source_path = os.path.join(directory, "source.mp4")
+        started = time.perf_counter()
+        download(video_url, source_path)
+        download_ms = int((time.perf_counter() - started) * 1000)
+        frame = engine.read_tail_frame(source_path)
+    total_ms = int((time.perf_counter() - started) * 1000)
+    print(f"lastFrame: download_ms={download_ms} total_ms={total_ms}", flush=True)
+    return {
+        "last_frame_base64": base64.b64encode(engine.encode_jpeg(frame)).decode("ascii"),
+        "stats": {"download_ms": download_ms, "total_ms": total_ms},
+    }
 
 
 def swap_tail_from_bytes(

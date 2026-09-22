@@ -136,6 +136,53 @@ export const swapClip = async ({
   };
 };
 
+// A warm container answers in about 1 s (download plus one ffmpeg tail decode); fal's ffmpeg-api took 5 to 6 s for the same frame.
+export const LAST_FRAME_BUDGET_MS = 8_000;
+
+const lastFrameResponseSchema = z.object({
+  last_frame_base64: z.string().min(1),
+});
+
+// The clip's raw last frame from the swap service, rehosted for the next render.
+export const swapServiceLastFrame = async ({
+  videoUrl,
+  budgetMs = LAST_FRAME_BUDGET_MS,
+}: {
+  videoUrl: string;
+  budgetMs?: number;
+}): Promise<string> => {
+  if (!env.SWAP_SERVICE_URL || !env.SWAP_TOKEN) {
+    throw new Error("Swap service is not configured");
+  }
+  const startedAt = Date.now();
+  const response = await fetch(new URL("/lastFrame", env.SWAP_SERVICE_URL), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.SWAP_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ video_url: videoUrl }),
+    signal: AbortSignal.timeout(budgetMs),
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(
+      `Swap service responded ${response.status}: ${detail.slice(0, 200)}`,
+    );
+  }
+  const parsed = lastFrameResponseSchema.parse(await response.json());
+  const stamp = Date.now();
+  const url = await uploadToFal(
+    Buffer.from(parsed.last_frame_base64, "base64"),
+    `seed-${stamp}.jpg`,
+    "image/jpeg",
+  );
+  console.log(
+    `lastFrame: serviceMs=${stamp - startedAt} rehostMs=${Date.now() - stamp}`,
+  );
+  return url;
+};
+
 export const pendingSwapReport = (): ClipSwapReport => ({
   status: "pending",
   swapMs: 0,

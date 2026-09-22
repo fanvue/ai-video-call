@@ -25,11 +25,13 @@ vi.mock("./frameGuard", () => ({
 }));
 
 const swapClip = vi.fn();
+const swapServiceLastFrame = vi.fn();
 // Fully mocked: the real module pulls in @/env, which validates the server environment at import.
 vi.mock("./swapClip", () => ({
   SWAP_BUDGET_MS: 150_000,
   SWAP_GREETING_BUDGET_MS: 20_000,
   swapClip: (...args: unknown[]) => swapClip(...args),
+  swapServiceLastFrame: (...args: unknown[]) => swapServiceLastFrame(...args),
   pendingSwapReport: () => ({
     status: "pending",
     swapMs: 0,
@@ -116,6 +118,8 @@ const request = (
 beforeEach(() => {
   render.mockReset();
   swapClip.mockReset();
+  swapServiceLastFrame.mockReset();
+  swapServiceLastFrame.mockResolvedValue("https://example.com/tail-raw.jpg");
   extractLastFrameUrl.mockReset();
   extractMidFrameUrl.mockReset();
   guardFrame.mockReset();
@@ -149,11 +153,23 @@ describe("generateClip on the swap backend with the deferred clip swap", () => {
       }),
     );
     expect(swapClip).not.toHaveBeenCalled();
-    expect(extractLastFrameUrl).toHaveBeenCalledWith(
-      "https://example.com/clip.mp4",
-      expect.any(Number),
-    );
+    expect(swapServiceLastFrame).toHaveBeenCalledWith({
+      videoUrl: "https://example.com/clip.mp4",
+    });
+    expect(extractLastFrameUrl).not.toHaveBeenCalled();
     expect(result.videoUrl).toBe("https://example.com/clip.mp4");
+    expect(result.seedFrameUrl).toBe("https://example.com/tail-raw.jpg");
+    expect(result.swap?.status).toBe("pending");
+  });
+
+  it("falls back to fal's frame extraction for the seed when the swap service cannot decode the tail", async () => {
+    swapServiceLastFrame.mockRejectedValue(
+      new Error("Swap service responded 503"),
+    );
+    const result = await generateClip(
+      swapRequest({ kind: "checkIn", channel: "chat" }),
+    );
+    expect(result.verdict).toBe("approved");
     expect(result.seedFrameUrl).toBe("https://example.com/last.jpg");
     expect(result.swap?.status).toBe("pending");
   });

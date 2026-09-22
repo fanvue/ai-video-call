@@ -25,6 +25,7 @@ import {
   SWAP_BUDGET_MS,
   SWAP_GREETING_BUDGET_MS,
   swapClip,
+  swapServiceLastFrame,
 } from "./swapClip";
 import { writeCheckIn, writeReply } from "./writeReply";
 
@@ -389,7 +390,16 @@ export const generateClip = async (
         seedFrameUrl =
           swappedLastFrameUrl ??
           (await withTimeout(
-            extractLastFrameUrl(videoUrl, FRAME_BUDGET_MS),
+            backend === "swap"
+              ? // The swap service decodes the tail in about 1 s; fal's ffmpeg-api took 5 to 6 s of the reply path. It stays the fallback.
+                swapServiceLastFrame({ videoUrl }).catch((error: unknown) => {
+                  console.warn(
+                    "generateClip: swap service lastFrame failed, using fal extract",
+                    error,
+                  );
+                  return extractLastFrameUrl(videoUrl, FRAME_BUDGET_MS);
+                })
+              : extractLastFrameUrl(videoUrl, FRAME_BUDGET_MS),
             FRAME_BUDGET_MS,
             "extractFrame",
           ));

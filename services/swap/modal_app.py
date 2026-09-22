@@ -11,6 +11,7 @@ from swap_core import (
     RESTORER_URL,
     SwapEngine,
     bearer_token,
+    last_frame_from_url,
     swap_clip_from_bytes,
     swap_clip_from_url,
     swap_tail_from_bytes,
@@ -48,6 +49,10 @@ image = (
 class SwapClipRequest(BaseModel):
     video_url: str
     reference_image: str
+
+
+class LastFrameRequest(BaseModel):
+    video_url: str
 
 
 @app.cls(
@@ -95,6 +100,17 @@ class SwapService:
         @api.get("/health")
         def health() -> dict[str, str]:
             return {"status": "ok"}
+
+        @api.post("/lastFrame")
+        def last_frame(
+            body: LastFrameRequest, authorization: str | None = Header(default=None)
+        ) -> dict:
+            if not token_allowed(bearer_token(authorization)):
+                raise HTTPException(status_code=403, detail="unauthorized")
+            try:
+                return last_frame_from_url(engine, body.video_url)
+            except ValueError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
 
         @api.post("/swapTail")
         def swap_tail(

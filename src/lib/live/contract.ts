@@ -343,8 +343,8 @@ export const LIVE_TUNABLES = {
   SWAP_IDLE_BUFFER_TARGET: 2,
   // One more than the target so a bridge idle for a fresh chain tail can start while two old-anchor idles are still in flight.
   SWAP_IDLE_MAX_INFLIGHT: 3,
-  // Swap mode chain clips run the maximum length: the next clip seeds from this one's last frame so it cannot start early, and it takes 10 to 17s to make.
-  SWAP_ACTION_CLIP_SEC: 15,
+  // Swap latency is per frame (~40 ms), so a 15 s reply cost ~5 s more to swap than an 11 s one. Bridge idles from the reply's tail start when it renders, well before it plays, so it no longer needs the extra length to cover the next clip.
+  SWAP_ACTION_CLIP_SEC: 11,
   // Two-phase swap: the server swaps only the clip's last frame (about 1.5 s) so the next chain clip renders at once, and the client swaps the full clip in parallel before playing it. Off, the render call waits for the whole swap (about 7 s) before the chain can move.
   SWAP_DEFER_CLIP: true,
   // Next idle length = measured idle production time + this headroom, clamped to the clip bounds.

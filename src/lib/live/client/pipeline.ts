@@ -598,9 +598,11 @@ export class ClipPipeline {
 
     this.chainedReady.push(result);
     this.chainTail = { frameUrl: result.seedFrameUrl, state: result.state };
+    // Registered before the fillers below, or they see no chain swap in flight and take the full inflight budget; prod then ran two filler swaps alongside the reply's.
+    const swapPending = this.beginPendingSwap(result, "chained");
     // Bridge idles from the new tail can start rendering right away, alongside the next beat.
     this.fillIdleStockpile();
-    if (!this.beginPendingSwap(result, "chained")) {
+    if (!swapPending) {
       this.onEvent({ type: "clipReady", result, lane: "chained" });
     }
     this.addCost(result.costUsd);
