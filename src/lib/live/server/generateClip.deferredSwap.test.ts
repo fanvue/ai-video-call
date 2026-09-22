@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   LIVE_TUNABLES,
   stateFrameKey,
@@ -222,6 +222,10 @@ describe("generateClip on the swap backend with the deferred clip swap", () => {
   });
 });
 
+it("keeps swap-mode chain clips off reference-to-video by default", () => {
+  expect(LIVE_TUNABLES.SWAP_CHAIN_FROM_REFERENCE).toBe(false);
+});
+
 describe("generateClip on the swap backend with chain clips from reference-to-video", () => {
   const identityFrameUrl = "https://example.com/identity-crop.jpg";
   const swapRequest = (job: ClipRequest["job"]): ClipRequest => ({
@@ -238,8 +242,13 @@ describe("generateClip on the swap backend with chain clips from reference-to-vi
     precededByIdle: false,
   };
 
-  it("is the default", () => {
-    expect(LIVE_TUNABLES.SWAP_CHAIN_FROM_REFERENCE).toBe(true);
+  // Off by default (see LIVE_TUNABLES); these cover the path when it is switched on.
+  beforeEach(() => {
+    const tunables = LIVE_TUNABLES as { SWAP_CHAIN_FROM_REFERENCE: boolean };
+    tunables.SWAP_CHAIN_FROM_REFERENCE = true;
+    onTestFinished(() => {
+      tunables.SWAP_CHAIN_FROM_REFERENCE = false;
+    });
   });
 
   it("stays on turbo when there is no head-only crop, never handing reference-to-video the full upload", async () => {
