@@ -4,9 +4,12 @@ from __future__ import annotations
 import base64
 import os
 import subprocess
+import threading
 import tempfile
 import time
 import urllib.request
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -22,8 +25,13 @@ RESTORE_SIZE = 256
 GPEN_URL = GPEN_URLS[RESTORE_SIZE]
 # How much of the restored face replaces the swapped one; 1.0 looks waxy, FaceFusion defaults to 0.8.
 RESTORE_BLEND = 0.8
-DETECT_EVERY_N_FRAMES = 2
 MAX_CLIP_FRAMES = 30 * 20
+# Typical turbo clip size, used only for the warm-up pass.
+INPUT_WIDTH = 542
+INPUT_HEIGHT = 988
+# Frames in flight across threads; onnxruntime and OpenCV release the GIL, so the GPU stays busy while
+# another frame is being decoded or pasted. Sequential was 34 to 46 ms/frame on an A10G.
+WORKERS = 3
 
 REQUIREMENTS = [
     "insightface==0.7.3",
@@ -59,6 +67,10 @@ class ClipSwapStats:
     restore_ms: int
 
 
+# The default EXHAUSTIVE cuDNN search made the first clip on a fresh container ~8x slower than the second.
+PROVIDERS = [("CUDAExecutionProvider", {"cudnn_conv_algo_search": "HEURISTIC"})]
+
+
 class SwapEngine:
     def __init__(self, inswapper_path: str, gpen_path: str | None = None) -> None:
         import insightface
@@ -68,28 +80,40 @@ class SwapEngine:
         self.detector = insightface.app.FaceAnalysis(
             name="buffalo_l",
             allowed_modules=["detection"],
-            providers=["CUDAExecutionProvider"],
+            providers=PROVIDERS,
         )
         self.detector.prepare(ctx_id=0, det_size=(640, 640))
         self.identity = insightface.app.FaceAnalysis(
             name="buffalo_l",
             allowed_modules=["detection", "recognition"],
-            providers=["CUDAExecutionProvider"],
+            providers=PROVIDERS,
         )
         self.identity.prepare(ctx_id=0, det_size=(640, 640))
         self.swapper = insightface.model_zoo.get_model(
-            inswapper_path, providers=["CUDAExecutionProvider"]
+            inswapper_path, providers=PROVIDERS
         )
         self.restorer = None
         if gpen_path:
             import onnxruntime
 
             self.restorer = onnxruntime.InferenceSession(
-                gpen_path, providers=["CUDAExecutionProvider"]
+                gpen_path, providers=PROVIDERS
             )
             self.restorer_input = self.restorer.get_inputs()[0].name
             print("restorer providers:", self.restorer.get_providers())
         self.template = np.array(FFHQ_TEMPLATE, dtype=np.float32) * RESTORE_SIZE
+        self.warm_up()
+
+    def warm_up(self) -> None:
+        # Runs each network once so kernel selection happens at container start, not on the first clip.
+        import numpy as np
+
+        blank = np.zeros((INPUT_HEIGHT, INPUT_WIDTH, 3), dtype=np.uint8)
+        self.detector.get(blank)
+        self.identity.get(blank)
+        if self.restorer is not None:
+            tensor = np.zeros((1, 3, RESTORE_SIZE, RESTORE_SIZE), dtype=np.float32)
+            self.restorer.run(None, {self.restorer_input: tensor})
 
     def decode_image(self, data: bytes):
         import cv2
@@ -198,26 +222,46 @@ class SwapEngine:
 
         frames = 0
         frames_with_face = 0
-        faces: list[Any] = []
         timings = {"detect": 0.0, "swap": 0.0, "restore": 0.0}
+        timings_lock = threading.Lock()
         last_frame = None
         last_swapped = None
+
+        def process(frame):
+            local = {"detect": 0.0, "swap": 0.0, "restore": 0.0}
+            detect_started = time.perf_counter()
+            faces = self.detector.get(frame)
+            local["detect"] = time.perf_counter() - detect_started
+            swapped = self.swap_frame(frame, source_face, faces, local)
+            with timings_lock:
+                for key, value in local.items():
+                    timings[key] += value
+            return swapped, bool(faces)
+
+        pending: deque = deque()
         try:
-            while frames < MAX_CLIP_FRAMES:
-                ok, frame = capture.read()
-                if not ok:
-                    break
-                if frames % DETECT_EVERY_N_FRAMES == 0 or not faces:
-                    detect_started = time.perf_counter()
-                    faces = self.detector.get(frame)
-                    timings["detect"] += time.perf_counter() - detect_started
-                if faces:
-                    frames_with_face += 1
-                swapped = self.swap_frame(frame, source_face, faces, timings)
-                writer.stdin.write(swapped.tobytes())
-                last_frame = frame
-                last_swapped = swapped
-                frames += 1
+            with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+                def drain_one() -> None:
+                    nonlocal frames, frames_with_face, last_frame, last_swapped
+                    frame, future = pending.popleft()
+                    swapped, had_face = future.result()
+                    writer.stdin.write(swapped.tobytes())
+                    frames_with_face += had_face
+                    last_frame = frame
+                    last_swapped = swapped
+                    frames += 1
+
+                submitted = 0
+                while submitted < MAX_CLIP_FRAMES:
+                    ok, frame = capture.read()
+                    if not ok:
+                        break
+                    pending.append((frame, pool.submit(process, frame)))
+                    submitted += 1
+                    if len(pending) >= WORKERS * 2:
+                        drain_one()
+                while pending:
+                    drain_one()
         finally:
             capture.release()
             writer.stdin.close()

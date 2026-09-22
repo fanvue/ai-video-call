@@ -46,12 +46,13 @@ class SwapClipRequest(BaseModel):
 
 @app.cls(
     image=image,
-    gpu="A10G",
+    gpu="L40S",
     # Detection, paste-back and the x264 encode are CPU work; Modal's default fractional core starves them.
     cpu=4,
     secrets=[modal.Secret.from_name("ai-video-swap-token")],
     scaledown_window=120,
-    max_containers=2,
+    # Idle fillers and a reply can be swapping at the same time; each container takes one clip at a time.
+    max_containers=3,
     timeout=600,
 )
 class SwapService:

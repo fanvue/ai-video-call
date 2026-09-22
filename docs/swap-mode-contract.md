@@ -26,7 +26,7 @@ The earlier per-frame JPEG-over-WebSocket transport (2 to 3 fps effective, 330 t
 - `POST /swapClip` with `Authorization: Bearer <SWAP_TOKEN>` and JSON `{ "video_url": "<mp4 url>", "reference_image": "<data uri>" }`.
 - Response JSON: `video_base64` (h264 mp4, source audio copied), `last_frame_base64` (JPEG of the swapped last frame), `stats` (`frames`, `frames_with_face`, `fps`, `swap_ms`, `ms_per_frame`, `similarity_before`, `similarity_after`, `restored`).
 - 403 without a valid token, 422 when the reference has no single face or the clip cannot be read, 500 on anything else.
-- Detector every 2nd frame, swap and restore on every detected face, clips capped at 600 frames. A reference whose face fills the whole photo is retried with a replicated border, since the detector misses edge-to-edge faces.
+- Detection, swap and restore on every frame, three frames in flight across threads, clips capped at 600 frames. A reference whose face fills the whole photo is retried with a replicated border, since the detector misses edge-to-edge faces.
 - `GET /health` is unauthenticated and doubles as the warm-up probe (`/api/live/swapWarm`, called by the client when a swap session starts).
 
 ## Server contract

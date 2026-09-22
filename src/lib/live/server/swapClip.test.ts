@@ -89,7 +89,7 @@ describe("swapClip", () => {
       similarityAfter: 0.72,
       restored: true,
     });
-    expect(outcome.costUsd).toBeCloseTo((12 * 1.1) / 3600, 6);
+    expect(outcome.costUsd).toBeCloseTo((12 * 1.95) / 3600, 6);
   });
 
   it("throws before contacting the service when it is not configured", async () => {

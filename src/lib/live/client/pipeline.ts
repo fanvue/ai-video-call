@@ -522,8 +522,8 @@ export class ClipPipeline {
         state: anchorAtSubmit.state,
       },
       job: { kind: "idle" },
-      // Idle is never committed as canon or reused as a seed, so always use the faster turbo backend.
-      backend: "turbo",
+      // Idle is never committed as canon or reused as a seed, so use the faster turbo backend; swap mode keeps swap, or the filler (most of what plays) would show the unswapped face.
+      backend: this.backend === "swap" ? "swap" : "turbo",
       speechMode: this.speechMode,
       useIdentityReference: false,
     };

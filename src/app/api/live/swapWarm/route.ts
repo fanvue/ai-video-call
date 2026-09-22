@@ -18,10 +18,15 @@ export async function POST() {
     );
   }
   try {
-    const response = await fetch(new URL("/health", env.SWAP_SERVICE_URL), {
-      signal: AbortSignal.timeout(55_000),
-    });
-    return NextResponse.json({ warm: response.ok });
+    // Two concurrent probes start two containers, since idle fillers and replies swap in parallel.
+    const responses = await Promise.all(
+      [0, 1].map(() =>
+        fetch(new URL("/health", env.SWAP_SERVICE_URL as string), {
+          signal: AbortSignal.timeout(55_000),
+        }),
+      ),
+    );
+    return NextResponse.json({ warm: responses.every((r) => r.ok) });
   } catch (error) {
     console.warn("live/swapWarm: health probe failed", error);
     return NextResponse.json({ warm: false });

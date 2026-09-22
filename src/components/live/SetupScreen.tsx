@@ -185,9 +185,9 @@ export const SetupScreen = ({ busy, error, onSubmit }: SetupScreenProps) => {
             {backend === "swap" ? (
               <p className="text-xs text-[var(--muted)]">
                 Each Turbo clip gets the reference face swapped in and restored
-                on our own GPU before it plays (about $1.10/hr of GPU time, a
-                few cents per clip). Adds a few seconds per clip; the swapped
-                last frame seeds the next clip so identity re-locks every clip.
+                on our own GPU before it plays (about $1.95/hr of GPU time, a
+                cent or two per clip). Adds about 5s per clip; the swapped last
+                frame seeds the next clip so identity re-locks every clip.
               </p>
             ) : null}
             {backend === "director" ? (

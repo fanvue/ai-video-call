@@ -4,7 +4,7 @@ Implements the service half of `docs/swap-mode-contract.md`: `POST /swapClip` ta
 
 ## Modal (current POC host)
 
-Deployed to the `jamal-77992` personal workspace on 2026-09-22; move to a Fanvue workspace before anyone else depends on it.
+Deployed to the `jamal-77992` personal workspace on 2026-09-22 (L40S, up to 3 containers); move to a Fanvue workspace before anyone else depends on it.
 
 ```bash
 .venv-fal/bin/modal deploy services/swap/modal_app.py
@@ -14,7 +14,7 @@ Base URL: `https://jamal-77992--ai-video-swap-swapservice-web.modal.run` (Vercel
 
 Smoke test: `.venv-fal/bin/python scratchpad/swap_clip_smoke.py <clip.mp4> <reference.jpg>` sends a local clip through the deployed class (Modal auth, no token needed) and writes the swapped mp4 and its last frame next to it.
 
-Measured 2026-09-22 on a 101-frame 542x988 24fps clip, A10G, `cpu=4`: warm 49 ms/frame (detect 5, swap 21, restore 20), so a 10s turbo clip costs about 12s; cold start adds about 35s, which is why the app pings `/health` when a swap session starts. Identity: ArcFace cosine to the reference went from -0.04 (a different persona) to 0.86 after the swap. GPEN-512 was 140 ms/frame for no visible gain on a 480P face, hence GPEN-256.
+Measured 2026-09-22 on a 101-frame 542x988 24fps clip: A10G sequential 49 ms/frame; three frames in flight 36 ms/frame; L40S with three in flight 16 ms/frame (detect 13, swap 13, restore 20 of thread time), so a 10s turbo clip costs about 4 to 5s of GPU time. Cold start adds about 35s, which is why the app pings `/health` twice when a swap session starts (two containers, since idle fillers and replies swap concurrently). Identity: ArcFace cosine to the reference went from -0.04 (a different persona) to 0.86 after the swap. GPEN-512 was 140 ms/frame for no visible gain on a 480P face, hence GPEN-256.
 
 ## fal (target host)
 
@@ -36,7 +36,7 @@ python3 -m venv .venv-fal && . .venv-fal/bin/activate && pip install fal
 
 The deploy prints `https://fal.run/<team>/ai-video-swap`; point `SWAP_SERVICE_URL` at it.
 
-## Cost (fal list prices, Sept 2026; Modal A10G is $1.10/hr too)
+## Cost (fal list prices, Sept 2026; Modal: A10G $1.10/hr, L40S $1.95/hr)
 
 | GPU          | $/hr | $/s     | vs Lucy $0.02/s |
 | ------------ | ---- | ------- | --------------- |

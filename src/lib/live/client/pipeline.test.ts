@@ -1447,6 +1447,31 @@ describe("ClipPipeline", () => {
     expect(seeds.has(ANCHOR_0)).toBe(true);
   });
 
+  it.each([
+    ["swap", "swap"],
+    ["reference", "turbo"],
+    ["turbo", "turbo"],
+  ] as const)(
+    "renders idle fillers on %s mode with the %s backend",
+    async (backend, idleBackend) => {
+      const requests: ClipRequest[] = [];
+      const queue = makeJobQueue();
+      const pipeline = trackedPipeline({
+        backend,
+        now: nowFn,
+        onEvent: () => {},
+        render: async (req) => {
+          requests.push(req);
+          return delayed(() => chainAdvancingResult(req));
+        },
+      });
+      pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+      await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+      const idle = requests.find((r) => r.job.kind === "idle");
+      expect(idle?.backend).toBe(idleBackend);
+    },
+  );
+
   it("never re-seeds on turbo: the next plan chains from the drifted tail rather than jumping back to the upload", async () => {
     const requests: ClipRequest[] = [];
     const queue = makeJobQueue();

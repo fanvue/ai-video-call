@@ -50,6 +50,7 @@ export const swapClip = async ({
   if (!env.SWAP_SERVICE_URL || !env.SWAP_TOKEN) {
     throw new Error("Swap service is not configured");
   }
+  const startedAt = Date.now();
   const response = await fetch(new URL("/swapClip", env.SWAP_SERVICE_URL), {
     method: "POST",
     headers: {
@@ -70,6 +71,7 @@ export const swapClip = async ({
   }
   const parsed = swapServiceResponseSchema.parse(await response.json());
   const stamp = Date.now();
+  const serviceMs = stamp - startedAt;
   const [swappedVideoUrl, lastFrameUrl] = await Promise.all([
     uploadToFal(
       Buffer.from(parsed.video_base64, "base64"),
@@ -83,6 +85,9 @@ export const swapClip = async ({
     ),
   ]);
   const { stats } = parsed;
+  console.log(
+    `swapClip: serviceMs=${serviceMs} (swap ${stats.swap_ms}) rehostMs=${Date.now() - stamp} frames=${stats.frames}`,
+  );
   return {
     videoUrl: swappedVideoUrl,
     lastFrameUrl,

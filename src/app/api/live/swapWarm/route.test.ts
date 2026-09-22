@@ -34,10 +34,11 @@ describe("POST /api/live/swapWarm", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("probes the service health endpoint without the token and reports warm", async () => {
+  it("probes the service health endpoint twice, without the token, and reports warm", async () => {
     fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
     const response = await POST();
     expect(await response.json()).toEqual({ warm: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
     expect(url.toString()).toBe("https://swap.test/health");
     expect(init.headers).toBeUndefined();
