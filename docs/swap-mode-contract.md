@@ -1,6 +1,6 @@
 # Swap mode: self-hosted realtime identity swap over the Turbo pipeline
 
-Status: service half written in `services/swap/app.py`, not deployed. Blocked on a fal serverless deploy (fal's Python CLI `fal auth login`, run by a human; the local `fal` binary is a different tool) and a GPU budget decision. Client half not started.
+Status: service half live on Modal for the POC (see `services/swap/README.md`); fal host written but blocked on serverless access for the Fanvue team. Client half not started.
 
 ## Why
 

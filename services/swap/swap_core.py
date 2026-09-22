@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import json
 import time
+import traceback
 from typing import Any, Protocol
 
 # InsightFace inswapper_128 is research-only licensed; a commercial license is
@@ -19,7 +20,7 @@ MAX_FRAME_LAG = 2
 # gfpgan is left out: its basicsr dependency has a broken cuda-toolkit setup_requires on Python 3.11 images. Restorer is opt-in via SwapEngine(restore=True) once that is solved.
 REQUIREMENTS = [
     "insightface==0.7.3",
-    "onnxruntime-gpu==1.18.0",
+    "onnxruntime-gpu==1.19.2",
     "opencv-python-headless==4.10.0.84",
     "numpy<2",
 ]
@@ -30,7 +31,7 @@ class WebSocketLike(Protocol):
     async def receive(self) -> dict[str, Any]: ...
     async def send_text(self, data: str) -> None: ...
     async def send_bytes(self, data: bytes) -> None: ...
-    async def close(self, code: int = 1000) -> None: ...
+    async def close(self, code: int = 1000, reason: str = "") -> None: ...
 
 
 class SwapEngine:
@@ -112,10 +113,10 @@ async def serve_ws(engine: SwapEngine, websocket: WebSocketLike) -> None:
                         await websocket.send_text(
                             json.dumps({"type": "error", "reason": str(error)})
                         )
-                        await websocket.close(code=1008)
+                        await websocket.close(code=1008, reason="bad reference")
                         return
                 elif control.get("type") == "stop":
-                    await websocket.close(code=1000)
+                    await websocket.close(code=1000, reason="stopped")
                     return
                 continue
 
@@ -145,5 +146,6 @@ async def serve_ws(engine: SwapEngine, websocket: WebSocketLike) -> None:
                     json.dumps({"type": "metrics", "frame_ms": round(elapsed_ms, 1)})
                 )
     except Exception as error:  # surface, never swallow: the client shows the failure
+        traceback.print_exc()
         await websocket.send_text(json.dumps({"type": "error", "reason": str(error)}))
-        await websocket.close(code=1011)
+        await websocket.close(code=1011, reason="swap failed")
