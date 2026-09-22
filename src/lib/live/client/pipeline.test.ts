@@ -1578,6 +1578,43 @@ describe("ClipPipeline", () => {
     expect(requests.length).toBe(1 + LIVE_TUNABLES.SWAP_IDLE_BUFFER_TARGET);
   });
 
+  it("swap mode holds new fillers while a request renders, so the reply's swap does not queue behind them, and resumes once it lands", async () => {
+    const requests: ClipRequest[] = [];
+    const queue = makeJobQueue();
+    const replyDeferred = defer<ClipResult>();
+    const pipeline = trackedPipeline({
+      backend: "swap",
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        requests.push(req);
+        if (req.job.kind === "reply") {
+          return replyDeferred.promise;
+        }
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting resolves, fillers submitted
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // fillers ready
+    expect(pipeline.getBufferStats().idleReady).toBe(
+      LIVE_TUNABLES.SWAP_IDLE_BUFFER_TARGET,
+    );
+
+    queue.push(REPLY_JOB);
+    pipeline.onRequestEnqueued();
+    const replyRequest = requests.find((r) => r.job.kind === "reply");
+    expect(replyRequest).toBeDefined();
+    pipeline.nextClip(); // greeting
+    pipeline.nextClip(); // one filler leaves the shelf: normally a refill
+    expect(pipeline.getBufferStats().idleInflight).toBe(0);
+
+    replyDeferred.resolve(chainAdvancingResult(replyRequest as ClipRequest));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pipeline.getBufferStats().idleInflight).toBeGreaterThan(0);
+  });
+
   it("sizes the next idle to the slowest recent idle production plus headroom, within the clip bounds", async () => {
     const requests: ClipRequest[] = [];
     const queue = makeJobQueue();

@@ -581,6 +581,14 @@ export class ClipPipeline {
     if (!snapshot) {
       return;
     }
+    // The swap service takes one clip at a time (6 to 7 s each), and prod showed replies queueing 7 to 15 s behind fillers submitted while they rendered. While a request is in flight, fillers wait unless the shelf is bare.
+    if (
+      this.backend === "swap" &&
+      this.chainInflight &&
+      this.idleReady.length > 0
+    ) {
+      return;
+    }
     while (
       this.idleLaneTargetStockCount() < this.idleBufferTarget() &&
       this.idleInflightCount < this.idleMaxInflight()

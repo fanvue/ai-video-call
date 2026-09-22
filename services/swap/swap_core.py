@@ -28,6 +28,8 @@ GPEN_URL = GPEN_URLS[RESTORE_SIZE]
 ENHANCER_URL = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/real_esrgan_x2_fp16.onnx"
 # Full-strength output over-sharpens into a painted look (Laplacian 139 on a frame whose first generation measured 72); half puts a 5th-generation frame back at first-generation sharpness (70).
 ENHANCE_BLEND = 0.5
+# Prod frames above this Laplacian variance came out of the enhancer softer (108 -> 98, 128 -> 112): the x2 model denoises texture it did not need to rebuild. Only frames the chain has already blurred go through it.
+ENHANCE_MAX_SHARPNESS = 80.0
 # How much of the restored face replaces the swapped one; 1.0 looks waxy, FaceFusion defaults to 0.8.
 RESTORE_BLEND = 0.8
 MAX_CLIP_FRAMES = 30 * 20
@@ -322,12 +324,14 @@ class SwapEngine:
         swap_ms = int((time.perf_counter() - started) * 1000)
         seed_frame = last_swapped
         enhance_ms = 0
-        sharpness_before = sharpness_after = None
-        if self.enhancer is not None:
+        enhanced = False
+        sharpness_before = round(self.sharpness(last_swapped), 1)
+        sharpness_after = sharpness_before
+        if self.enhancer is not None and sharpness_before < ENHANCE_MAX_SHARPNESS:
             enhance_started = time.perf_counter()
             seed_frame = self.enhance_frame(last_swapped)
             enhance_ms = int((time.perf_counter() - enhance_started) * 1000)
-            sharpness_before = round(self.sharpness(last_swapped), 1)
+            enhanced = True
             sharpness_after = round(self.sharpness(seed_frame), 1)
         stats = ClipSwapStats(
             frames=frames,
@@ -341,7 +345,7 @@ class SwapEngine:
             detect_ms=int(timings["detect"] * 1000),
             swap_stage_ms=int(timings["swap"] * 1000),
             restore_ms=int(timings["restore"] * 1000),
-            enhanced=self.enhancer is not None,
+            enhanced=enhanced,
             enhance_ms=enhance_ms,
             sharpness_before=sharpness_before,
             sharpness_after=sharpness_after,
