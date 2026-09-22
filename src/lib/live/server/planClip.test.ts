@@ -759,51 +759,6 @@ describe("planClip: compound multi-act request", () => {
   });
 });
 
-describe("planClip: idle duration", () => {
-  it("uses the pipeline's requested idle length, defaulting to IDLE_CLIP_SEC", () => {
-    const base = {
-      session: session(),
-      speechMode: "text" as const,
-    };
-    expect(planClip({ ...base, job: { kind: "idle" } }).durationSec).toBe(
-      LIVE_TUNABLES.IDLE_CLIP_SEC,
-    );
-    expect(
-      planClip({ ...base, job: { kind: "idle", durationSec: 15 } }).durationSec,
-    ).toBe(15);
-  });
-});
-
-describe("planClip: swap mode clip length", () => {
-  it("stretches chain clips to SWAP_ACTION_CLIP_SEC with a hold to the new end, leaves idle to the pipeline and other backends alone", () => {
-    const base = { session: session(), speechMode: "text" as const };
-    const greeting = planClip({
-      ...base,
-      job: { kind: "greeting" },
-      backend: "swap",
-    });
-    expect(greeting.durationSec).toBe(LIVE_TUNABLES.SWAP_ACTION_CLIP_SEC);
-    expect(greeting.prompt).toContain(
-      `By ${LIVE_TUNABLES.ACTION_CLIP_SEC}s she is`,
-    );
-    expect(greeting.prompt).toContain(
-      `until the clip ends at ${LIVE_TUNABLES.SWAP_ACTION_CLIP_SEC}s`,
-    );
-    expect(greeting.prompt).not.toContain("The clip ends there.");
-
-    const idle = planClip({ ...base, job: { kind: "idle" }, backend: "swap" });
-    expect(idle.durationSec).toBe(LIVE_TUNABLES.IDLE_CLIP_SEC);
-
-    const turbo = planClip({
-      ...base,
-      job: { kind: "greeting" },
-      backend: "turbo",
-    });
-    expect(turbo.durationSec).toBe(LIVE_TUNABLES.ACTION_CLIP_SEC);
-    expect(turbo.prompt).toContain("The clip ends there.");
-  });
-});
-
 describe("planClip: idle variety", () => {
   it("rotates the idle life-line deterministically with elapsed time, without changing pose/clothing/props", () => {
     const prompts = [0, 1, 2, 3, 4, 5].map(

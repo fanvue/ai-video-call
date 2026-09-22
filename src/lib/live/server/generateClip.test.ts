@@ -38,7 +38,7 @@ vi.mock("./frameGuard", () => ({
 // Never called on the turbo backend these suites use; mocked because the real module imports @/env.
 vi.mock("./swapClip", () => ({
   SWAP_BUDGET_MS: 150_000,
-  SWAP_GREETING_BUDGET_MS: 40_000,
+  SWAP_GREETING_BUDGET_MS: 25_000,
   swapClip: vi.fn(),
   failedSwapReport: vi.fn(),
 }));
@@ -228,28 +228,8 @@ describe("generateClip: idle", () => {
 });
 
 describe("generateClip: hold clips other than idle", () => {
-  it("greeting chains like any other hold clip: midpoint and last frame checked, last frame becomes the seed", async () => {
+  it("greeting checks both the midpoint and last frame, and is rejected when the last frame shows extra limbs", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
-    guardFrame.mockResolvedValue({
-      checked: true,
-      issues: [],
-      observed: { wardrobe: {} },
-    });
-    const req = clipRequest({ job: { kind: "greeting" } });
-
-    const result = await generateClip(req);
-
-    expect(render).toHaveBeenCalledWith(
-      expect.objectContaining({ endFrameUrl: undefined }),
-    );
-    expect(guardFrame).toHaveBeenCalledTimes(2);
-    expect(result.loops).toBe(false);
-    expect(result.seedFrameUrl).toBe(LAST_URL);
-  });
-
-  it("checkIn checks both the midpoint and last frame, and is rejected when the last frame shows extra limbs", async () => {
-    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
-    writeCheckIn.mockResolvedValue(null);
     guardFrame.mockImplementation(
       guardByFrame({
         [MID_URL]: { issues: [], observed: { wardrobe: {} } },
@@ -259,7 +239,7 @@ describe("generateClip: hold clips other than idle", () => {
         },
       }),
     );
-    const req = clipRequest({ job: { kind: "checkIn", channel: "chat" } });
+    const req = clipRequest({ job: { kind: "greeting" } });
 
     const result = await generateClip(req);
 
@@ -270,15 +250,14 @@ describe("generateClip: hold clips other than idle", () => {
     expect(result.verdict).toBe("rejected");
   });
 
-  it("checkIn approves and uses the last frame as its next seed when both checks pass clean", async () => {
+  it("greeting approves and uses the last frame as its next seed when both checks pass clean", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
-    writeCheckIn.mockResolvedValue(null);
     guardFrame.mockResolvedValue({
       checked: true,
       issues: [],
       observed: { wardrobe: {} },
     });
-    const req = clipRequest({ job: { kind: "checkIn", channel: "chat" } });
+    const req = clipRequest({ job: { kind: "greeting" } });
 
     const result = await generateClip(req);
 

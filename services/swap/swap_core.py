@@ -65,7 +65,6 @@ class ClipSwapStats:
     detect_ms: int
     swap_stage_ms: int
     restore_ms: int
-    download_ms: int = 0
 
 
 # The default EXHAUSTIVE cuDNN search made the first clip on a fresh container ~8x slower than the second.
@@ -348,19 +347,9 @@ def swap_clip_from_url(
 ) -> dict[str, Any]:
     with tempfile.TemporaryDirectory() as directory:
         source_path = os.path.join(directory, "source.mp4")
-        started = time.perf_counter()
         download(video_url, source_path)
-        download_ms = int((time.perf_counter() - started) * 1000)
         with open(source_path, "rb") as file:
-            result = swap_clip_from_bytes(engine, file.read(), reference_data_uri)
-    result["stats"]["download_ms"] = download_ms
-    stats = result["stats"]
-    print(
-        f"swapClip: frames={stats['frames']} download_ms={download_ms} swap_ms={stats['swap_ms']} "
-        f"ms_per_frame={stats['ms_per_frame']} similarity={stats['similarity_before']}->{stats['similarity_after']}",
-        flush=True,
-    )
-    return result
+            return swap_clip_from_bytes(engine, file.read(), reference_data_uri)
 
 
 def swap_clip_from_bytes(

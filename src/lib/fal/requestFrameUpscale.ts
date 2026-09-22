@@ -6,12 +6,15 @@ import {
 } from "./client";
 import { frameUpscaleRequestSchema, frameUpscaleResultSchema } from "./schemas";
 
-const FRAME_UPSCALE_MODEL_PATH = "fal-ai/seedvr/upscale/image";
+const FRAME_UPSCALE_MODEL_PATH = "fal-ai/clarity-upscaler";
 
 export const submitFrameUpscale = async (
   payload: z.infer<typeof frameUpscaleRequestSchema>,
 ) => {
-  const body = frameUpscaleRequestSchema.parse(payload);
+  const body = frameUpscaleRequestSchema.parse({
+    ...payload,
+    enable_safety_checker: false,
+  });
   return falService.post<FalQueueSubmitResponse>(
     `/${FRAME_UPSCALE_MODEL_PATH}`,
     body,

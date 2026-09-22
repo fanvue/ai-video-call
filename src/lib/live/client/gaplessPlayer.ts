@@ -39,7 +39,6 @@ const noopClipStarted = (): void => {};
 const noopGetNextClip = (): null => null;
 const noopHasInterruptReady = (): boolean => false;
 const noopClipReturned = (): void => {};
-const noopClipFailed = (): void => {};
 
 // timeupdate fires only ~4Hz, which alone leaves a visible gap before the swap point.
 // Resolves false on timeout: a readiness timeout is a failure, not a fallback success.
@@ -132,9 +131,6 @@ export class GaplessPlayer {
   private hasInterruptReady: () => boolean = noopHasInterruptReady;
   // A preloaded idle displaced by a cut-in goes back to the pipeline rather than being lost.
   private onClipReturned: (clipId: string) => void = noopClipReturned;
-  // Telemetry only: a clip that never became playable or never produced a frame.
-  private onClipFailed: (clipId: string, reason: string) => void =
-    noopClipFailed;
 
   constructor(private readonly options: GaplessPlayerOptions) {}
 
@@ -144,12 +140,6 @@ export class GaplessPlayer {
 
   setClipReturnedHandler(handler: (clipId: string) => void): void {
     this.onClipReturned = handler;
-  }
-
-  setClipFailedHandler(
-    handler: (clipId: string, reason: string) => void,
-  ): void {
-    this.onClipFailed = handler;
   }
 
   setSpeechMode(mode: SpeechMode): void {
@@ -300,7 +290,7 @@ export class GaplessPlayer {
     if (!playable) {
       // Readiness timeout is a failure, not a fallback success: drop this attempt and let the
       // pipeline see it come back so it can requeue or discard it.
-      this.failClip(clip, "preloadNotPlayable");
+      this.failClip(clip);
       return;
     }
     this.preloadedSlot = targetSlot;
@@ -316,8 +306,7 @@ export class GaplessPlayer {
   // and go look for something else rather than leaving the player stuck on nothing.
   // A clip gets one more chance after a readiness failure; a second failure drops it, otherwise a
   // broken URL would be requeued at the front and retried forever, one load timeout per cycle.
-  private failClip(clip: ClipToPlay, reason: string): void {
-    this.onClipFailed(clip.id, reason);
+  private failClip(clip: ClipToPlay): void {
     if (this.preloadedClip === clip) {
       this.preloadedClip = null;
       this.preloadedSlot = null;
@@ -346,7 +335,6 @@ export class GaplessPlayer {
     }
     if (!playable) {
       // Nothing was ever shown, so there's no outgoing element to protect: just ask for another.
-      this.onClipFailed(clip.id, "startNotPlayable");
       this.onClipReturned(clip.id);
       this.start();
       return;
@@ -368,7 +356,6 @@ export class GaplessPlayer {
       return;
     }
     if (!confirmed) {
-      this.onClipFailed(clip.id, "startNoFrame");
       this.onClipReturned(clip.id);
       this.start();
       return;
@@ -457,7 +444,7 @@ export class GaplessPlayer {
       return;
     }
     if (!confirmed) {
-      this.failClip(clip, "swapNoFrame");
+      this.failClip(clip);
       // A non-looping outgoing element that already reached its end falls into the existing hold
       // behavior; a looping one just keeps looping untouched.
       if (outgoing && !outgoing.loop) {

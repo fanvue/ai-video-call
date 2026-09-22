@@ -78,18 +78,6 @@ export const warmSwap = async (): Promise<void> => {
   await postJson<{ warm: boolean }>("/api/live/swapWarm", {});
 };
 
-export type TelemetryDetail = Record<string, string | number | boolean | null>;
-
-// Fire-and-forget: playback stalls are invisible in production logs otherwise.
-export const reportTelemetry = (
-  event: string,
-  detail: TelemetryDetail = {},
-) => {
-  postJson<{ ok: boolean }>("/api/live/telemetry", { event, detail }).catch(
-    () => undefined,
-  );
-};
-
 export const composeDirectorPrompt = async (input: {
   creator: CreatorProfile;
   transcript: TranscriptEntry[];

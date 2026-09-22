@@ -92,8 +92,6 @@ export class ClipPipeline {
 
   private idleReady: ClipResult[] = [];
   private idleInflightCount = 0;
-  // In-flight idles per seed frame, so old-anchor idles still rendering do not block a bridge idle for a new chain tail.
-  private idleInflightBySeed = new Map<string, number>();
   // Non-looping idle clips drift their own end frame, so match for playback by the anchor they were rendered FROM.
   private idleAnchorByClipId = new Map<string, string>();
 
@@ -114,9 +112,6 @@ export class ClipPipeline {
   private totalCostUsd = 0;
   private costCapReached = false;
   private lastUpscaleAtMs = -Infinity;
-  private lastSceneResetAtMs = -Infinity;
-  // Wall time of the last few idle productions (render + swap + rehost), so the next idle can be made at least that long.
-  private idleProductionMs: number[] = [];
 
   constructor(options: ClipPipelineOptions) {
     this.render = options.render;
@@ -179,20 +174,16 @@ export class ClipPipeline {
     this.getNextJob = getNextJob;
     const snapshot = getSnapshot();
     this.anchor = { frameUrl: snapshot.seedFrameUrl, state: snapshot.state };
-    // Only reference re-seeds back to the photo; on swap the raw upload pops against generated frames, so its trusted frame is the greeting's tail (registered on promotion).
-    if (this.backend === "reference") {
-      this.trustedSeedByLook.set(
-        lookKey(snapshot.state),
-        snapshot.seedFrameUrl,
-      );
-    }
-    this.lastSceneResetAtMs = this.now();
+    this.trustedSeedByLook.set(lookKey(snapshot.state), snapshot.seedFrameUrl);
     this.displayAnchorFrameUrl = snapshot.seedFrameUrl;
     this.playoutCursorFrameUrl = snapshot.seedFrameUrl;
     this.submitChainJob(initialJob, 0);
-    // Pre-stocked fillers seed from the upload; only reference lands the greeting back on it, elsewhere they would never match the greeting's tail.
-    if (this.backend === "reference") {
-      this.fillIdleStockpile();
+    // Idle fillers render alongside the greeting on either backend, so one is ready the moment it ends.
+    while (
+      this.idleInflightCount < LIVE_TUNABLES.IDLE_MAX_INFLIGHT &&
+      !this.costCapReached
+    ) {
+      this.submitIdleJob(this.anchor, 0);
     }
   }
 
@@ -353,12 +344,11 @@ export class ClipPipeline {
     let newAnchor = tail;
     if (!trusted) {
       this.trustedSeedByLook.set(key, tail.frameUrl);
-    } else if (this.backend !== "reference" && !this.sceneResetDue()) {
+    } else if (this.backend !== "reference") {
       // Turbo has no identity reference pulling the tail back toward the photo, so a re-seed there is a hard jump to the upload; continuity wins over drift.
     } else if (trusted !== tail.frameUrl) {
       this.seedAlias.set(tail.frameUrl, trusted);
       newAnchor = { ...tail, frameUrl: trusted };
-      this.lastSceneResetAtMs = this.now();
     }
     this.anchor = newAnchor;
     this.onEvent({
@@ -368,49 +358,6 @@ export class ClipPipeline {
       atMs: this.now(),
     });
     this.fillIdleStockpile();
-  }
-
-  // Swap locks the face every clip, so a periodic cut back to the trusted frame only resets the drifted scene around it.
-  private sceneResetDue(): boolean {
-    return (
-      this.backend === "swap" &&
-      this.now() - this.lastSceneResetAtMs >=
-        LIVE_TUNABLES.SWAP_SCENE_RESET_INTERVAL_MS
-    );
-  }
-
-  private idleBufferTarget(): number {
-    return this.backend === "swap"
-      ? LIVE_TUNABLES.SWAP_IDLE_BUFFER_TARGET
-      : LIVE_TUNABLES.IDLE_BUFFER_TARGET;
-  }
-
-  private idleMaxInflight(): number {
-    return this.backend === "swap"
-      ? LIVE_TUNABLES.SWAP_IDLE_MAX_INFLIGHT
-      : LIVE_TUNABLES.IDLE_MAX_INFLIGHT;
-  }
-
-  // Long enough that the next filler is ready before this one ends, judged from how long the last few took to make.
-  private nextIdleDurationSec(): number {
-    if (this.idleProductionMs.length === 0) {
-      return LIVE_TUNABLES.IDLE_CLIP_SEC;
-    }
-    const slowestMs = Math.max(...this.idleProductionMs);
-    return Math.min(
-      LIVE_TUNABLES.MAX_CLIP_SEC,
-      Math.max(
-        LIVE_TUNABLES.IDLE_CLIP_SEC,
-        Math.ceil(slowestMs / 1000) + LIVE_TUNABLES.IDLE_HEADROOM_SEC,
-      ),
-    );
-  }
-
-  private recordIdleProduction(startedAtMs: number): void {
-    this.idleProductionMs.push(this.now() - startedAtMs);
-    if (this.idleProductionMs.length > 3) {
-      this.idleProductionMs.shift();
-    }
   }
 
   private submitChainJob(job: ClipJob, attempt: number): void {
@@ -494,11 +441,10 @@ export class ClipPipeline {
     this.addCost(result.costUsd);
     this.announceIfRecovered();
     this.tryAdvanceChain();
-    const upscaleIntervalMs =
-      this.backend === "swap"
-        ? LIVE_TUNABLES.SWAP_UPSCALE_INTERVAL_MS
-        : LIVE_TUNABLES.UPSCALE_INTERVAL_MS;
-    if (this.now() - this.lastUpscaleAtMs >= upscaleIntervalMs) {
+    if (
+      this.now() - this.lastUpscaleAtMs >=
+      LIVE_TUNABLES.UPSCALE_INTERVAL_MS
+    ) {
       this.lastUpscaleAtMs = this.now();
       this.upscaleChainTailInBackground(result.seedFrameUrl);
     }
@@ -536,31 +482,14 @@ export class ClipPipeline {
 
   // Only stock seeded from the idle lane target counts toward the buffer target; others stay
   // playable until consumed (an old-anchor idle) or promoted (a bridge idle once its tail lands).
-  private idleLaneTargetStockCount(): number {
+  private idleLaneTargetReadyCount(): number {
     const target = this.idleLaneTarget();
-    const ready = this.idleReady.filter((clip) =>
+    return this.idleReady.filter((clip) =>
       this.sameSeed(
         this.idleAnchorByClipId.get(clip.clipId) ?? "",
         target.frameUrl,
       ),
     ).length;
-    let inflight = 0;
-    for (const [seed, count] of this.idleInflightBySeed) {
-      if (this.sameSeed(seed, target.frameUrl)) {
-        inflight += count;
-      }
-    }
-    return ready + inflight;
-  }
-
-  private trackIdleInflight(seed: string, delta: number): void {
-    this.idleInflightCount += delta;
-    const next = (this.idleInflightBySeed.get(seed) ?? 0) + delta;
-    if (next <= 0) {
-      this.idleInflightBySeed.delete(seed);
-    } else {
-      this.idleInflightBySeed.set(seed, next);
-    }
   }
 
   // Runs even while the chain lane is busy: idle filler is what covers a chain render's latency.
@@ -573,8 +502,9 @@ export class ClipPipeline {
       return;
     }
     while (
-      this.idleLaneTargetStockCount() < this.idleBufferTarget() &&
-      this.idleInflightCount < this.idleMaxInflight()
+      this.idleLaneTargetReadyCount() + this.idleInflightCount <
+        LIVE_TUNABLES.IDLE_BUFFER_TARGET &&
+      this.idleInflightCount < LIVE_TUNABLES.IDLE_MAX_INFLIGHT
     ) {
       this.submitIdleJob(this.idleLaneTarget(), 0);
     }
@@ -591,19 +521,15 @@ export class ClipPipeline {
         seedFrameUrl: anchorAtSubmit.frameUrl,
         state: anchorAtSubmit.state,
       },
-      job: { kind: "idle", durationSec: this.nextIdleDurationSec() },
+      job: { kind: "idle" },
       // Idle is never committed as canon or reused as a seed, so use the faster turbo backend; swap mode keeps swap, or the filler (most of what plays) would show the unswapped face.
       backend: this.backend === "swap" ? "swap" : "turbo",
       speechMode: this.speechMode,
       useIdentityReference: false,
     };
-    this.trackIdleInflight(anchorAtSubmit.frameUrl, 1);
-    const startedAtMs = this.now();
+    this.idleInflightCount += 1;
     this.render(request).then(
-      (result) => {
-        this.recordIdleProduction(startedAtMs);
-        this.handleIdleSettled(anchorAtSubmit, attempt, result, null);
-      },
+      (result) => this.handleIdleSettled(anchorAtSubmit, attempt, result, null),
       (error: unknown) =>
         this.handleIdleSettled(anchorAtSubmit, attempt, null, error),
     );
@@ -615,7 +541,7 @@ export class ClipPipeline {
     result: ClipResult | null,
     error: unknown,
   ): void {
-    this.trackIdleInflight(anchorAtSubmit.frameUrl, -1);
+    this.idleInflightCount -= 1;
     if (this.disposed) {
       return;
     }

@@ -100,15 +100,7 @@ export type UseLiveSessionDeps = {
   fetchLucyToken: () => Promise<string>;
   // Swap mode only; starts the GPU container before the first clip needs it.
   warmSwap: () => Promise<void>;
-  // Optional: playback and connect events for the server log; tests leave it out.
-  reportTelemetry?: (
-    event: string,
-    detail: Record<string, string | number | boolean | null>,
-  ) => void;
 };
-
-// A join that has not shown the greeting by now is the "stuck in connecting" report; log where it stalled.
-const CONNECT_STALL_MS = 60_000;
 
 const EMPTY_BUFFER_DEPTH: BufferDepth = {
   idleReady: 0,
@@ -202,25 +194,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   const [renderStats, setRenderStats] = useState<RenderPercentiles | null>(
     null,
   );
-  const [connectStage, setConnectStageState] =
-    useState<ConnectStage>("uploading");
-  const connectStageRef = useRef<ConnectStage>("uploading");
-  const connectStartedAtMsRef = useRef(0);
-  const connectStallTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
-  const reportTelemetry = deps.reportTelemetry;
-  const setConnectStage = useCallback(
-    (stage: ConnectStage) => {
-      connectStageRef.current = stage;
-      setConnectStageState(stage);
-      reportTelemetry?.("connectStage", {
-        stage,
-        ms: Date.now() - connectStartedAtMsRef.current,
-      });
-    },
-    [reportTelemetry],
-  );
+  const [connectStage, setConnectStage] = useState<ConnectStage>("uploading");
   const [roomEvents, setRoomEvents] = useState<RoomChatMessage[]>([]);
   const [viewerCount, setViewerCount] = useState(0);
   const [typingDevice, setTypingDevice] = useState<TypingDevice>(null);
@@ -385,9 +359,6 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     () =>
       new GaplessPlayer({
         onStatusChange: (playerStatus: PlayerStatus) => {
-          if (playerStatus === "holding" || playerStatus === "needsTap") {
-            deps.reportTelemetry?.("playerStatus", { status: playerStatus });
-          }
           setNeedsTap(playerStatus === "needsTap");
           if (playerStatus === "holding") {
             setStatus((current) => (current === "live" ? "holding" : current));
@@ -484,15 +455,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     if (!greetingPlayedRef.current) {
       return;
     }
-    if (connectStallTimeoutRef.current) {
-      clearTimeout(connectStallTimeoutRef.current);
-      connectStallTimeoutRef.current = null;
-      reportTelemetry?.("connected", {
-        ms: Date.now() - connectStartedAtMsRef.current,
-      });
-    }
     setStatus((current) => (current === "connecting" ? "live" : current));
-  }, [reportTelemetry]);
+  }, []);
 
   const handleClipStarted = useCallback(
     (clipId: string) => {
@@ -535,11 +499,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     player.setNextClipHandler(getNextClip);
     player.setInterruptReadyHandler(hasInterruptReady);
     player.setClipReturnedHandler(returnClip);
-    player.setClipFailedHandler((clipId, reason) => {
-      reportTelemetry?.("clipFailed", { clipId, reason });
-    });
   }, [
-    reportTelemetry,
     player,
     revealIfDue,
     handleClipStarted,
@@ -729,7 +689,6 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       refreshQueueStrip,
       refreshRequestStatuses,
       maybeGoLive,
-      setConnectStage,
     ],
   );
 
@@ -938,21 +897,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     async (file: File, sceneId: SceneId, options: StartOptions) => {
       setError(null);
       setStatus("connecting");
-      connectStartedAtMsRef.current = Date.now();
       setConnectStage("uploading");
-      if (connectStallTimeoutRef.current) {
-        clearTimeout(connectStallTimeoutRef.current);
-      }
-      connectStallTimeoutRef.current = setTimeout(() => {
-        connectStallTimeoutRef.current = null;
-        reportTelemetry?.("connectStall", {
-          stage: connectStageRef.current,
-          backend: options.backend ?? "turbo",
-          greetingPlayed: greetingPlayedRef.current,
-          playerStatus: player.getStatus(),
-          ms: CONNECT_STALL_MS,
-        });
-      }, CONNECT_STALL_MS);
       if (options.backend === "swap") {
         deps.warmSwap().catch(() => undefined);
       }
@@ -1275,8 +1220,6 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       deps,
       handlePipelineEvent,
       player,
-      reportTelemetry,
-      setConnectStage,
       snapshotSource,
       applyLiveState,
       isBusy,
@@ -1328,10 +1271,6 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     if (tickIntervalRef.current) {
       clearInterval(tickIntervalRef.current);
       tickIntervalRef.current = null;
-    }
-    if (connectStallTimeoutRef.current) {
-      clearTimeout(connectStallTimeoutRef.current);
-      connectStallTimeoutRef.current = null;
     }
     if (errorTimeoutRef.current) {
       clearTimeout(errorTimeoutRef.current);

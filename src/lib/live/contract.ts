@@ -179,11 +179,7 @@ export type PlannedBeat = z.infer<typeof plannedBeatSchema>;
 
 export const clipJobSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("greeting") }),
-  z.object({
-    kind: z.literal("idle"),
-    // Set by the pipeline from measured idle production time so a filler plays at least as long as the next one takes to make.
-    durationSec: z.number().int().min(10).max(15).optional(),
-  }),
+  z.object({ kind: z.literal("idle") }),
   z.object({ kind: z.literal("checkIn"), channel: inputChannelSchema }),
   z.object({
     kind: z.literal("reply"),
@@ -338,16 +334,6 @@ export const LIVE_TUNABLES = {
   // A chain reply always preempts idle the instant it's ready, so 1 idle is enough buffer.
   IDLE_BUFFER_TARGET: 1,
   IDLE_MAX_INFLIGHT: 1,
-  // Swap mode makes a filler in 13 to 17s (render 3 to 4s + swap 8 to 13s), longer than it plays, so two are built at once or the buffer runs dry by a few seconds every clip.
-  SWAP_IDLE_BUFFER_TARGET: 2,
-  // One more than the target so a bridge idle for a fresh chain tail can start while two old-anchor idles are still in flight.
-  SWAP_IDLE_MAX_INFLIGHT: 3,
-  // Swap mode chain clips run the maximum length: the next clip seeds from this one's last frame so it cannot start early, and it takes 10 to 17s to make.
-  SWAP_ACTION_CLIP_SEC: 15,
-  // Next idle length = measured idle production time + this headroom, clamped to the clip bounds.
-  IDLE_HEADROOM_SEC: 1,
-  // Swap mode re-seeds a finished plan from the look's trusted frame at most this often: the face is locked per clip but the picture around it blurs as generations chain, and the cut is acceptable at a settle point.
-  SWAP_SCENE_RESET_INTERVAL_MS: 60_000,
   // A chain job (reply/beat) gets 3 attempts total; idle stays at 2 (1 retry).
   CHAIN_MAX_ATTEMPTS: 3,
   // Clips to have ready before the stream is shown as live.
@@ -361,8 +347,6 @@ export const LIVE_TUNABLES = {
   TYPING_LEAD_AFTER_IDLE_MS: 8_000,
   // How often the seed a chain job leaves behind gets upscaled in the background (see upscaleChainTailInBackground). Per-clip was too frequent: it competed with actual render calls for fal capacity and slowed clip turnaround.
   UPSCALE_INTERVAL_MS: 60_000,
-  // Swap mode restores every chain tail: the picture around the locked face blurs generation to generation, and SeedVR2 takes ~2s in the background.
-  SWAP_UPSCALE_INTERVAL_MS: 0,
   // Wall-clock trigger for the dual identity reference (see consumeIdentityReferenceDue). Moot while MAX_CHAIN_CLIPS below is 1; kept so raising that count still bounds drift in time.
   IDENTITY_REFERENCE_INTERVAL_MS: 45_000,
   // Second trigger alongside the interval, in chain clips. 1 = every chain clip carries the identity reference: production logs showed dual-reference renders no slower than single (~5s either way), and the face was visibly drifting by clip ~10 when it was periodic. See consumeIdentityReferenceDue.
