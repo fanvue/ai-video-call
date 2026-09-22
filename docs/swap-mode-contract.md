@@ -38,7 +38,8 @@ The earlier per-frame JPEG-over-WebSocket transport (2 to 3 fps effective, 330 t
 
 ## Open decisions
 
-- Whether to chunk the swap (2 s segments, playback after the first) if the per-clip delay eats too much of the idle buffer.
+- Whether to chunk the swap (2 s segments, playback after the first). The per-clip delay is currently covered by two idles in flight and idle length tracking production time (see LIVE_ENGINE.md); chunking would let a single reply reach the screen sooner.
+- The scene reset: swap mode cuts back to the look's trusted frame at a plan end at most every `SWAP_SCENE_RESET_INTERVAL_MS` (60 s), because the face stays locked but the picture around it blurs as generations chain. A softer alternative is restoring the seed frame in the service (Real-ESRGAN x2 asset is available) instead of a cut.
 - Re-anchor gate threshold on `similarity_before`; measure a session first.
 - Restorer blend (0.8) and whether to add a full-frame upscaler; both are second-order next to the face.
 - Moving the Modal app to a Fanvue workspace; the inswapper research-only license.

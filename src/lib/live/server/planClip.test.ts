@@ -759,6 +759,21 @@ describe("planClip: compound multi-act request", () => {
   });
 });
 
+describe("planClip: idle duration", () => {
+  it("uses the pipeline's requested idle length, defaulting to IDLE_CLIP_SEC", () => {
+    const base = {
+      session: session(),
+      speechMode: "text" as const,
+    };
+    expect(planClip({ ...base, job: { kind: "idle" } }).durationSec).toBe(
+      LIVE_TUNABLES.IDLE_CLIP_SEC,
+    );
+    expect(
+      planClip({ ...base, job: { kind: "idle", durationSec: 15 } }).durationSec,
+    ).toBe(15);
+  });
+});
+
 describe("planClip: idle variety", () => {
   it("rotates the idle life-line deterministically with elapsed time, without changing pose/clothing/props", () => {
     const prompts = [0, 1, 2, 3, 4, 5].map(

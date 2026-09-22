@@ -1547,4 +1547,122 @@ describe("ClipPipeline", () => {
     expect(seedsByRequest.r2).toBe(firstStripped);
     expect(seedsByRequest.r3).toBe(firstStripped);
   });
+
+  it("swap mode keeps two idles in flight and two ready, since a filler takes longer to make than it plays", async () => {
+    const requests: ClipRequest[] = [];
+    const queue = makeJobQueue();
+    const pipeline = trackedPipeline({
+      backend: "swap",
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        requests.push(req);
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    expect(pipeline.getBufferStats().idleInflight).toBe(
+      LIVE_TUNABLES.SWAP_IDLE_MAX_INFLIGHT,
+    );
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    const stats = pipeline.getBufferStats();
+    expect(stats.idleReady).toBe(LIVE_TUNABLES.SWAP_IDLE_BUFFER_TARGET);
+    expect(stats.idleInflight).toBe(0);
+    expect(requests.length).toBe(1 + LIVE_TUNABLES.SWAP_IDLE_BUFFER_TARGET);
+  });
+
+  it("sizes the next idle to the slowest recent idle production plus headroom, within the clip bounds", async () => {
+    const requests: ClipRequest[] = [];
+    const queue = makeJobQueue();
+    let productionMs = 14_000;
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        requests.push(req);
+        if (req.job.kind === "idle") {
+          now += productionMs;
+        }
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    const idleJobs = () =>
+      requests
+        .filter((r) => r.job.kind === "idle")
+        .map((r) => (r.job as Extract<ClipJob, { kind: "idle" }>).durationSec);
+    // No measurement yet: the floor.
+    expect(idleJobs()).toEqual([LIVE_TUNABLES.IDLE_CLIP_SEC]);
+
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    pipeline.nextClip(); // greeting
+    pipeline.nextClip(); // the 10s idle, which took 14s to make -> refill
+    expect(idleJobs().at(-1)).toBe(LIVE_TUNABLES.MAX_CLIP_SEC);
+
+    // A fast one does not shorten the next idle while a slow one is still in the window.
+    productionMs = 6_000;
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    pipeline.nextClip();
+    expect(idleJobs().at(-1)).toBe(LIVE_TUNABLES.MAX_CLIP_SEC);
+
+    // Once the window holds only fast productions (6s + 1s headroom < floor), it drops back to the floor.
+    for (let i = 0; i < 3; i += 1) {
+      await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+      pipeline.nextClip();
+    }
+    expect(idleJobs().at(-1)).toBe(LIVE_TUNABLES.IDLE_CLIP_SEC);
+  });
+
+  it("swap mode re-seeds a finished plan from the trusted frame only once SWAP_SCENE_RESET_INTERVAL_MS has passed", async () => {
+    const requests: ClipRequest[] = [];
+    const events: PipelineEvent[] = [];
+    const queue = makeJobQueue();
+    const pipeline = trackedPipeline({
+      backend: "swap",
+      now: nowFn,
+      onEvent: (e) => events.push(e),
+      render: async (req) => {
+        requests.push(req);
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+    const lastAnchor = () =>
+      events.filter((e) => e.type === "anchorChanged").at(-1)?.frameUrl;
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    pipeline.nextClip();
+
+    // Within the interval: continuity wins, the drifted tail becomes the anchor as on turbo.
+    queue.push({ ...REPLY_JOB, requestId: "r1" });
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    const firstReplySeed = pipeline.nextClip()!.seedFrameUrl;
+    expect(firstReplySeed).not.toBe(ANCHOR_0);
+    expect(lastAnchor()).toBe(firstReplySeed);
+
+    // Past the interval: the plan end cuts back to the trusted frame and the next plan seeds from it.
+    now += LIVE_TUNABLES.SWAP_SCENE_RESET_INTERVAL_MS;
+    queue.push({ ...REPLY_JOB, requestId: "r2" });
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    const secondReplySeed = pipeline.nextClip()!.seedFrameUrl;
+    expect(lastAnchor()).toBe(ANCHOR_0);
+    expect(pipeline.getCurrentAnchorFrameUrl()).toBe(ANCHOR_0);
+
+    // The reset clock restarts: the very next plan chains from its own tail again.
+    queue.push({ ...REPLY_JOB, requestId: "r3" });
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    const thirdRequest = requests.find(
+      (r) => r.job.kind === "reply" && r.job.requestId === "r3",
+    );
+    expect(thirdRequest?.session.seedFrameUrl).toBe(ANCHOR_0);
+    const thirdReplySeed = pipeline.nextClip()!.seedFrameUrl;
+    expect(thirdReplySeed).not.toBe(secondReplySeed);
+    expect(lastAnchor()).toBe(thirdReplySeed);
+  });
 });

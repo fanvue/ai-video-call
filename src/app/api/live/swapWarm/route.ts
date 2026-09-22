@@ -3,7 +3,7 @@ import { env } from "@/env";
 import { getCurrentUser } from "@/lib/fanvue";
 
 // A cold swap container takes 60s+ (image pull, CUDA init, model load); the health probes make Modal
-// start two while the reference upload and first turbo render are still in flight.
+// start three while the reference upload and first turbo render are still in flight.
 export const maxDuration = 120;
 
 export async function POST() {
@@ -18,9 +18,9 @@ export async function POST() {
     );
   }
   try {
-    // Two concurrent probes start two containers, since idle fillers and replies swap in parallel.
+    // Three concurrent probes start three containers: two idle fillers and a reply swap in parallel.
     const responses = await Promise.all(
-      [0, 1].map(() =>
+      [0, 1, 2].map(() =>
         fetch(new URL("/health", env.SWAP_SERVICE_URL as string), {
           signal: AbortSignal.timeout(110_000),
         }),

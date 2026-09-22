@@ -112,10 +112,11 @@ describe("swapClip", () => {
           422,
         ),
       );
+    // A reference URL the earlier test has not cached, so the first mocked fetch is the reference.
     await expect(
       swapClip({
         videoUrl: "https://fal.test/turbo.mp4",
-        referenceImageUrl: "https://fal.test/reference.png",
+        referenceImageUrl: "https://fal.test/reference-two-faces.png",
       }),
     ).rejects.toThrow(/422.*exactly one face/);
     expect(uploadToFal).not.toHaveBeenCalled();

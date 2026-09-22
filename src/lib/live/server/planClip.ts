@@ -1447,7 +1447,10 @@ const idleLifeLine = (elapsedSec: number, hasPhone: boolean): string => {
   return IDLE_LIFE_VARIANTS[index] ?? (IDLE_LIFE_VARIANTS[0] as string);
 };
 
-const planIdle = (session: LiveSessionSnapshot): ClipPlan => {
+const planIdle = (
+  session: LiveSessionSnapshot,
+  job: Extract<ClipJob, { kind: "idle" }>,
+): ClipPlan => {
   const { state, creator } = session;
   // Idle never advances an act, even mid-act: a self-touch pauses; a held prop stays put.
   const nextBody: Body =
@@ -1480,7 +1483,7 @@ const planIdle = (session: LiveSessionSnapshot): ClipPlan => {
     .filter(Boolean)
     .join(" ");
   const expectedState: LiveState = { ...state, body: nextBody };
-  const durationSec = LIVE_TUNABLES.IDLE_CLIP_SEC;
+  const durationSec = job.durationSec ?? LIVE_TUNABLES.IDLE_CLIP_SEC;
   const prompt = buildPrompt({
     state,
     speechMode: "text", // no dialogue in this job; native speech would invent mouthing
@@ -1711,7 +1714,7 @@ export const planClip = ({
       case "greeting":
         return planGreeting(session, speechMode);
       case "idle":
-        return planIdle(session);
+        return planIdle(session, job);
       case "checkIn":
         return planCheckIn(session, job, speechMode);
       case "reply":

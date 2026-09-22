@@ -30,7 +30,26 @@ export type SwapClipOutcome = {
   costUsd: number;
 };
 
-const fetchAsDataUri = async (url: string): Promise<string> => {
+// The reference is the same anchor for every clip of a session, so fetch it once per warm lambda.
+const referenceCache = new Map<string, Promise<string>>();
+
+const fetchAsDataUri = (url: string): Promise<string> => {
+  const cached = referenceCache.get(url);
+  if (cached) {
+    return cached;
+  }
+  const pending = fetchReference(url).catch((error: unknown) => {
+    referenceCache.delete(url);
+    throw error;
+  });
+  if (referenceCache.size >= 16) {
+    referenceCache.delete(referenceCache.keys().next().value as string);
+  }
+  referenceCache.set(url, pending);
+  return pending;
+};
+
+const fetchReference = async (url: string): Promise<string> => {
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`reference fetch failed (${response.status})`);
