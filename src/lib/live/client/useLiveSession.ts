@@ -23,6 +23,10 @@ import {
   type LucyMetrics,
   type LucyRealtimeState,
 } from "@/lib/live/client/lucyStream";
+import {
+  fetchClipSource,
+  releaseClipSource,
+} from "@/lib/live/client/clipSource";
 import { ClipPipeline, type PipelineEvent } from "@/lib/live/client/pipeline";
 import {
   GaplessPlayer,
@@ -126,6 +130,8 @@ export type PrepareStatus =
 
 // A join that has not shown the greeting by now is the "stuck in connecting" report; log where it stalled.
 const CONNECT_STALL_MS = 60_000;
+// A 3 MB clip downloads in well under a second; past this it streams instead of holding the swap.
+const CLIP_PREFETCH_TIMEOUT_MS = 6_000;
 
 const EMPTY_BUFFER_DEPTH: BufferDepth = {
   idleReady: 0,
@@ -414,6 +420,15 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   const [player] = useState(
     () =>
       new GaplessPlayer({
+        resolveSource: async (url) => {
+          const src = await fetchClipSource(url, CLIP_PREFETCH_TIMEOUT_MS);
+          if (src === url) {
+            deps.reportTelemetry?.("clipPrefetchFallback", {});
+          }
+          return src;
+        },
+        releaseSource: releaseClipSource,
+        onStall: (detail) => deps.reportTelemetry?.("videoStall", detail),
         onStatusChange: (playerStatus: PlayerStatus) => {
           if (playerStatus === "holding" || playerStatus === "needsTap") {
             deps.reportTelemetry?.("playerStatus", { status: playerStatus });
@@ -808,7 +823,6 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       if (!canonAdvancedRef.current.delete(result.clipId)) {
         director.clipCompleted(result, Date.now());
       }
-      director.swappedLastFrameLanded(result);
       refreshRequestStatuses();
       if (result.reply) {
         pendingRevealRef.current = {

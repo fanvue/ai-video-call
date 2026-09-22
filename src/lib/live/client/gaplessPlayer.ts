@@ -9,6 +9,8 @@ const CUT_IN_AFTER_WRAP_SEC = LIVE_TUNABLES.CUT_IN_AFTER_WRAP_SEC;
 const CROSSFADE_MS = 320;
 // A cut-in lands mid-motion on a clip rendered from a different moment, so it dissolves longer to soften the pose change; boundaries are frame-continuous and stay short.
 const CUT_IN_CROSSFADE_MS = 450;
+// Cut-ins dissolve through a blur: the incoming clip sharpens as it fades in over a blurring outgoing one, so the pose change reads as a soft transition instead of a jump.
+const CUT_IN_BLUR = "blur(6px)";
 // The incoming slot fades in above the outgoing one, which stays opaque until the fade ends, so a late first paint shows the outgoing's last frame instead of black. Negative so the studio chrome (z auto) stays above both; the container is `isolate`.
 const Z_INCOMING = "-1";
 const Z_OUTGOING = "-2";
@@ -47,6 +49,11 @@ const RESUME_NUDGE_MS = 2000;
 
 export type GaplessPlayerOptions = {
   onStatusChange: (status: PlayerStatus) => void;
+  // Turns a clip URL into what the element plays (a fully downloaded blob URL); absent, the URL streams as is.
+  resolveSource?: (url: string) => Promise<string>;
+  releaseSource?: (src: string) => void;
+  // The on-screen clip stopped for data mid-play and resumed after `ms`.
+  onStall?: (detail: { clipId: string; atSec: number; ms: number }) => void;
 };
 
 const noopProgress = (): void => {};
@@ -130,6 +137,8 @@ export class GaplessPlayer {
   private swappingClip: ClipToPlay | null = null;
   // The element still fading out under a new clip; preloading into it mid-fade blanks it, so that preload waits in deferredPreload.
   private fadingOut: HTMLVideoElement | null = null;
+  private readonly ownedSources = new Map<HTMLVideoElement, string>();
+  private stallStartedAt: { el: HTMLVideoElement; atMs: number } | null = null;
   private deferredPreload: ClipToPlay | null = null;
   // A boundary swap whose incoming slot is playing hidden, waiting for the outgoing clip's last frame.
   private revealWaiter: { el: HTMLVideoElement; done: () => void } | null =
@@ -209,8 +218,50 @@ export class GaplessPlayer {
     this.showSlot(this.activeSlot);
     a.addEventListener("timeupdate", this.onTimeUpdate);
     b.addEventListener("timeupdate", this.onTimeUpdate);
+    for (const el of [a, b]) {
+      el.addEventListener("waiting", this.onWaiting);
+      el.addEventListener("playing", this.onResumed);
+    }
     this.startRafLoop();
   }
+
+  private setSource(el: HTMLVideoElement, src: string): void {
+    this.releaseElementSource(el);
+    this.ownedSources.set(el, src);
+    el.src = src;
+  }
+
+  private releaseElementSource(el: HTMLVideoElement): void {
+    const owned = this.ownedSources.get(el);
+    if (owned) {
+      this.ownedSources.delete(el);
+      this.options.releaseSource?.(owned);
+    }
+  }
+
+  private readonly onWaiting = (event: Event): void => {
+    const el = event.currentTarget as HTMLVideoElement;
+    if (
+      el === this.getActive() &&
+      this.status === "playing" &&
+      !this.stallStartedAt
+    ) {
+      this.stallStartedAt = { el, atMs: performance.now() };
+    }
+  };
+
+  private readonly onResumed = (event: Event): void => {
+    const stall = this.stallStartedAt;
+    if (!stall || stall.el !== event.currentTarget) {
+      return;
+    }
+    this.stallStartedAt = null;
+    this.options.onStall?.({
+      clipId: this.currentClipId ?? "",
+      atSec: stall.el.currentTime,
+      ms: Math.round(performance.now() - stall.atMs),
+    });
+  };
 
   dispose(): void {
     this.disposed = true;
@@ -331,7 +382,19 @@ export class GaplessPlayer {
     const targetSlot = this.activeSlot === "a" ? "b" : "a";
     this.preloadedClip = clip;
     const generation = ++this.swapGeneration;
-    inactive.src = clip.videoUrl;
+    // Only awaited when a resolver is set, so the plain-URL path keeps its timing.
+    const src = this.options.resolveSource
+      ? await this.options.resolveSource(clip.videoUrl)
+      : clip.videoUrl;
+    if (
+      this.disposed ||
+      this.preloadedClip !== clip ||
+      generation !== this.swapGeneration
+    ) {
+      this.options.releaseSource?.(src);
+      return;
+    }
+    this.setSource(inactive, src);
     inactive.loop = clip.loops;
     inactive.muted = true;
     inactive.load();
@@ -418,7 +481,15 @@ export class GaplessPlayer {
       return;
     }
     const generation = ++this.swapGeneration;
-    el.src = clip.videoUrl;
+    // Only awaited when a resolver is set, so the plain-URL path keeps its timing.
+    const src = this.options.resolveSource
+      ? await this.options.resolveSource(clip.videoUrl)
+      : clip.videoUrl;
+    if (this.disposed || generation !== this.swapGeneration) {
+      this.options.releaseSource?.(src);
+      return;
+    }
+    this.setSource(el, src);
     el.loop = clip.loops;
     el.load();
     const playable = await waitForPlayable(el);
@@ -564,6 +635,8 @@ export class GaplessPlayer {
     const generation = this.swapGeneration;
     this.swappingClip = clip;
     this.applyAudioPolicy(incoming, clip);
+    // Set while the slot is still hidden, so the reveal transitions it back to sharp.
+    incoming.style.filter = atBoundary ? "" : CUT_IN_BLUR;
     let confirmed: boolean;
     try {
       await incoming.play();
@@ -605,6 +678,11 @@ export class GaplessPlayer {
     this.activeSlot = this.activeSlot === "a" ? "b" : "a";
     const fadeMs = atBoundary ? CROSSFADE_MS : CUT_IN_CROSSFADE_MS;
     this.showSlot(this.activeSlot, fadeMs);
+    incoming.style.filter = "";
+    if (outgoing && !atBoundary) {
+      outgoing.style.transitionDuration = `${fadeMs}ms`;
+      outgoing.style.filter = CUT_IN_BLUR;
+    }
     this.preloadedSlot = null;
     this.preloadedClip = null;
     this.cutInWaitingForBoundary = false;
@@ -637,8 +715,10 @@ export class GaplessPlayer {
       }
       // Hidden only now, under an already opaque incoming slot, so the fade never dips to black.
       outgoing.style.opacity = "0";
+      outgoing.style.filter = "";
       outgoing.pause();
       // The next preload reuses this element, so it waits until the element is hidden: reloading it mid-fade blanked it under the half-transparent incoming clip.
+      this.releaseElementSource(outgoing);
       outgoing.removeAttribute("src");
       outgoing.load();
       preloadAfterFade();

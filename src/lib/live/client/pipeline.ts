@@ -221,9 +221,6 @@ export class ClipPipeline {
           (swapped) => {
             result.videoUrl = swapped.videoUrl;
             result.swap = swapped.report;
-            if (swapped.lastFrameUrl && swapped.report.status === "swapped") {
-              result.swappedLastFrameUrl = swapped.lastFrameUrl;
-            }
             result.costUsd += swapped.costUsd;
             this.addCost(swapped.costUsd);
           },

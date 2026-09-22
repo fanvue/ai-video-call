@@ -72,18 +72,6 @@ const clipResult = (overrides: Partial<ClipResult>): ClipResult => ({
   ...overrides,
 });
 
-const swappedReport: NonNullable<ClipResult["swap"]> = {
-  status: "swapped",
-  swapMs: 6000,
-  frames: 264,
-  framesWithFace: 264,
-  msPerFrame: 20,
-  similarityBefore: 0.4,
-  similarityAfter: 0.8,
-  restored: true,
-  reason: null,
-};
-
 describe("LiveDirector", () => {
   it("starts with a single greeting job queued", () => {
     const director = makeDirector();
@@ -599,81 +587,6 @@ describe("LiveDirector", () => {
     expect(stateFrames).toEqual({
       [stateFrameKey(dressedState)]: "https://example.com/greeting-tail.png",
       [stateFrameKey(toppless)]: "https://example.com/top-off.png",
-    });
-  });
-
-  it("upgrades a chain clip's bank entry to its swapped last frame without touching the live seed", () => {
-    const director = makeDirector();
-    director.nextJob();
-    const greeting = clipResult({
-      jobKind: "greeting",
-      seedFrameUrl: "https://example.com/greeting-tail.png",
-      swap: swappedReport,
-      swappedLastFrameUrl: "https://example.com/greeting-swapped.png",
-    });
-    director.clipCompleted(greeting, 1000);
-    director.swappedLastFrameLanded(greeting);
-    const toppless: LiveState = {
-      ...dressedState,
-      wardrobe: {
-        ...dressedState.wardrobe,
-        top: garmentOff("tank top"),
-        removedOrder: ["top"],
-      },
-    };
-    const beat = clipResult({
-      jobKind: "beat",
-      state: toppless,
-      seedFrameUrl: "https://example.com/top-off-tail.png",
-      swap: swappedReport,
-      swappedLastFrameUrl: "https://example.com/top-off-swapped.png",
-    });
-    director.clipCompleted(beat, 2000);
-    director.swappedLastFrameLanded(beat);
-
-    const snapshot = director.snapshot(3000);
-    expect(snapshot.stateFrames).toEqual({
-      [stateFrameKey(dressedState)]: "https://example.com/greeting-tail.png",
-      [stateFrameKey(toppless)]: "https://example.com/top-off-swapped.png",
-    });
-    expect(snapshot.seedFrameUrl).toBe("https://example.com/top-off-tail.png");
-  });
-
-  it("leaves the bank alone when the swap failed or the entry came from an earlier clip", () => {
-    const director = makeDirector();
-    director.nextJob();
-    director.clipCompleted(
-      clipResult({
-        jobKind: "beat",
-        seedFrameUrl: "https://example.com/first-tail.png",
-      }),
-      1000,
-    );
-    const failed = clipResult({
-      jobKind: "beat",
-      seedFrameUrl: "https://example.com/first-tail.png",
-      swap: { ...swappedReport, status: "failed" },
-      swappedLastFrameUrl: "https://example.com/failed-swapped.png",
-    });
-    director.swappedLastFrameLanded(failed);
-    const later = clipResult({
-      jobKind: "reply",
-      seedFrameUrl: "https://example.com/later-tail.png",
-      swap: swappedReport,
-      swappedLastFrameUrl: "https://example.com/later-swapped.png",
-    });
-    director.clipCompleted(later, 2000);
-    director.swappedLastFrameLanded(later);
-    const idle = clipResult({
-      jobKind: "idle",
-      seedFrameUrl: "https://example.com/first-tail.png",
-      swap: swappedReport,
-      swappedLastFrameUrl: "https://example.com/idle-swapped.png",
-    });
-    director.swappedLastFrameLanded(idle);
-
-    expect(director.snapshot(3000).stateFrames).toEqual({
-      [stateFrameKey(dressedState)]: "https://example.com/first-tail.png",
     });
   });
 

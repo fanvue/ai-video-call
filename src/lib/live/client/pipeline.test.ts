@@ -1739,7 +1739,6 @@ describe("ClipPipeline", () => {
       replyId && (replyId as { result: ClipResult }).result.clipId;
     finalize.get(pendingReplyId as string)?.resolve({
       videoUrl: "https://example.com/reply-swapped.mp4",
-      lastFrameUrl: "https://example.com/reply-swapped-last.png",
       costUsd: 0.004,
       report: {
         status: "swapped",
@@ -1758,9 +1757,6 @@ describe("ClipPipeline", () => {
     expect(played?.jobKind).toBe("reply");
     expect(played?.videoUrl).toBe("https://example.com/reply-swapped.mp4");
     expect(played?.swap?.status).toBe("swapped");
-    expect(played?.swappedLastFrameUrl).toBe(
-      "https://example.com/reply-swapped-last.png",
-    );
   });
 
   it("two-phase swap: a failed clip swap still plays, unswapped, with a failed report", async () => {

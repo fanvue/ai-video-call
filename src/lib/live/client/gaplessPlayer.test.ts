@@ -9,7 +9,7 @@ type Listener = (event: { currentTarget: FakeVideo }) => void;
 // Minimal stand-in for HTMLVideoElement: enough surface for the player's load/play/swap path.
 class FakeVideo {
   src = "";
-  style = { opacity: "", zIndex: "", transitionDuration: "" };
+  style = { opacity: "", zIndex: "", transitionDuration: "", filter: "" };
   loop = false;
   muted = false;
   volume = 1;
@@ -173,6 +173,61 @@ describe("GaplessPlayer", () => {
     expect(player.getStatus()).toBe("playing");
   });
 
+  it("plays the resolved (prefetched) source and releases it once the element is cleared", async () => {
+    const a = new FakeVideo();
+    const b = new FakeVideo();
+    const released: string[] = [];
+    const player = new GaplessPlayer({
+      onStatusChange: () => {},
+      resolveSource: (url) => Promise.resolve(`blob:${url}`),
+      releaseSource: (src) => released.push(src),
+    });
+    const queue = [clip("c1"), clip("c2"), clip("c3")];
+    player.setNextClipHandler(() => queue.shift() ?? null);
+    player.attach(
+      a as unknown as HTMLVideoElement,
+      b as unknown as HTMLVideoElement,
+    );
+    player.start();
+    await flush();
+    await flush();
+    expect(a.src).toBe(`blob:${clip("c1").videoUrl}`);
+    expect(b.src).toBe(`blob:${clip("c2").videoUrl}`);
+
+    a.fireTimeUpdate(9.95);
+    await flush();
+    b.fire("playing");
+    await flush();
+    vi.advanceTimersByTime(500);
+    expect(released).toEqual([`blob:${clip("c1").videoUrl}`]);
+  });
+
+  it("reports a mid-play data stall on the on-screen clip with its duration", async () => {
+    const a = new FakeVideo();
+    const b = new FakeVideo();
+    const stalls: { clipId: string; atSec: number; ms: number }[] = [];
+    let nowMs = 0;
+    vi.stubGlobal("performance", { now: () => nowMs });
+    const player = new GaplessPlayer({
+      onStatusChange: () => {},
+      onStall: (detail) => stalls.push(detail),
+    });
+    const queue = [clip("c1")];
+    player.setNextClipHandler(() => queue.shift() ?? null);
+    player.attach(
+      a as unknown as HTMLVideoElement,
+      b as unknown as HTMLVideoElement,
+    );
+    player.start();
+    await flush();
+    a.currentTime = 4;
+    a.fire("waiting");
+    nowMs = 1200;
+    a.fire("playing");
+    b.fire("playing");
+    expect(stalls).toEqual([{ clipId: "c1", atSec: 4, ms: 1200 }]);
+  });
+
   it("keeps a looping clip playing when nothing else is ready, and swaps once something is", async () => {
     const queue: ClipToPlay[] = [clip("loop1", true)];
     const { a, b, player, getNextClip } = setup(queue);
@@ -200,7 +255,7 @@ describe("GaplessPlayer", () => {
     expect(b.loop).toBe(false);
   });
 
-  it("a requested clip replaces the preloaded idle and takes the screen at the loop wrap, returning the displaced idle", async () => {
+  it("a requested clip replaces the preloaded idle and cuts in mid-loop through a blur dissolve, returning the displaced idle", async () => {
     const queue: ClipToPlay[] = [clip("loop1", true), clip("idle2", true)];
     const { a, b, player } = setup(queue);
     const returned: string[] = [];
@@ -212,24 +267,24 @@ describe("GaplessPlayer", () => {
     expect(b.src).toBe(clip("idle2").videoUrl);
     a.currentTime = 3;
 
-    // The reply lands: it replaces the preloaded idle and is taken at the loop's wrap.
+    // The reply lands: it replaces the preloaded idle and cuts in without waiting for the wrap.
     queue.unshift(clip("reply", false, true));
     player.checkForClip();
     await flush();
     expect(returned).toEqual(["idle2"]);
     expect(b.src).toBe(clip("reply").videoUrl);
-    a.fireTimeUpdate(9.7);
-    await flush();
+    expect(b.style.filter).toBe("blur(6px)");
     b.fire("playing");
-    await flush();
-    a.fireTimeUpdate(9.92);
     await flush();
     expect(player.getActiveSlot()).toBe("b");
     expect(b.paused).toBe(false);
     expect(b.style.opacity).toBe("1");
-    expect(b.style.transitionDuration).toBe("320ms");
-    vi.advanceTimersByTime(320);
+    expect(b.style.filter).toBe("");
+    expect(a.style.filter).toBe("blur(6px)");
+    expect(b.style.transitionDuration).toBe("450ms");
+    vi.advanceTimersByTime(450);
     expect(a.style.opacity).toBe("0");
+    expect(a.style.filter).toBe("");
   });
 
   it("defers a cut-in to the loop boundary when the idle is within CUT_IN_WAIT_MAX_SEC of wrapping, so the reply starts from the anchor pose", async () => {
@@ -238,7 +293,7 @@ describe("GaplessPlayer", () => {
     player.setInterruptReadyHandler(() => queue.some((c) => c.interrupts));
     player.start();
     await flush();
-    a.fireTimeUpdate(9);
+    a.fireTimeUpdate(9.5);
     await flush();
 
     queue.unshift(clip("reply", false, true));
@@ -249,9 +304,6 @@ describe("GaplessPlayer", () => {
     expect(player.getActiveSlot()).toBe("a");
     expect(a.style.opacity).toBe("1");
 
-    a.fireTimeUpdate(9.5);
-    await flush();
-    expect(player.getActiveSlot()).toBe("a");
     // The wider cut-in lead catches the wrap that a 0.12 s window would miss between timeupdates.
     a.fireTimeUpdate(9.7);
     await flush();
@@ -269,7 +321,7 @@ describe("GaplessPlayer", () => {
     expect(a.style.opacity).toBe("0");
   });
 
-  it("never cuts a reply into a looping idle mid-motion: it plays hidden and is revealed at the wrap", async () => {
+  it("cuts a reply into a looping idle mid-motion at once instead of waiting out the loop", async () => {
     const queue: ClipToPlay[] = [clip("loop1", true)];
     const { a, b, player } = setup(queue);
     player.setInterruptReadyHandler(() => queue.some((c) => c.interrupts));
@@ -282,16 +334,10 @@ describe("GaplessPlayer", () => {
     player.checkForClip();
     await flush();
     expect(b.src).toBe(clip("reply").videoUrl);
-    a.fireTimeUpdate(5);
-    await flush();
-    expect(player.getActiveSlot()).toBe("a");
-    a.fireTimeUpdate(9.7);
-    await flush();
     b.fire("playing");
     await flush();
-    a.fireTimeUpdate(9.92);
-    await flush();
     expect(player.getActiveSlot()).toBe("b");
+    expect(a.currentTime).toBe(2);
   });
 
   it("cuts a reply into an idle that has only just wrapped, instead of waiting for the next wrap", async () => {
@@ -310,23 +356,6 @@ describe("GaplessPlayer", () => {
     b.fire("playing");
     await flush();
     expect(player.getActiveSlot()).toBe("b");
-  });
-
-  it("holds a reply that lands once the idle has moved off its anchor pose until the next wrap", async () => {
-    const queue: ClipToPlay[] = [clip("loop1", true)];
-    const { a, b, player } = setup(queue);
-    player.setInterruptReadyHandler(() => queue.some((c) => c.interrupts));
-    player.start();
-    await flush();
-    a.fireTimeUpdate(0.8);
-    await flush();
-
-    queue.unshift(clip("reply", false, true));
-    player.checkForClip();
-    await flush();
-    b.fire("playing");
-    await flush();
-    expect(player.getActiveSlot()).toBe("a");
   });
 
   it("does not reveal a boundary swap on a still first frame: a preloaded readyState alone is not a presented frame", async () => {
