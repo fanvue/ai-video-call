@@ -76,15 +76,11 @@ export async function POST(request: Request) {
   }
   const { imageBase64, contentType, sceneId } = parsed.data;
 
-  const anchorFrameUrl = await uploadReferenceImageToFal(
-    Buffer.from(imageBase64, "base64"),
-    contentType,
-  );
-
+  // The vision capture only needs pixels, not a hosted URL, so it starts on the data URI instead of waiting on the fal upload.
   const captureLook = async (): Promise<WardrobeCapture | null> => {
     try {
       const completion = await createGroqVisionCompletion({
-        imageUrl: anchorFrameUrl,
+        imageUrl: `data:${contentType};base64,${imageBase64}`,
         prompt: CAPTURE_PROMPT,
         responseFormat: { type: "json_object" },
       });
@@ -99,17 +95,18 @@ export async function POST(request: Request) {
       return null;
     }
   };
-  // The still only needs the upload and the room, so it runs alongside the capture rather than after it.
-  const [capture, staged] = await Promise.all([
+  const [anchorFrameUrl, capture] = await Promise.all([
+    uploadReferenceImageToFal(Buffer.from(imageBase64, "base64"), contentType),
     captureLook(),
+  ]);
+  const staged =
     LIVE_TUNABLES.STAGE_SEED && sceneId && parsed.data.stage !== false
-      ? stageSeed({
+      ? await stageSeed({
           referenceUrl: anchorFrameUrl,
           sceneId,
           lookLock: "an adult woman with a natural build",
         })
-      : Promise.resolve(null),
-  ]);
+      : null;
   const captured = capture !== null;
   const capturedFraming = FRAMING_VALUES.has(capture?.framing ?? "")
     ? (capture?.framing as "wider" | "medium" | "torso")
