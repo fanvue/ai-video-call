@@ -38,7 +38,9 @@ The earlier per-frame JPEG-over-WebSocket transport (2 to 3 fps effective, 330 t
 
 ## Open decisions
 
-- Whether to chunk the swap (2 s segments, playback after the first) if the per-clip delay eats too much of the idle buffer.
+- Whether to chunk the swap (2 s segments, playback after the first). The per-clip delay is currently covered by two idles in flight and idle length tracking production time (see LIVE_ENGINE.md); chunking would let a single reply reach the screen sooner.
+- No timed scene reset. Measured on a 5-generation chain (turbo idle hold, swap, last frame, repeat): the face stays locked (cosine 0.91 to 0.93 after every swap) but the framing zooms in generation by generation and the picture goes soft (Laplacian variance 108 on the upload, 14 after one generation, 9 to 11 after three to five). A 60 s cut back to the trusted frame was shipped against the softness and reverted: every reset read as a jump. The per-clip SeedVR2 restore below carries the softness; the zoom is an open item.
+- Seed restoration: between chain clips the tail frame goes through `fal-ai/seedvr/upscale/image` (2x, noise 0.1) in the background, every chain clip in swap mode (`SWAP_UPSCALE_INTERVAL_MS`). Bake-off on the 5th-generation frame, warm latency: NAFNet deblur 1.8 s (no visible change), SeedVR2 2.1 s (real texture back, likeness and framing intact), clarity 4.4 s (mild), photo-restoration 9 s (redesigned the face), Topaz Recover 3 85 to 117 s (too slow). Restoration is non-gating, so within a plan the beats still chain from raw tails; gating it would add ~2 s to a 10 to 17 s production against a 15 s clip.
 - Re-anchor gate threshold on `similarity_before`; measure a session first.
 - Restorer blend (0.8) and whether to add a full-frame upscaler; both are second-order next to the face.
 - Moving the Modal app to a Fanvue workspace; the inswapper research-only license.

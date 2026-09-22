@@ -36,6 +36,24 @@ export type ClipPlan = {
 
 const ACTION_BEAT_SEC = LIVE_TUNABLES.ACTION_CLIP_SEC;
 
+const CLIP_ENDS_LINE = "The clip ends there.";
+
+// Swap mode plays chain clips at SWAP_ACTION_CLIP_SEC so the next one is ready before they end; the planned action keeps its own timing and she holds the settled pose for the remainder.
+const stretchForSwap = (plan: ClipPlan): ClipPlan => {
+  const durationSec = LIVE_TUNABLES.SWAP_ACTION_CLIP_SEC;
+  if (plan.durationSec >= durationSec) {
+    return plan;
+  }
+  return {
+    ...plan,
+    durationSec,
+    prompt: plan.prompt.replace(
+      CLIP_ENDS_LINE,
+      `She then holds that position, still and natural with small grounded life, until the clip ends at ${durationSec}s.`,
+    ),
+  };
+};
+
 const clampDuration = (sec: number): number =>
   Math.min(
     LIVE_TUNABLES.MAX_CLIP_SEC,
@@ -233,7 +251,7 @@ const buildPrompt = (params: {
   ];
   const closingLines = [
     needsWardrobeLock ? wardrobeLockLine(params.nextWardrobe) : null,
-    `By ${params.durationSec}s she is ${describeState(params.nextWardrobe, params.nextBody)}, still, eyes on the lens. The clip ends there.`,
+    `By ${params.durationSec}s she is ${describeState(params.nextWardrobe, params.nextBody)}, still, eyes on the lens. ${CLIP_ENDS_LINE}`,
     PHYSICS_LOCK,
     NO_OVERLAY_LOCK,
     params.explicit ? CONTENT_LOCK_PERMISSIVE : CONTENT_LOCK_HOLD,
@@ -1447,7 +1465,10 @@ const idleLifeLine = (elapsedSec: number, hasPhone: boolean): string => {
   return IDLE_LIFE_VARIANTS[index] ?? (IDLE_LIFE_VARIANTS[0] as string);
 };
 
-const planIdle = (session: LiveSessionSnapshot): ClipPlan => {
+const planIdle = (
+  session: LiveSessionSnapshot,
+  job: Extract<ClipJob, { kind: "idle" }>,
+): ClipPlan => {
   const { state, creator } = session;
   // Idle never advances an act, even mid-act: a self-touch pauses; a held prop stays put.
   const nextBody: Body =
@@ -1480,7 +1501,7 @@ const planIdle = (session: LiveSessionSnapshot): ClipPlan => {
     .filter(Boolean)
     .join(" ");
   const expectedState: LiveState = { ...state, body: nextBody };
-  const durationSec = LIVE_TUNABLES.IDLE_CLIP_SEC;
+  const durationSec = job.durationSec ?? LIVE_TUNABLES.IDLE_CLIP_SEC;
   const prompt = buildPrompt({
     state,
     speechMode: "text", // no dialogue in this job; native speech would invent mouthing
@@ -1711,7 +1732,7 @@ export const planClip = ({
       case "greeting":
         return planGreeting(session, speechMode);
       case "idle":
-        return planIdle(session);
+        return planIdle(session, job);
       case "checkIn":
         return planCheckIn(session, job, speechMode);
       case "reply":
@@ -1720,6 +1741,9 @@ export const planClip = ({
         return planBeat(session, job);
     }
   })();
+  if (backend === "swap" && job.kind !== "idle") {
+    return stretchForSwap(plan);
+  }
   // Greeting has no "earlier moment" yet (the reference image IS its starting frame).
   return backend === "reference" && job.kind !== "greeting"
     ? { ...plan, prompt: `${CONTINUITY_LOCK} ${plan.prompt}` }

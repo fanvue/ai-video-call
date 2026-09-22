@@ -5,8 +5,8 @@ import { LIVE_TUNABLES, type ClipSwapReport } from "../contract";
 
 // Cold container (60s+) + a 15s clip at ~20ms/frame fit inside this.
 export const SWAP_BUDGET_MS = 150_000;
-// The greeting gates the whole join, so it waits far less; a cold container just means the first clip plays unswapped.
-export const SWAP_GREETING_BUDGET_MS = 25_000;
+// The greeting gates the whole join, so it waits less than a mid-session clip; prod showed 23s for a 15s greeting against a still-starting container, and the unswapped fallback costs a fal frame extract on top.
+export const SWAP_GREETING_BUDGET_MS = 40_000;
 
 const swapServiceResponseSchema = z.object({
   video_base64: z.string().min(1),
@@ -30,7 +30,26 @@ export type SwapClipOutcome = {
   costUsd: number;
 };
 
-const fetchAsDataUri = async (url: string): Promise<string> => {
+// The reference is the same anchor for every clip of a session, so fetch it once per warm lambda.
+const referenceCache = new Map<string, Promise<string>>();
+
+const fetchAsDataUri = (url: string): Promise<string> => {
+  const cached = referenceCache.get(url);
+  if (cached) {
+    return cached;
+  }
+  const pending = fetchReference(url).catch((error: unknown) => {
+    referenceCache.delete(url);
+    throw error;
+  });
+  if (referenceCache.size >= 16) {
+    referenceCache.delete(referenceCache.keys().next().value as string);
+  }
+  referenceCache.set(url, pending);
+  return pending;
+};
+
+const fetchReference = async (url: string): Promise<string> => {
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`reference fetch failed (${response.status})`);

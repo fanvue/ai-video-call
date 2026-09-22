@@ -5,37 +5,41 @@ import {
 
 const UPSCALE_BUDGET_MS = 15_000;
 
-// Estimated from typical fal per-call pricing; not confirmed against the model's published rate card.
-export const FRAME_UPSCALE_COST_USD = 0.03;
-
-const FRAME_UPSCALE_PROMPT =
-  "Restore sharpness and fine detail lost to video compression. Do not alter pose, framing, expression, clothing, or background.";
+// fal lists SeedVR2 at $0.001 per output megapixel; a 2x of the 542x988 render is ~2.1 MP.
+const UPSCALE_COST_PER_MEGAPIXEL_USD = 0.001;
+const FALLBACK_OUTPUT_MEGAPIXELS = (542 * 988 * 4) / 1_000_000;
 
 export type UpscaleResult = {
   url: string;
   costUsd: number;
 };
 
-// Best-effort: shared by the periodic identity-correction pass (correctIdentity.ts) and the
-// per-clip seed upscale (generateClip.ts) — a failure or timeout just keeps the caller's frame as-is.
+// Best-effort seed restoration between chain clips (see pipeline.ts upscaleChainTailInBackground):
+// a failure or timeout just keeps the caller's frame as-is.
 export const upscaleFrame = async (
   frameUrl: string,
 ): Promise<UpscaleResult | null> => {
   try {
     const submitted = await submitFrameUpscale({
       image_url: frameUrl,
-      prompt: FRAME_UPSCALE_PROMPT,
+      upscale_mode: "factor",
       upscale_factor: 2,
-      creativity: 0.2,
-      resemblance: 0.85,
-      enable_safety_checker: false,
+      noise_scale: 0.1,
+      output_format: "jpg",
     });
     const result = await pollFrameUpscaleUntilComplete({
       statusUrl: submitted.status_url,
       responseUrl: submitted.response_url,
       timeoutMs: UPSCALE_BUDGET_MS,
     });
-    return { url: result.image.url, costUsd: FRAME_UPSCALE_COST_USD };
+    const megapixels =
+      result.image.width && result.image.height
+        ? (result.image.width * result.image.height) / 1_000_000
+        : FALLBACK_OUTPUT_MEGAPIXELS;
+    return {
+      url: result.image.url,
+      costUsd: megapixels * UPSCALE_COST_PER_MEGAPIXEL_USD,
+    };
   } catch (error) {
     console.warn("upscaleFrame: upscale failed or timed out", error);
     return null;

@@ -1,7 +1,7 @@
 // body/world/surroundings have no server source (see docs/CONTRACT_CHANGES_CLIENT.md); client seeds defaults.
 import type { Body, LiveState, SceneId, Wardrobe } from "@/lib/live/contract";
 
-const SURROUNDINGS_BY_SCENE: Record<SceneId, string> = {
+export const SURROUNDINGS_BY_SCENE: Record<SceneId, string> = {
   bedroom:
     "A tidy bedroom. Soft lamp light, a made bed in frame, a laptop webcam angle from a desk.",
   office:

@@ -1,7 +1,7 @@
 // Two-<video> gapless controller: pulls the next clip from the pipeline via getNextClip.
-import type { SpeechMode } from "@/lib/live/contract";
+import { LIVE_TUNABLES, type SpeechMode } from "@/lib/live/contract";
 
-const SWAP_LEAD_SEC = 0.12;
+const SWAP_LEAD_SEC = LIVE_TUNABLES.SWAP_LEAD_SEC;
 const CROSSFADE_MS = 180;
 // Ported from the legacy call page: the model's rendered audio pops for ~1.1s at clip start, so
 // native-speech playback stays silent through that window then ramps volume up over 280ms.
@@ -39,6 +39,8 @@ const noopClipStarted = (): void => {};
 const noopGetNextClip = (): null => null;
 const noopHasInterruptReady = (): boolean => false;
 const noopClipReturned = (): void => {};
+const noopClipFailed = (): void => {};
+const noopGetFallbackClip = (): null => null;
 
 // timeupdate fires only ~4Hz, which alone leaves a visible gap before the swap point.
 // Resolves false on timeout: a readiness timeout is a failure, not a fallback success.
@@ -128,9 +130,14 @@ export class GaplessPlayer {
     noopProgress;
   private onClipStarted: (clipId: string) => void = noopClipStarted;
   private getNextClip: () => ClipToPlay | null = noopGetNextClip;
+  // Asked only when a one-shot clip is about to end with nothing seeded from it ready: a same-look idle played as a cut beats a frozen frame.
+  private getFallbackClip: () => ClipToPlay | null = noopGetFallbackClip;
   private hasInterruptReady: () => boolean = noopHasInterruptReady;
   // A preloaded idle displaced by a cut-in goes back to the pipeline rather than being lost.
   private onClipReturned: (clipId: string) => void = noopClipReturned;
+  // Telemetry only: a clip that never became playable or never produced a frame.
+  private onClipFailed: (clipId: string, reason: string) => void =
+    noopClipFailed;
 
   constructor(private readonly options: GaplessPlayerOptions) {}
 
@@ -140,6 +147,12 @@ export class GaplessPlayer {
 
   setClipReturnedHandler(handler: (clipId: string) => void): void {
     this.onClipReturned = handler;
+  }
+
+  setClipFailedHandler(
+    handler: (clipId: string, reason: string) => void,
+  ): void {
+    this.onClipFailed = handler;
   }
 
   setSpeechMode(mode: SpeechMode): void {
@@ -158,6 +171,10 @@ export class GaplessPlayer {
 
   setNextClipHandler(handler: () => ClipToPlay | null): void {
     this.getNextClip = handler;
+  }
+
+  setFallbackClipHandler(handler: () => ClipToPlay | null): void {
+    this.getFallbackClip = handler;
   }
 
   attach(a: HTMLVideoElement, b: HTMLVideoElement): void {
@@ -290,7 +307,7 @@ export class GaplessPlayer {
     if (!playable) {
       // Readiness timeout is a failure, not a fallback success: drop this attempt and let the
       // pipeline see it come back so it can requeue or discard it.
-      this.failClip(clip);
+      this.failClip(clip, "preloadNotPlayable");
       return;
     }
     this.preloadedSlot = targetSlot;
@@ -306,7 +323,8 @@ export class GaplessPlayer {
   // and go look for something else rather than leaving the player stuck on nothing.
   // A clip gets one more chance after a readiness failure; a second failure drops it, otherwise a
   // broken URL would be requeued at the front and retried forever, one load timeout per cycle.
-  private failClip(clip: ClipToPlay): void {
+  private failClip(clip: ClipToPlay, reason: string): void {
+    this.onClipFailed(clip.id, reason);
     if (this.preloadedClip === clip) {
       this.preloadedClip = null;
       this.preloadedSlot = null;
@@ -335,6 +353,7 @@ export class GaplessPlayer {
     }
     if (!playable) {
       // Nothing was ever shown, so there's no outgoing element to protect: just ask for another.
+      this.onClipFailed(clip.id, "startNotPlayable");
       this.onClipReturned(clip.id);
       this.start();
       return;
@@ -356,6 +375,7 @@ export class GaplessPlayer {
       return;
     }
     if (!confirmed) {
+      this.onClipFailed(clip.id, "startNoFrame");
       this.onClipReturned(clip.id);
       this.start();
       return;
@@ -444,7 +464,7 @@ export class GaplessPlayer {
       return;
     }
     if (!confirmed) {
-      this.failClip(clip);
+      this.failClip(clip, "swapNoFrame");
       // A non-looping outgoing element that already reached its end falls into the existing hold
       // behavior; a looping one just keeps looping untouched.
       if (outgoing && !outgoing.loop) {
@@ -501,6 +521,14 @@ export class GaplessPlayer {
       if (clip) {
         void this.preload(clip);
         return;
+      }
+      // A one-shot clip with nothing chained from it ready: cut to a same-look idle rather than freeze.
+      if (!el.loop) {
+        const fallback = this.getFallbackClip();
+        if (fallback) {
+          void this.preload(fallback);
+          return;
+        }
       }
     }
     // A looping clip keeps playing seamlessly; only a one-shot clip has to hold on its last frame.

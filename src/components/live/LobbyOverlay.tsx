@@ -7,11 +7,13 @@ type LobbyOverlayProps = {
   displayName: string;
   stage: ConnectStage;
   viewerCount: number;
+  // The frame the greeting will start on, shown dimmed behind the milestones so going live is a fade, not a jump.
+  posterUrl?: string | null;
 };
 
 const STAGES: { id: ConnectStage; label: string }[] = [
   { id: "uploading", label: "Uploading your reference photo" },
-  { id: "capturingLook", label: "Capturing her look" },
+  { id: "capturingLook", label: "Capturing her look and staging the room" },
   { id: "renderingFirstClip", label: "Rendering the first clip" },
   { id: "primingBuffer", label: "Priming the buffer" },
 ];
@@ -21,6 +23,7 @@ export const LobbyOverlay = ({
   displayName,
   stage,
   viewerCount,
+  posterUrl = null,
 }: LobbyOverlayProps) => {
   const activeIndex = STAGES.findIndex((entry) => entry.id === stage);
   const initial = displayName.trim().charAt(0).toUpperCase() || "?";
@@ -29,6 +32,15 @@ export const LobbyOverlay = ({
       role="status"
       className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-black/85 px-6 text-center"
     >
+      {posterUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={posterUrl}
+          alt=""
+          aria-hidden="true"
+          className="absolute inset-0 -z-10 h-full w-full object-cover opacity-40"
+        />
+      ) : null}
       <span className="grid h-16 w-16 place-items-center rounded-full bg-[var(--accent)] text-2xl font-bold text-[var(--accent-contrast)]">
         {initial}
       </span>

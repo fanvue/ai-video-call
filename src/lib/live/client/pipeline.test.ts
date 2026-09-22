@@ -220,11 +220,12 @@ describe("ClipPipeline", () => {
     });
 
     pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
-    // On turbo the greeting loops on the reference frame, so idles pre-stock alongside it.
+    // Nothing pre-stocks on turbo: the greeting chains to a fresh frame, so upload-seeded idles would never play.
+    expect(pipeline.getBufferStats().idleInflight).toBe(0);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting resolves, promotes anchor, idles submitted
     expect(pipeline.getBufferStats().idleInflight).toBe(
       LIVE_TUNABLES.IDLE_MAX_INFLIGHT,
     );
-    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting resolves, promotes anchor
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // idle jobs resolve
     const stats = pipeline.getBufferStats();
     expect(stats.idleReady).toBe(LIVE_TUNABLES.IDLE_BUFFER_TARGET);
@@ -237,6 +238,8 @@ describe("ClipPipeline", () => {
     const greetingDeferred = defer<ClipResult>();
     const queue = makeJobQueue();
     const pipeline = trackedPipeline({
+      // Reference pre-stocks fillers from the upload alongside the greeting.
+      backend: "reference",
       now: nowFn,
       onEvent: () => {},
       render: async (req) => {
@@ -554,9 +557,10 @@ describe("ClipPipeline", () => {
     });
 
     pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
-    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting resolves, initial idles submitted
-    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // two idles fail once, retried
-    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // retries succeed, rest resolve normally
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting resolves, initial idle submitted
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // idle fails, retried
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // retry fails, slot dropped and refilled
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // refill succeeds
 
     const stats = pipeline.getBufferStats();
     expect(stats.idleInflight).toBe(0);
@@ -1546,5 +1550,222 @@ describe("ClipPipeline", () => {
     expect(seedsByRequest.r1).toBe(ANCHOR_0);
     expect(seedsByRequest.r2).toBe(firstStripped);
     expect(seedsByRequest.r3).toBe(firstStripped);
+  });
+
+  it("swap mode keeps two idles in flight and two ready, since a filler takes longer to make than it plays", async () => {
+    const requests: ClipRequest[] = [];
+    const queue = makeJobQueue();
+    const pipeline = trackedPipeline({
+      backend: "swap",
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        requests.push(req);
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting resolves, fillers submitted from its tail
+    // The spare in-flight slot is for a bridge idle later, not for a third filler from the same anchor.
+    expect(pipeline.getBufferStats().idleInflight).toBe(
+      LIVE_TUNABLES.SWAP_IDLE_BUFFER_TARGET,
+    );
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    const stats = pipeline.getBufferStats();
+    expect(stats.idleReady).toBe(LIVE_TUNABLES.SWAP_IDLE_BUFFER_TARGET);
+    expect(stats.idleInflight).toBe(0);
+    expect(requests.length).toBe(1 + LIVE_TUNABLES.SWAP_IDLE_BUFFER_TARGET);
+  });
+
+  it("sizes the next idle to the slowest recent idle production plus headroom, within the clip bounds", async () => {
+    const requests: ClipRequest[] = [];
+    const queue = makeJobQueue();
+    let productionMs = 14_000;
+    const pipeline = trackedPipeline({
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        requests.push(req);
+        if (req.job.kind === "idle") {
+          now += productionMs;
+        }
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    const idleJobs = () =>
+      requests
+        .filter((r) => r.job.kind === "idle")
+        .map((r) => (r.job as Extract<ClipJob, { kind: "idle" }>).durationSec);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting resolves, first idle submitted
+    // No measurement yet: the floor.
+    expect(idleJobs()).toEqual([LIVE_TUNABLES.IDLE_CLIP_SEC]);
+
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // the idle resolves, having taken 14s
+    pipeline.nextClip(); // greeting
+    pipeline.nextClip(); // the 10s idle -> refill
+    expect(idleJobs().at(-1)).toBe(LIVE_TUNABLES.MAX_CLIP_SEC);
+
+    // A fast one does not shorten the next idle while a slow one is still in the window.
+    productionMs = 6_000;
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    pipeline.nextClip();
+    expect(idleJobs().at(-1)).toBe(LIVE_TUNABLES.MAX_CLIP_SEC);
+
+    // Once the window holds only fast productions (6s + 1s headroom < floor), it drops back to the floor.
+    for (let i = 0; i < 3; i += 1) {
+      await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+      pipeline.nextClip();
+    }
+    expect(idleJobs().at(-1)).toBe(LIVE_TUNABLES.IDLE_CLIP_SEC);
+  });
+
+  it("pre-stocks idles from a staged seed on turbo and plays them after the looping greeting", async () => {
+    const stagedSnapshot: LiveSessionSnapshot = {
+      ...snapshot,
+      seedFrameUrl: "https://example.com/staged.jpg",
+    };
+    const requests: ClipRequest[] = [];
+    const queue = makeJobQueue();
+    const pipeline = trackedPipeline({
+      backend: "turbo",
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        requests.push(req);
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+    pipeline.start({ kind: "greeting" }, () => stagedSnapshot, queue.next);
+    expect(requests.filter((r) => r.job.kind === "idle")).toHaveLength(
+      LIVE_TUNABLES.IDLE_BUFFER_TARGET,
+    );
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    expect(pipeline.nextClip()?.jobKind).toBe("greeting");
+    // The greeting looped back to the staged still, so the pre-stocked idle matches the cursor.
+    expect(pipeline.nextClip()?.jobKind).toBe("idle");
+  });
+
+  it("does not pre-stock idles from a raw upload seed on turbo, where the greeting chains away from it", () => {
+    const requests: ClipRequest[] = [];
+    const pipeline = trackedPipeline({
+      backend: "turbo",
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        requests.push(req);
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+    pipeline.start({ kind: "greeting" }, () => snapshot, makeJobQueue().next);
+    expect(requests.map((r) => r.job.kind)).toEqual(["greeting"]);
+  });
+
+  it("nextFallbackClip hands out a same-look idle from an old anchor when nothing chained from the tail is ready", async () => {
+    const queue = makeJobQueue();
+    const pipeline = trackedPipeline({
+      backend: "reference",
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => delayed(() => chainAdvancingResult(req)),
+    });
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    pipeline.nextClip();
+    queue.push(REPLY_JOB);
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    const reply = pipeline.nextClip();
+    expect(reply?.jobKind).toBe("reply");
+    // The bridge idle from the reply's tail is still rendering; the old-anchor idle is the fallback.
+    const fallback = pipeline.nextFallbackClip();
+    expect(fallback?.jobKind).toBe("idle");
+    expect(fallback?.state).toEqual(liveState);
+  });
+
+  it("nextFallbackClip returns null when no idle of the current look is ready", () => {
+    const pipeline = trackedPipeline({
+      backend: "turbo",
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => delayed(() => chainAdvancingResult(req)),
+    });
+    pipeline.start({ kind: "greeting" }, () => snapshot, makeJobQueue().next);
+    expect(pipeline.nextFallbackClip()).toBeNull();
+  });
+
+  it("swap mode starts a bridge idle for a new chain tail while two old-anchor idles are still in flight", async () => {
+    const requests: ClipRequest[] = [];
+    const queue = makeJobQueue();
+    const oldIdles: Deferred<ClipResult>[] = [];
+    const pipeline = trackedPipeline({
+      backend: "swap",
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        requests.push(req);
+        if (req.job.kind === "idle" && req.session.seedFrameUrl === ANCHOR_0) {
+          const deferred = defer<ClipResult>();
+          oldIdles.push(deferred);
+          return deferred.promise; // old-anchor idles stay in flight
+        }
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    pipeline.nextClip();
+    expect(oldIdles.length).toBe(LIVE_TUNABLES.SWAP_IDLE_BUFFER_TARGET);
+
+    queue.push(REPLY_JOB);
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // reply settles on a fresh tail
+    const tail = pipeline.getCurrentAnchorFrameUrl();
+    expect(tail).not.toBe(ANCHOR_0);
+    const bridge = requests.filter(
+      (r) => r.job.kind === "idle" && r.session.seedFrameUrl === tail,
+    );
+    expect(bridge.length).toBe(1);
+    expect(pipeline.getBufferStats().idleInflight).toBe(
+      LIVE_TUNABLES.SWAP_IDLE_MAX_INFLIGHT,
+    );
+
+    // The old idles settle late: they no longer match the anchor and are discarded, freeing their slots.
+    for (const deferred of oldIdles) {
+      deferred.resolve(makeResult("idle", ANCHOR_0));
+    }
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    expect(pipeline.getBufferStats().idleInflight).toBeLessThan(
+      LIVE_TUNABLES.SWAP_IDLE_MAX_INFLIGHT,
+    );
+  });
+
+  it("swap mode restores the seed after every chain clip instead of once per UPSCALE_INTERVAL_MS", async () => {
+    const upscaleSeed = vi.fn(
+      async (): Promise<{ url: string | null; costUsd: number }> => ({
+        url: "https://example.com/restored.jpg",
+        costUsd: 0.002,
+      }),
+    );
+    const queue = makeJobQueue();
+    const pipeline = trackedPipeline({
+      backend: "swap",
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => delayed(() => chainAdvancingResult(req)),
+      upscaleSeed,
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    expect(upscaleSeed).toHaveBeenCalledTimes(1);
+
+    queue.push(REPLY_JOB);
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    expect(upscaleSeed).toHaveBeenCalledTimes(2);
   });
 });

@@ -239,6 +239,38 @@ describe("GaplessPlayer", () => {
     expect(player.getStatus()).toBe("holding");
   });
 
+  it("cuts to a same-look fallback idle when a one-shot clip ends with nothing chained ready, instead of holding", async () => {
+    const { a, b, player, getNextClip } = setup([clip("reply")]);
+    const getFallbackClip = vi.fn(() => clip("oldIdle", true));
+    player.setFallbackClipHandler(getFallbackClip);
+    player.start();
+    await flush();
+    expect(getNextClip).toHaveBeenCalled();
+    expect(b.src).toBe("");
+
+    a.fireTimeUpdate(9.6);
+    await flush();
+    expect(getFallbackClip).toHaveBeenCalledTimes(1);
+    expect(b.src).toBe(clip("oldIdle").videoUrl);
+    a.fireTimeUpdate(9.7);
+    await flush();
+    expect(player.getActiveSlot()).toBe("b");
+    expect(player.getStatus()).toBe("playing");
+    expect(b.loop).toBe(true);
+  });
+
+  it("never asks for a fallback while a looping clip is on screen", async () => {
+    const { a, player } = setup([clip("loop1", true)]);
+    const getFallbackClip = vi.fn(() => clip("oldIdle", true));
+    player.setFallbackClipHandler(getFallbackClip);
+    player.start();
+    await flush();
+    a.fireTimeUpdate(9.95);
+    await flush();
+    expect(getFallbackClip).not.toHaveBeenCalled();
+    expect(player.getStatus()).toBe("playing");
+  });
+
   it("aborts the swap when the incoming clip never becomes playable, keeping the outgoing one live", async () => {
     const queue: ClipToPlay[] = [clip("loop1", true)];
     const { a, b, player } = setup(queue);

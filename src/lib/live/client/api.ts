@@ -5,6 +5,7 @@ import {
   type ClipResult,
   type CreatorProfile,
   type InputChannel,
+  type SceneId,
   type SpeechMode,
   type TranscriptEntry,
 } from "@/lib/live/contract";
@@ -51,6 +52,7 @@ export const upscaleSeed = async (
 
 export const uploadReference = async (
   file: File,
+  sceneId: SceneId,
 ): Promise<ReferenceUploadResult> => {
   const imageBase64 = await readFileAsBase64(file);
   // The server only accepts jpeg/png; HEIC and webp are rejected upfront rather than as a 400.
@@ -61,6 +63,7 @@ export const uploadReference = async (
   return postJson<ReferenceUploadResult>("/api/live/reference", {
     imageBase64,
     contentType,
+    sceneId,
   });
 };
 
@@ -76,6 +79,18 @@ export const fetchLucyToken = async (): Promise<string> => {
 // Fire-and-forget at session start in swap mode so the GPU container is loading while the first clip renders.
 export const warmSwap = async (): Promise<void> => {
   await postJson<{ warm: boolean }>("/api/live/swapWarm", {});
+};
+
+export type TelemetryDetail = Record<string, string | number | boolean | null>;
+
+// Fire-and-forget: playback stalls are invisible in production logs otherwise.
+export const reportTelemetry = (
+  event: string,
+  detail: TelemetryDetail = {},
+) => {
+  postJson<{ ok: boolean }>("/api/live/telemetry", { event, detail }).catch(
+    () => undefined,
+  );
 };
 
 export const composeDirectorPrompt = async (input: {

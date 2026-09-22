@@ -265,7 +265,13 @@ export const generateClip = async (
 
   const videoBackend = renderBackendFor(backend);
   // Only idle loops on the anchor; every other job chains forward from a real generated frame, single-image-seed style — pinning a hold's end frame to the seed never stopped it from drifting mid-clip, it only masked the seam for the next clip.
-  const isAnchoredLoop = job.kind === "idle" && videoBackend.supportsEndFrame;
+  // The greeting also loops when its seed is a staged in-scene still (seed differs from the identity photo), so the idles pre-stocked from that frame stay playable after it. On the raw upload it chains: the photo's clothes and room contradict the prompt and every loop back to it popped.
+  const greetingLoops =
+    job.kind === "greeting" && session.seedFrameUrl !== session.anchorFrameUrl;
+  const isAnchoredLoop =
+    (job.kind === "idle" || greetingLoops) && videoBackend.supportsEndFrame;
+  // Idle never seeds the next clip even where it cannot loop (reference backend); an anchored loop returns to its seed.
+  const keepsSessionSeed = job.kind === "idle" || isAnchoredLoop;
   // Hold clip (idle/greeting/checkIn/non-wardrobe act/hold/pose transition) — must be verified before it can play; see checkFrame below.
   const isHoldClip = plan.wardrobeIntent === null && !plan.explicit;
   // Explicit act with no wardrobe change of its own (useProp, twerk, ...) — checked like a hold clip but fails open on an unchecked frame; see evaluateFrameChecks.
@@ -362,8 +368,8 @@ export const generateClip = async (
   let rejectReason: string | null = null;
 
   if (!LIVE_TUNABLES.VERIFY_FRAMES) {
-    // Vision guard off: no rejection, no reconciliation, canon is the plan. Only the last frame is extracted, since the next clip needs a seed; an idle loops on its anchor and needs none.
-    if (job.kind !== "idle") {
+    // Vision guard off: no rejection, no reconciliation, canon is the plan. Only the last frame is extracted, since the next clip needs a seed; an anchored loop returns to its seed and needs none.
+    if (!keepsSessionSeed) {
       const verifyStarted = Date.now();
       try {
         seedFrameUrl =
@@ -381,8 +387,8 @@ export const generateClip = async (
       }
       verifyMs = Date.now() - verifyStarted;
     }
-  } else if (job.kind === "idle") {
-    // Idle's frame is never reused as a seed (see pipeline.ts), so it always plays from session.seedFrameUrl; only the midpoint needs checking since start/end are the anchor by construction.
+  } else if (keepsSessionSeed) {
+    // An anchored loop's frame is never reused as a seed (see pipeline.ts), so it always plays from session.seedFrameUrl; only the midpoint needs checking since start/end are the anchor by construction.
     const verifyStarted = Date.now();
     const midCheck = await checkFrame(
       videoUrl,

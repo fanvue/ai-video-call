@@ -62,17 +62,37 @@ export const h3MaxReferenceVideoRequestSchema = z.object({
 export const h3MaxReferenceVideoResultSchema = h3MaxVideoResultPayloadSchema;
 
 // fal-ai/clarity-upscaler — best-effort quality pass on the seed frame; high resemblance + low creativity biases it toward sharpening over hallucinating new detail.
+// fal-ai/seedvr/upscale/image: picked over clarity, Topaz Recover 3, NAFNet and photo-restoration on a 5th-generation seed (2s warm, real texture back, likeness and framing intact).
 export const frameUpscaleRequestSchema = z.object({
   image_url: z.url(),
-  prompt: z.string(),
+  upscale_mode: z.literal("factor").default("factor"),
   upscale_factor: z.number().default(2),
-  creativity: z.number().min(0).max(1).default(0.2),
-  resemblance: z.number().min(0).max(1).default(0.85),
-  enable_safety_checker: z.literal(false).default(false),
+  // Low: how much detail it invents; higher values started redesigning skin and hair.
+  noise_scale: z.number().min(0).max(1).default(0.1),
+  output_format: z.enum(["png", "jpg", "webp"]).default("jpg"),
 });
 
 export const frameUpscaleResultSchema = z.object({
-  image: z.object({ url: z.url() }),
+  image: z.object({
+    url: z.url(),
+    width: z.number().int().positive().optional(),
+    height: z.number().int().positive().optional(),
+  }),
+});
+
+// fal-ai/bytedance/seedream/v4/edit: places the uploaded persona into the selected scene as one still. Picked over nano-banana (refused the lingerie prompt) and flux kontext (returned a black, safety-blanked frame); 13 to 20 s, $0.03.
+export const sceneStillRequestSchema = z.object({
+  prompt: z.string().min(1),
+  image_urls: z.array(z.url()).min(1).max(1),
+  num_images: z.literal(1).default(1),
+  image_size: z.object({
+    width: z.number().int().min(1024).max(4096),
+    height: z.number().int().min(1024).max(4096),
+  }),
+});
+
+export const sceneStillResultSchema = z.object({
+  images: z.array(z.object({ url: z.url() })).min(1),
 });
 
 // fal-ai/ffmpeg-api/extract-frame: serverless replacement for local-ffmpeg last-frame extraction (see BLOCKED notes in the port report).

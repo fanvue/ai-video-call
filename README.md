@@ -155,3 +155,14 @@ Usage
 Docs
 
 - Fanvue API: [https://api.fanvue.com/docs](https://api.fanvue.com/docs)
+
+## Rolling back
+
+`stable-v1` tags the last build the team signed off on before the seamless-playback round. To
+return the working tree to it without rewriting history:
+
+```bash
+git checkout stable-v1 -- . && git commit -m "Roll back to stable-v1"
+```
+
+then deploy as usual (`npx vercel --prod --yes` from a clean detached worktree of `HEAD`).

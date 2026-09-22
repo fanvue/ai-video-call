@@ -3,13 +3,21 @@ import { z } from "zod";
 import { uploadReferenceImageToFal } from "@/lib/fal/uploadImage";
 import { getCurrentUser } from "@/lib/fanvue";
 import { createGroqVisionCompletion } from "@/lib/groq";
-import type { Wardrobe } from "@/lib/live/contract";
+import { SURROUNDINGS_BY_SCENE } from "@/lib/live/client/defaultLiveState";
+import {
+  LIVE_TUNABLES,
+  sceneIdSchema,
+  type Wardrobe,
+} from "@/lib/live/contract";
+import { stageSeed } from "@/lib/live/server/stageSeed";
 
 export const maxDuration = 60;
 
 const bodySchema = z.object({
   imageBase64: z.string().min(1),
   contentType: z.union([z.literal("image/jpeg"), z.literal("image/png")]),
+  // Selected room; with it the reference step also stages the in-scene still the greeting starts on.
+  sceneId: sceneIdSchema.optional(),
 });
 
 // She always starts a session in lingerie — top/bottom start off, bra/panties white, regardless of what capture reports.
@@ -64,42 +72,62 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
-  const { imageBase64, contentType } = parsed.data;
+  const { imageBase64, contentType, sceneId } = parsed.data;
 
   const anchorFrameUrl = await uploadReferenceImageToFal(
     Buffer.from(imageBase64, "base64"),
     contentType,
   );
 
-  let capture: WardrobeCapture | null = null;
-  let captured = true;
-  try {
-    const completion = await createGroqVisionCompletion({
-      imageUrl: anchorFrameUrl,
-      prompt: CAPTURE_PROMPT,
-      responseFormat: { type: "json_object" },
-    });
-    capture = parseCapture(
-      completion.choices[0]?.message?.content?.trim() ?? "",
-    );
-    if (!capture) captured = false;
-  } catch (error) {
-    console.warn(
-      "live/reference: wardrobe capture failed or refused, using defaults",
-      error,
-    );
-    captured = false;
-  }
+  const captureLook = async (): Promise<WardrobeCapture | null> => {
+    try {
+      const completion = await createGroqVisionCompletion({
+        imageUrl: anchorFrameUrl,
+        prompt: CAPTURE_PROMPT,
+        responseFormat: { type: "json_object" },
+      });
+      return parseCapture(
+        completion.choices[0]?.message?.content?.trim() ?? "",
+      );
+    } catch (error) {
+      console.warn(
+        "live/reference: wardrobe capture failed or refused, using defaults",
+        error,
+      );
+      return null;
+    }
+  };
+  // The still only needs the upload and the room, so it runs alongside the capture rather than after it.
+  const [capture, staged] = await Promise.all([
+    captureLook(),
+    LIVE_TUNABLES.STAGE_SEED && sceneId
+      ? stageSeed({
+          referenceUrl: anchorFrameUrl,
+          sceneId,
+          lookLock: "an adult woman with a natural build",
+        })
+      : Promise.resolve(null),
+  ]);
+  const captured = capture !== null;
+  const capturedFraming = FRAMING_VALUES.has(capture?.framing ?? "")
+    ? (capture?.framing as "wider" | "medium" | "torso")
+    : undefined;
 
   return NextResponse.json({
     anchorFrameUrl,
+    // The greeting's first frame. A staged still already shows the selected room and the canon lingerie, so the prompt no longer contradicts the seed.
+    seedFrameUrl: staged?.url ?? anchorFrameUrl,
+    staged: staged !== null,
+    stageCostUsd: staged?.costUsd ?? 0,
     wardrobe: DEFAULT_WARDROBE,
     lookLock:
       capture?.lookLock?.slice(0, 600) || "an adult woman with a natural build",
-    surroundings: capture?.surroundings?.slice(0, 400) || undefined,
-    framing: FRAMING_VALUES.has(capture?.framing ?? "")
-      ? (capture?.framing as "wider" | "medium" | "torso")
-      : undefined,
+    // Staged: the still is the room, so its preset describes what the first clip shows; otherwise the photo's own background.
+    surroundings:
+      staged && sceneId
+        ? SURROUNDINGS_BY_SCENE[sceneId]
+        : capture?.surroundings?.slice(0, 400) || undefined,
+    framing: staged ? "medium" : capturedFraming,
     captured,
   });
 }

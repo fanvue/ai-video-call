@@ -55,9 +55,21 @@ one-in-flight chain cannot hold a buffer. The chain therefore has two modes:
   anchor frame, so it starts and ends on the same frame (`ClipResult.loops = true`,
   `seedFrameUrl` = the anchor). Idle clips are interchangeable: the client keeps
   `IDLE_BUFFER_TARGET` ready and up to `IDLE_MAX_INFLIGHT` rendering in parallel, all from one
-  anchor. A rejected anchor frame is never adopted; the anchor only ever advances from an
+  anchor (swap mode uses `SWAP_IDLE_BUFFER_TARGET` / `SWAP_IDLE_MAX_INFLIGHT`, two each, because a
+  swapped filler takes longer to make than it plays). Each idle job carries a `durationSec` sized
+  from the slowest of the last three idle productions plus `IDLE_HEADROOM_SEC`, clamped to
+  `IDLE_CLIP_SEC`..`MAX_CLIP_SEC`, so the next filler is ready before the current one ends. In-flight
+  idles are tracked per seed, so up to `SWAP_IDLE_MAX_INFLIGHT` (one more than the target) lets a
+  bridge idle for a fresh chain tail start while old-anchor idles are still rendering. A rejected anchor frame is never adopted; the anchor only ever advances from an
   approved clip.
-- **Chained action.** `greeting`, `reply`, `beat` and `checkIn` are
+- **Staged seed.** With `STAGE_SEED` on, the reference step also renders one in-scene still
+  (Seedream v4 edit: the upload's persona in the selected room, canon lingerie, webcam framing,
+  13 to 20 s, $0.03) alongside the look capture, and that still is the session seed; the upload
+  stays the identity reference. The greeting then loops on it like an idle, so the idles
+  pre-stocked from it play straight after and the intro neither morphs from the photo nor holds.
+  If staging fails or is refused, the seed is the upload, the greeting chains forward and nothing
+  is pre-stocked (looping on the raw photo was tried and popped every clip).
+- **Chained action.** `greeting` (off a raw upload), `reply`, `beat` and `checkIn` are
   seeded from the frame currently on the anchor and chain frame to frame. Their last frame
   (guarded against both canon and the identity anchor) becomes the new anchor. When the anchor
   changes, buffered idle loops from the old anchor are discarded and new ones are rendered from
@@ -79,7 +91,15 @@ Invariants:
 - A chained clip's seed is always the previous chained clip's `seedFrameUrl`.
 - Every clip commits `state`. Idle loops commit the unchanged state.
 - Minimum clip duration is 10s; maximum 15s (fal limit). Idle = 10s.
-- The stream is shown as live once `PRIME_CLIPS` clips are ready after the greeting.
+- The stream is shown as live once `PRIME_CLIPS` clips are ready after the greeting. Requests are
+  accepted from the moment the pipeline starts; one sent during the intro queues behind the
+  greeting and she is shown typing as soon as the greeting is on screen.
+- **Boundary fallback.** The player starts the next clip `SWAP_LEAD_SEC` (0.5 s) before the current
+  one ends and flips only on its first presented frame, so decode latency overlaps the outgoing
+  tail. If a one-shot clip reaches that point with nothing seeded from its tail ready, the player
+  asks the pipeline for `nextFallbackClip()`: an idle of the same look from an earlier anchor,
+  played as a cut. A cut beats a frozen frame; it is logged (`boundaryFallback`) so it can be
+  counted.
 - The reference backend has no end-frame parameter, so idle loops are not available on it; it
   falls back to a strict one-in-flight chain and is marked experimental in the UI.
 
@@ -264,7 +284,9 @@ payment stack behind human approval.
   otherwise failing frame is rejected and the whole clip re-rendered, not pixel-patched.
 - Timing rule: `reply`, `beat`, `checkIn`, and `greeting` clips run `ACTION_CLIP_SEC` (11s — must
   stay above `IDLE_CLIP_SEC`'s 10s, both already at the fal floor, since `planReply` tells a
-  hold-only beat from a real one by comparing the two); only `idle` stays at `IDLE_CLIP_SEC`. Every
+  hold-only beat from a real one by comparing the two); only `idle` starts at `IDLE_CLIP_SEC` and grows with measured production time. In swap mode every
+  chain clip is stretched to `SWAP_ACTION_CLIP_SEC` (15s) with a hold appended to the prompt, because
+  the next clip seeds from this one's last frame and takes 10 to 17s to make. Every
   clip is frame-verified before it can play or seed the next one (see "Frame guard"), so drift is
   caught clip by clip rather than compounding.
 - `vitest.config.ts` declares the `@/` alias (vitest does not read `tsconfig.json` paths on its

@@ -4,10 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   composeDirectorPrompt,
   fetchLucyToken,
-  warmSwap,
   renderClip,
+  reportTelemetry,
   uploadReference,
   upscaleSeed,
+  warmSwap,
 } from "@/lib/live/client/api";
 import {
   DEFAULT_TIP_MENU,
@@ -76,6 +77,7 @@ export const LiveStudio = () => {
     composeDirectorPrompt,
     fetchLucyToken,
     warmSwap,
+    reportTelemetry,
   });
   const { bindVideoA, bindVideoB } = videoRefs;
 
@@ -141,10 +143,10 @@ export const LiveStudio = () => {
   useEffect(() => stopPrivateMeter, [stopPrivateMeter]);
 
   // The director queues fan requests (insertReplyIndex) rather than dropping extras, so the
-  // composer only needs to block before the session has actually connected.
-  const composerDisabled = session.status === "connecting";
-  const composerDisabledReason =
-    session.status === "connecting" ? "Connecting…" : null;
+  // composer only blocks until the pipeline exists; a request sent during the intro plays after the greeting.
+  const composerDisabled =
+    session.status === "connecting" && !session.acceptingRequests;
+  const composerDisabledReason = composerDisabled ? "Connecting…" : null;
 
   const handleSend = useCallback(
     (text: string, paid?: boolean) => {
@@ -409,6 +411,7 @@ export const LiveStudio = () => {
             displayName={displayName}
             stage={session.connectStage}
             viewerCount={session.viewerCount}
+            posterUrl={session.posterUrl}
           />
         ) : null}
 

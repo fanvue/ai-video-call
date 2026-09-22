@@ -57,6 +57,10 @@ import {
 
 export type ReferenceUploadResult = {
   anchorFrameUrl: string;
+  // The greeting's first frame: a staged in-scene still when staging succeeded, otherwise the upload itself.
+  seedFrameUrl: string;
+  staged: boolean;
+  stageCostUsd: number;
   wardrobe: Wardrobe;
   lookLock: string;
   // Actual room visible in the photo, captured by vision; undefined falls back to the sceneId preset.
@@ -84,7 +88,10 @@ export type StartOptions = {
 
 export type UseLiveSessionDeps = {
   renderClip: (req: ClipRequest) => Promise<ClipResult>;
-  uploadReference: (file: File) => Promise<ReferenceUploadResult>;
+  uploadReference: (
+    file: File,
+    sceneId: SceneId,
+  ) => Promise<ReferenceUploadResult>;
   upscaleSeed?: (
     frameUrl: string,
   ) => Promise<{ url: string | null; costUsd: number }>;
@@ -100,7 +107,15 @@ export type UseLiveSessionDeps = {
   fetchLucyToken: () => Promise<string>;
   // Swap mode only; starts the GPU container before the first clip needs it.
   warmSwap: () => Promise<void>;
+  // Optional: playback and connect events for the server log; tests leave it out.
+  reportTelemetry?: (
+    event: string,
+    detail: Record<string, string | number | boolean | null>,
+  ) => void;
 };
+
+// A join that has not shown the greeting by now is the "stuck in connecting" report; log where it stalled.
+const CONNECT_STALL_MS = 60_000;
 
 const EMPTY_BUFFER_DEPTH: BufferDepth = {
   idleReady: 0,
@@ -184,6 +199,9 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     useState<BufferDepth>(EMPTY_BUFFER_DEPTH);
   const [typingCreator, setTypingCreator] = useState(false);
   const [needsTap, setNeedsTap] = useState(false);
+  // Requests are accepted as soon as the director and pipeline exist, well before the greeting is on screen; a request sent during the intro queues behind it.
+  const [acceptingRequests, setAcceptingRequests] = useState(false);
+  const [posterUrl, setPosterUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [backend, setBackendState] = useState<RenderBackend>("turbo");
   const [speechMode, setSpeechModeState] = useState<SpeechMode>("text");
@@ -194,7 +212,25 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   const [renderStats, setRenderStats] = useState<RenderPercentiles | null>(
     null,
   );
-  const [connectStage, setConnectStage] = useState<ConnectStage>("uploading");
+  const [connectStage, setConnectStageState] =
+    useState<ConnectStage>("uploading");
+  const connectStageRef = useRef<ConnectStage>("uploading");
+  const connectStartedAtMsRef = useRef(0);
+  const connectStallTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const reportTelemetry = deps.reportTelemetry;
+  const setConnectStage = useCallback(
+    (stage: ConnectStage) => {
+      connectStageRef.current = stage;
+      setConnectStageState(stage);
+      reportTelemetry?.("connectStage", {
+        stage,
+        ms: Date.now() - connectStartedAtMsRef.current,
+      });
+    },
+    [reportTelemetry],
+  );
   const [roomEvents, setRoomEvents] = useState<RoomChatMessage[]>([]);
   const [viewerCount, setViewerCount] = useState(0);
   const [typingDevice, setTypingDevice] = useState<TypingDevice>(null);
@@ -359,6 +395,9 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     () =>
       new GaplessPlayer({
         onStatusChange: (playerStatus: PlayerStatus) => {
+          if (playerStatus === "holding" || playerStatus === "needsTap") {
+            deps.reportTelemetry?.("playerStatus", { status: playerStatus });
+          }
           setNeedsTap(playerStatus === "needsTap");
           if (playerStatus === "holding") {
             setStatus((current) => (current === "live" ? "holding" : current));
@@ -455,8 +494,15 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     if (!greetingPlayedRef.current) {
       return;
     }
+    if (connectStallTimeoutRef.current) {
+      clearTimeout(connectStallTimeoutRef.current);
+      connectStallTimeoutRef.current = null;
+      reportTelemetry?.("connected", {
+        ms: Date.now() - connectStartedAtMsRef.current,
+      });
+    }
     setStatus((current) => (current === "connecting" ? "live" : current));
-  }, []);
+  }, [reportTelemetry]);
 
   const handleClipStarted = useCallback(
     (clipId: string) => {
@@ -487,23 +533,63 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         }
       }
       refreshBufferDepth();
+      // A request typed during the intro is already queued behind the greeting, or rendering as its reply; she is seen reading it now.
+      if (
+        result?.jobKind === "greeting" &&
+        (currentActRef.current?.kind === "reply" ||
+          directorRef.current
+            ?.getState()
+            .jobQueue.some((job) => job.kind === "reply"))
+      ) {
+        setTypingCreator(true);
+      }
       greetingPlayedRef.current = true;
       maybeGoLive();
     },
     [applyLiveState, maybeGoLive, refreshBufferDepth, refreshRequestStatuses],
   );
 
+  const getFallbackClip = useCallback((): ClipToPlay | null => {
+    const pipeline = pipelineRef.current;
+    if (!pipeline) {
+      return null;
+    }
+    const result = pipeline.nextFallbackClip();
+    if (!result) {
+      return null;
+    }
+    console.warn(
+      `useLiveSession: boundary fallback, cutting to idle ${result.clipId} instead of holding`,
+    );
+    reportTelemetry?.("boundaryFallback", { clipId: result.clipId });
+    clipMetaRef.current.set(result.clipId, result);
+    return {
+      id: result.clipId,
+      videoUrl: result.videoUrl,
+      durationSec: result.durationSec,
+      hasSpeech: false,
+      loops: result.loops,
+      interrupts: false,
+    };
+  }, [reportTelemetry]);
+
   useEffect(() => {
     player.setProgressHandler(revealIfDue);
     player.setClipStartedHandler(handleClipStarted);
     player.setNextClipHandler(getNextClip);
+    player.setFallbackClipHandler(getFallbackClip);
     player.setInterruptReadyHandler(hasInterruptReady);
     player.setClipReturnedHandler(returnClip);
+    player.setClipFailedHandler((clipId, reason) => {
+      reportTelemetry?.("clipFailed", { clipId, reason });
+    });
   }, [
+    reportTelemetry,
     player,
     revealIfDue,
     handleClipStarted,
     getNextClip,
+    getFallbackClip,
     hasInterruptReady,
     returnClip,
   ]);
@@ -689,6 +775,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       refreshQueueStrip,
       refreshRequestStatuses,
       maybeGoLive,
+      setConnectStage,
     ],
   );
 
@@ -897,7 +984,23 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     async (file: File, sceneId: SceneId, options: StartOptions) => {
       setError(null);
       setStatus("connecting");
+      setAcceptingRequests(false);
+      setPosterUrl(null);
+      connectStartedAtMsRef.current = Date.now();
       setConnectStage("uploading");
+      if (connectStallTimeoutRef.current) {
+        clearTimeout(connectStallTimeoutRef.current);
+      }
+      connectStallTimeoutRef.current = setTimeout(() => {
+        connectStallTimeoutRef.current = null;
+        reportTelemetry?.("connectStall", {
+          stage: connectStageRef.current,
+          backend: options.backend ?? "turbo",
+          greetingPlayed: greetingPlayedRef.current,
+          playerStatus: player.getStatus(),
+          ms: CONNECT_STALL_MS,
+        });
+      }, CONNECT_STALL_MS);
       if (options.backend === "swap") {
         deps.warmSwap().catch(() => undefined);
       }
@@ -922,8 +1025,12 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       privateModeRef.current = false;
       setPrivateModeState(false);
       player.reset();
-      const reference = await deps.uploadReference(file);
+      const reference = await deps.uploadReference(file, sceneId);
       setConnectStage("capturingLook");
+      setPosterUrl(reference.seedFrameUrl);
+      console.log(
+        `useLiveSession: reference staged=${reference.staged} captured=${reference.captured}`,
+      );
       const creator = defaultCreatorProfile(
         options.displayName,
         sceneId,
@@ -1032,7 +1139,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       const director = new LiveDirector({
         creator,
         anchorFrameUrl: reference.anchorFrameUrl,
-        seedFrameUrl: reference.anchorFrameUrl,
+        seedFrameUrl: reference.seedFrameUrl,
         liveState: initialLiveState,
         now: Date.now(),
       });
@@ -1040,7 +1147,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       setSessionStartedAtMs(director.getState().startedAt);
       applyLiveState(initialLiveState);
       setTranscript([]);
-      setCostTotal(0);
+      setCostTotal(reference.stageCostUsd);
       setAnchorChangedAtMs(Date.now());
       speechModeRef.current = options.speechMode ?? "text";
       player.setSpeechMode(speechModeRef.current);
@@ -1072,6 +1179,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         pipeline.start(director.nextJob(), snapshotSource, () =>
           director.nextJob(),
         );
+        setAcceptingRequests(true);
       };
 
       if (modeRef.current === "lucy") {
@@ -1220,6 +1328,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       deps,
       handlePipelineEvent,
       player,
+      reportTelemetry,
+      setConnectStage,
       snapshotSource,
       applyLiveState,
       isBusy,
@@ -1272,6 +1382,10 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       clearInterval(tickIntervalRef.current);
       tickIntervalRef.current = null;
     }
+    if (connectStallTimeoutRef.current) {
+      clearTimeout(connectStallTimeoutRef.current);
+      connectStallTimeoutRef.current = null;
+    }
     if (errorTimeoutRef.current) {
       clearTimeout(errorTimeoutRef.current);
       errorTimeoutRef.current = null;
@@ -1296,6 +1410,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     if (videoARef.current) {
       videoARef.current.srcObject = null;
     }
+    setAcceptingRequests(false);
     setStatus("ended");
   }, [clearPendingReveal, player, teardownLucyPipelineSurface]);
 
@@ -1378,6 +1493,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       typingCreator,
       typingDevice,
       needsTap,
+      acceptingRequests,
+      posterUrl,
       error,
       backend,
       speechMode,
@@ -1416,6 +1533,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       typingCreator,
       typingDevice,
       needsTap,
+      acceptingRequests,
+      posterUrl,
       error,
       backend,
       speechMode,
