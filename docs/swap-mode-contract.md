@@ -1,39 +1,44 @@
-# Swap mode: self-hosted realtime identity swap over the Turbo pipeline
+# Swap mode: self-hosted identity swap per clip over the Turbo pipeline
 
-Status: service half live on Modal for the POC (see `services/swap/README.md`); fal host written but blocked on serverless access for the Fanvue team. Client half shipped: `swap` render backend, `/api/live/swapSession` (auth-gated URL + token), `swapStream.ts` (JPEG frames over WebSocket, at most two in flight, output canvas captured into the visible video), Swap option in setup.
+Status: service live on Modal for the POC (see `services/swap/README.md`); fal host written but blocked on serverless access for the Fanvue team. Client and server halves shipped: `swap` render backend, `generateClip` sends every rendered turbo clip through `server/swapClip.ts`, the swapped mp4 plays and its swapped last frame seeds the next clip, the studio overlay shows the per-clip swap report.
 
 ## Why
 
-Director (fal minimax) and Lucy (Decart via fal) both enforce provider-side content policy on the live stream and cannot be configured otherwise. They are labelled SFW only in the setup screen. The clip backends (Turbo, Reference) already run with fal's documented `enable_safety_checker: false`, which fal permits for adult content between consenting adults. A live identity-lock mode with the same content posture therefore has to run a model we host, with our own guards, not a third party's stream filter.
+Director (fal minimax) and Lucy (Decart via fal) both enforce provider-side content policy on the live stream and cannot be configured otherwise. They are labelled SFW only in the setup screen. The clip backends (Turbo, Reference) already run with fal's documented `enable_safety_checker: false`, which fal permits for adult content between consenting adults. An identity-lock mode with the same content posture therefore has to run a model we host, with our own guards, not a third party's stream filter.
 
 ## What it is
 
-Same shape as Lucy mode: the Turbo pipeline renders motion into the hidden player, the capture canvas streams it, and a realtime service re-applies the persona's identity to every frame. The difference is the service: an open-source face-identity model (InsightFace `inswapper_128` plus a face restorer such as GFPGAN or CodeFormer) hosted as our own fal serverless app.
+The driving source is our own pre-rendered turbo clip, so there is no live frame stream: the server posts the finished clip to the swap service, which swaps the persona's face onto every frame (InsightFace `inswapper_128`), restores it (GPEN-BFR-256 via ONNX) and re-encodes the clip at its native frame rate with the source audio. Output runs at the clip's 24/25 fps with no transport latency; the cost is a few seconds of GPU time per clip before it can play.
+
+Re-anchoring falls out of it: the swapped, restored last frame is the next clip's seed, so identity re-locks every clip instead of compounding. The service also reports the ArcFace cosine of the last frame against the reference before and after the swap, for a future gate that re-seeds from the original anchor when the underlying turbo identity has drifted too far.
+
+The earlier per-frame JPEG-over-WebSocket transport (2 to 3 fps effective, 330 to 570 ms round trips) was replaced by this on 2026-09-22.
 
 ## Guards we keep (non-negotiable)
 
 - Reference identity must be the synthetic persona photo from setup. No upload of a real person's face into this path; the existing `frameGuard` and reference vetting stay in front of it.
-- 18+ only, one fictional adult. Existing frame checks remain on every rendered clip before it reaches the driving canvas.
-- Server key never reaches the client. The realtime session is minted by our token route with an `allowed_apps` scoped to this app.
-- No auto-retry on any guard rejection.
+- 18+ only, one fictional adult. Existing frame checks run on the swapped clip, which is the one that plays.
+- Service token never reaches the client. The server calls the service with a bearer token; the service fails closed when the token secret is missing.
+- A swap failure is not a guard failure: the unswapped turbo clip plays and the overlay reports `failed` with the reason. No auto-retry.
 
-## Service contract (fal serverless)
+## Service contract
 
-- `fal.App` with `machine_type="GPU-A10G"` or better, `keep_alive = 120`, `min_concurrency = 1` while a session is live so the first frame is not a cold start.
-- `setup()`: load InsightFace detector + `inswapper_128.onnx` + restorer once. Compute the persona face embedding from the reference image sent in the first message and cache it for the connection.
-- Endpoint: `@fal.endpoint("/ws", is_websocket=True)`. Client sends binary JPEG frames (720x1280) at up to 24fps; server returns swapped JPEG frames in order. Skip, never queue, when behind by more than 2 frames.
-- Control messages (JSON text frames): `{"type":"reference","image":"<data uri>"}` once; `{"type":"stop"}`.
-- Target: under 60ms per frame on A10G at 720x1280 with detector on every 3rd frame and tracking between.
+- `POST /swapClip` with `Authorization: Bearer <SWAP_TOKEN>` and JSON `{ "video_url": "<mp4 url>", "reference_image": "<data uri>" }`.
+- Response JSON: `video_base64` (h264 mp4, source audio copied), `last_frame_base64` (JPEG of the swapped last frame), `stats` (`frames`, `frames_with_face`, `fps`, `swap_ms`, `ms_per_frame`, `similarity_before`, `similarity_after`, `restored`).
+- 403 without a valid token, 422 when the reference has no single face or the clip cannot be read, 500 on anything else.
+- Detector every 2nd frame, swap and restore on every detected face, clips capped at 600 frames. A reference whose face fills the whole photo is retried with a replicated border, since the detector misses edge-to-edge faces.
+- `GET /health` is unauthenticated and doubles as the warm-up probe (`/api/live/swapWarm`, called by the client when a swap session starts).
 
-## Client contract
+## Server contract
 
-- `renderBackendSchema` gains `"swap"`; `renderClip.ts` maps swap to the turbo backend like Lucy.
-- `swapStream.ts` mirrors `lucyStream.ts`: token route, open/close, cost per second from fal's GPU pricing, `streamClosed` reporting.
-- Driving canvas identical to Lucy's (`LUCY_INPUT` sizing). Frames are pulled from the canvas via `canvas.toBlob("image/jpeg", 0.8)` on a fixed timer instead of `captureStream`, because the transport is a WebSocket, not WebRTC.
-- Setup screen: `Swap (identity lock over Turbo, self-hosted, alpha)`.
+- `renderBackendSchema` includes `"swap"`; `renderClip.ts` maps swap to the turbo backend like Lucy.
+- `generateClip`: render, then `swapClip` (fetch reference as a data URI, call the service, rehost the mp4 and last frame on fal storage), then frame checks and seed extraction run on the swapped clip. GPU cost is `swap_ms` at `LIVE_TUNABLES.SWAP_COST_PER_SEC_USD`.
+- `clipResultSchema.swap` carries the report to the client; `StudioOverlay` renders it on the last-clip line.
+- Env: `SWAP_SERVICE_URL` (https base of the Modal app) and `SWAP_TOKEN`; either missing makes every swap clip report `failed`.
 
 ## Open decisions
 
-- GPU hourly cost versus Lucy's $0.02/s. A10G on fal is billed per second while the app is warm; keeping `min_concurrency = 1` for the whole call is the honest comparison.
-- Restorer choice affects both identity fidelity and latency. Decide with a 30 second A/B on the same driving clips.
-- Whether to move the transport to WebRTC later if JPEG-over-WebSocket latency is visible.
+- Whether to chunk the swap (2 s segments, playback after the first) if the per-clip delay eats too much of the idle buffer.
+- Re-anchor gate threshold on `similarity_before`; measure a session first.
+- Restorer blend (0.8) and whether to add a full-frame upscaler; both are second-order next to the face.
+- Moving the Modal app to a Fanvue workspace; the inswapper research-only license.

@@ -15,14 +15,22 @@ export const uploadReferenceImageToFal = async (
   buffer: Buffer,
   contentType: "image/jpeg" | "image/png",
 ): Promise<string> => {
-  ensureConfigured();
   const extension = contentType === "image/png" ? "png" : "jpg";
-  const file = new File(
-    [new Uint8Array(buffer)],
+  return uploadToFal(
+    buffer,
     `reference-${Date.now()}.${extension}`,
-    {
-      type: contentType,
-    },
+    contentType,
   );
+};
+
+export const uploadToFal = async (
+  buffer: Buffer,
+  fileName: string,
+  contentType: string,
+): Promise<string> => {
+  ensureConfigured();
+  const file = new File([new Uint8Array(buffer)], fileName, {
+    type: contentType,
+  });
   return fal.storage.upload(file);
 };

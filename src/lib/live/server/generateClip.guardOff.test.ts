@@ -22,6 +22,23 @@ vi.mock("./frameGuard", () => ({
   guardFrame: (...args: unknown[]) => guardFrame(...args),
 }));
 
+const swapClip = vi.fn();
+// Fully mocked: the real module pulls in @/env, which validates the server environment at import.
+vi.mock("./swapClip", () => ({
+  swapClip: (...args: unknown[]) => swapClip(...args),
+  failedSwapReport: (swapMs: number, error: Error) => ({
+    status: "failed",
+    swapMs,
+    frames: 0,
+    framesWithFace: 0,
+    msPerFrame: 0,
+    similarityBefore: null,
+    similarityAfter: null,
+    restored: false,
+    reason: error.message,
+  }),
+}));
+
 vi.mock("./writeReply", () => ({
   writeReply: vi.fn(async () => ({ text: "hey you", nextWorld: "chatting" })),
   writeCheckIn: vi.fn(async () => null),
@@ -83,6 +100,7 @@ const request = (
 
 beforeEach(() => {
   render.mockReset();
+  swapClip.mockReset();
   extractLastFrameUrl.mockReset();
   extractMidFrameUrl.mockReset();
   guardFrame.mockReset();
@@ -152,5 +170,67 @@ describe("generateClip with the vision guard off (default)", () => {
     expect(render).toHaveBeenCalledWith(
       expect.objectContaining({ identityReferenceUrl: session.anchorFrameUrl }),
     );
+  });
+});
+
+describe("generateClip on the swap backend", () => {
+  const swapRequest = (job: ClipRequest["job"]): ClipRequest => ({
+    ...request(job),
+    backend: "swap",
+  });
+  const swapped = {
+    videoUrl: "https://example.com/swapped.mp4",
+    lastFrameUrl: "https://example.com/swapped-last.jpg",
+    costUsd: 0.004,
+    report: {
+      status: "swapped" as const,
+      swapMs: 12_000,
+      frames: 240,
+      framesWithFace: 240,
+      msPerFrame: 50,
+      similarityBefore: 0.3,
+      similarityAfter: 0.7,
+      restored: true,
+      reason: null,
+    },
+  };
+
+  it("plays the swapped clip, seeds the next clip from its swapped last frame without a fal extract, and adds the GPU cost", async () => {
+    swapClip.mockResolvedValue(swapped);
+    const result = await generateClip(swapRequest({ kind: "greeting" }));
+    expect(swapClip).toHaveBeenCalledWith({
+      videoUrl: "https://example.com/clip.mp4",
+      referenceImageUrl: session.anchorFrameUrl,
+    });
+    expect(result.videoUrl).toBe("https://example.com/swapped.mp4");
+    expect(result.seedFrameUrl).toBe("https://example.com/swapped-last.jpg");
+    expect(extractLastFrameUrl).not.toHaveBeenCalled();
+    expect(result.costUsd).toBeCloseTo(0.279, 6);
+    expect(result.swap?.status).toBe("swapped");
+  });
+
+  it("idle clips are swapped too but still play from the session seed", async () => {
+    swapClip.mockResolvedValue(swapped);
+    const result = await generateClip(swapRequest({ kind: "idle" }));
+    expect(result.videoUrl).toBe("https://example.com/swapped.mp4");
+    expect(result.seedFrameUrl).toBe(session.seedFrameUrl);
+  });
+
+  it("falls back to the unswapped clip and the fal last frame when the service fails, reporting the reason", async () => {
+    swapClip.mockRejectedValue(new Error("Swap service responded 503"));
+    const result = await generateClip(swapRequest({ kind: "greeting" }));
+    expect(result.verdict).toBe("approved");
+    expect(result.videoUrl).toBe("https://example.com/clip.mp4");
+    expect(result.seedFrameUrl).toBe("https://example.com/last.jpg");
+    expect(result.costUsd).toBe(0.275);
+    expect(result.swap).toMatchObject({
+      status: "failed",
+      reason: "Swap service responded 503",
+    });
+  });
+
+  it("never touches the swap service on other backends", async () => {
+    await generateClip(request({ kind: "greeting" }));
+    expect(swapClip).not.toHaveBeenCalled();
   });
 });

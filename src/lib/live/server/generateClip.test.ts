@@ -35,6 +35,12 @@ vi.mock("./frameGuard", () => ({
   guardFrame: (...args: unknown[]) => guardFrame(...args),
 }));
 
+// Never called on the turbo backend these suites use; mocked because the real module imports @/env.
+vi.mock("./swapClip", () => ({
+  swapClip: vi.fn(),
+  failedSwapReport: vi.fn(),
+}));
+
 const writeReply = vi.fn();
 const writeCheckIn = vi.fn();
 vi.mock("./writeReply", () => ({

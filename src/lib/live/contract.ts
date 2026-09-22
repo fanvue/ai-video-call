@@ -263,6 +263,21 @@ export const observedStateSchema = z.object({
 });
 export type ObservedState = z.infer<typeof observedStateSchema>;
 
+// Swap backend only: what the self-hosted swap did to this clip. "failed" means the unswapped turbo clip is playing.
+export const clipSwapReportSchema = z.object({
+  status: z.enum(["swapped", "failed"]),
+  swapMs: z.number().int().min(0),
+  frames: z.number().int().min(0),
+  framesWithFace: z.number().int().min(0),
+  msPerFrame: z.number().min(0),
+  // ArcFace cosine of the last frame against the reference photo, before and after the swap.
+  similarityBefore: z.number().nullable(),
+  similarityAfter: z.number().nullable(),
+  restored: z.boolean(),
+  reason: z.string().max(300).nullable(),
+});
+export type ClipSwapReport = z.infer<typeof clipSwapReportSchema>;
+
 export const clipResultSchema = z.object({
   clipId: z.string().min(1),
   jobKind: z.enum(["greeting", "idle", "checkIn", "reply", "beat"]),
@@ -300,6 +315,7 @@ export const clipResultSchema = z.object({
     verifyMs: z.number().int().min(0).optional(),
   }),
   costUsd: z.number().min(0),
+  swap: clipSwapReportSchema.optional(),
 });
 export type ClipResult = z.infer<typeof clipResultSchema>;
 
@@ -345,6 +361,6 @@ export const LIVE_TUNABLES = {
   DIRECTOR_COST_PER_SEC_USD: 0.02,
   // Lucy (decart/lucy-2-5/realtime) bills per second live; no documented session minimum, unlike director.
   LUCY_COST_PER_SEC_USD: 0.02,
-  // Swap runs on our own Modal A10G at $1.10/hr, billed while the container is warm.
+  // Swap runs on our own Modal A10G at $1.10/hr; charged per clip on the service's reported swap time.
   SWAP_COST_PER_SEC_USD: 1.1 / 3600,
 } as const;

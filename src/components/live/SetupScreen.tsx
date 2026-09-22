@@ -155,7 +155,8 @@ export const SetupScreen = ({ busy, error, onSubmit }: SetupScreenProps) => {
                   },
                   {
                     value: "swap",
-                    label: "Swap (self-hosted identity lock over Turbo, alpha)",
+                    label:
+                      "Swap (self-hosted identity lock per clip over Turbo, alpha)",
                   },
                 ] as const
               ).map((option) => (
@@ -183,9 +184,10 @@ export const SetupScreen = ({ busy, error, onSubmit }: SetupScreenProps) => {
             ) : null}
             {backend === "swap" ? (
               <p className="text-xs text-[var(--muted)]">
-                Turbo clips with the reference face swapped in on our own GPU
-                (about $1.10/hr while live). Open-source model, no restorer yet,
-                expect a few frames per second.
+                Each Turbo clip gets the reference face swapped in and restored
+                on our own GPU before it plays (about $1.10/hr of GPU time, a
+                few cents per clip). Adds a few seconds per clip; the swapped
+                last frame seeds the next clip so identity re-locks every clip.
               </p>
             ) : null}
             {backend === "director" ? (

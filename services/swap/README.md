@@ -1,6 +1,6 @@
 # Swap service (self-hosted)
 
-Implements the service half of `docs/swap-mode-contract.md`. One engine (`swap_core.py`), two hosts: Modal (`modal_app.py`, live for the POC) and fal serverless (`app.py`, blocked until the Fanvue team has serverless access).
+Implements the service half of `docs/swap-mode-contract.md`: `POST /swapClip` takes a rendered turbo clip URL plus the persona reference and returns the clip with the reference face swapped onto every frame (InsightFace inswapper_128) and restored (GPEN-BFR-512 via ONNX), re-encoded with ffmpeg at the source frame rate with the source audio. One engine (`swap_core.py`), two hosts: Modal (`modal_app.py`, live for the POC) and fal serverless (`app.py`, blocked until the Fanvue team has serverless access).
 
 ## Modal (current POC host)
 
@@ -10,9 +10,11 @@ Deployed to the `jamal-77992` personal workspace on 2026-09-22; move to a Fanvue
 .venv-fal/bin/modal deploy services/swap/modal_app.py
 ```
 
-WebSocket: `wss://jamal-77992--ai-video-swap-swapservice-web.modal.run/ws?token=<SWAP_TOKEN>`. The token lives in the Modal secret `ai-video-swap-token` and in Vercel as `SWAP_TOKEN` (with `SWAP_WS_URL`); the service refuses connections without it (1008) and refuses everything if the secret is missing. A code-only redeploy can leave old containers serving for a while; `modal app stop -y ai-video-swap` first when a route change does not show up.
+Base URL: `https://jamal-77992--ai-video-swap-swapservice-web.modal.run` (Vercel `SWAP_SERVICE_URL`). Every call needs `Authorization: Bearer <SWAP_TOKEN>`; the token lives in the Modal secret `ai-video-swap-token` and in Vercel as `SWAP_TOKEN`. The service answers 403 without it and refuses everything if the secret is missing. A code-only redeploy can leave old containers serving for a while; `modal app stop -y ai-video-swap` first when a route change does not show up.
 
-Smoke test (`scratchpad/swap_smoke.py`, 720x1280 JPEG frames, London to Modal): first frame 3.2s (detector warm-up), then 330 to 570 ms per round trip. Cold start about 25s. No restorer yet (gfpgan's basicsr build is broken), so faces are inswapper_128 raw.
+Smoke test: `.venv-fal/bin/python scratchpad/swap_clip_smoke.py <clip.mp4> <reference.jpg>` sends a local clip through the deployed class (Modal auth, no token needed) and writes the swapped mp4 and its last frame next to it.
+
+Measured 2026-09-22 on a 101-frame 542x988 24fps clip, A10G, `cpu=4`: warm 49 ms/frame (detect 5, swap 21, restore 20), so a 10s turbo clip costs about 12s; cold start adds about 35s, which is why the app pings `/health` when a swap session starts. Identity: ArcFace cosine to the reference went from -0.04 (a different persona) to 0.86 after the swap. GPEN-512 was 140 ms/frame for no visible gain on a 480P face, hence GPEN-256.
 
 ## fal (target host)
 
@@ -32,7 +34,7 @@ python3 -m venv .venv-fal && . .venv-fal/bin/activate && pip install fal
 .venv-fal/bin/fal deploy services/swap/app.py::SwapApp --app-name ai-video-swap
 ```
 
-The deploy prints `https://fal.run/<team>/ai-video-swap`; the WebSocket lives at `wss://fal.run/<team>/ai-video-swap/ws`. Put the app alias in `SWAP_APP_ALIAS` for the token route.
+The deploy prints `https://fal.run/<team>/ai-video-swap`; point `SWAP_SERVICE_URL` at it.
 
 ## Cost (fal list prices, Sept 2026; Modal A10G is $1.10/hr too)
 

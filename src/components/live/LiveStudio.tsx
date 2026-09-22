@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   composeDirectorPrompt,
   fetchLucyToken,
-  fetchSwapSession,
+  warmSwap,
   renderClip,
   uploadReference,
   upscaleSeed,
@@ -75,7 +75,7 @@ export const LiveStudio = () => {
     upscaleSeed,
     composeDirectorPrompt,
     fetchLucyToken,
-    fetchSwapSession,
+    warmSwap,
   });
   const { bindVideoA, bindVideoB } = videoRefs;
 
@@ -400,8 +400,6 @@ export const LiveStudio = () => {
               directorStreamState={session.directorStreamState}
               lucyMetrics={session.lucyMetrics}
               lucyStreamState={session.lucyStreamState}
-              swapMetrics={session.swapMetrics}
-              swapStreamState={session.swapStreamState}
             />
           </div>
         ) : null}

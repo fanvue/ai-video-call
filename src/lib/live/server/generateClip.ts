@@ -7,6 +7,7 @@ import {
   LIVE_TUNABLES,
   type ClipRequest,
   type ClipResult,
+  type ClipSwapReport,
   type FrameGuardReport,
   type GarmentId,
   type LiveState,
@@ -17,6 +18,7 @@ import { guardFrame } from "./frameGuard";
 import { planClip, typingLeadSecFor } from "./planClip";
 import { reconcilePose, reconcileWardrobe } from "./reconcileState";
 import { renderBackendFor } from "./renderClip";
+import { failedSwapReport, swapClip } from "./swapClip";
 import { writeCheckIn, writeReply } from "./writeReply";
 
 const ANATOMY_ISSUE_RE = /extra person|extra or malformed limbs/;
@@ -307,6 +309,35 @@ export const generateClip = async (
     `generateClip: renderMs=${renderMs} kind=${job.kind} backend=${backend} dualRef=${useIdentityReference}`,
   );
 
+  // Swap backend: the swapped clip replaces turbo's output for playback, checks and the next seed.
+  let videoUrl = rendered.videoUrl;
+  let costUsd = rendered.costUsd;
+  let swapReport: ClipSwapReport | undefined;
+  let swappedLastFrameUrl: string | null = null;
+  if (backend === "swap") {
+    const swapStarted = Date.now();
+    try {
+      const swapped = await swapClip({
+        videoUrl,
+        referenceImageUrl: session.anchorFrameUrl,
+      });
+      videoUrl = swapped.videoUrl;
+      costUsd += swapped.costUsd;
+      swapReport = swapped.report;
+      swappedLastFrameUrl = swapped.lastFrameUrl;
+    } catch (error) {
+      // Quality feature, not a guard: the unswapped clip plays and the studio overlay shows the miss.
+      console.warn(
+        "generateClip: swap failed, playing the unswapped clip",
+        error,
+      );
+      swapReport = failedSwapReport(Date.now() - swapStarted, error);
+    }
+    console.log(
+      `generateClip: swap status=${swapReport.status} swapMs=${swapReport.swapMs} frames=${swapReport.frames} msPerFrame=${swapReport.msPerFrame} similarity=${swapReport.similarityBefore}->${swapReport.similarityAfter}`,
+    );
+  }
+
   let seedFrameUrl = session.seedFrameUrl;
   // No longer split per step: every path now runs its frame check(s) through checkFrame/evaluateFrameChecks and reports total time as verifyMs.
   const frameMs = 0;
@@ -328,11 +359,13 @@ export const generateClip = async (
     if (job.kind !== "idle") {
       const verifyStarted = Date.now();
       try {
-        seedFrameUrl = await withTimeout(
-          extractLastFrameUrl(rendered.videoUrl, FRAME_BUDGET_MS),
-          FRAME_BUDGET_MS,
-          "extractFrame",
-        );
+        seedFrameUrl =
+          swappedLastFrameUrl ??
+          (await withTimeout(
+            extractLastFrameUrl(videoUrl, FRAME_BUDGET_MS),
+            FRAME_BUDGET_MS,
+            "extractFrame",
+          ));
       } catch (error) {
         console.warn("generateClip: last frame extraction failed", error);
         verdict = "rejected";
@@ -345,7 +378,7 @@ export const generateClip = async (
     // Idle's frame is never reused as a seed (see pipeline.ts), so it always plays from session.seedFrameUrl; only the midpoint needs checking since start/end are the anchor by construction.
     const verifyStarted = Date.now();
     const midCheck = await checkFrame(
-      rendered.videoUrl,
+      videoUrl,
       "middle",
       plan.expectedState,
       session.anchorFrameUrl,
@@ -376,17 +409,12 @@ export const generateClip = async (
     const verifyStarted = Date.now();
     const [midCheck, lastCheck] = await Promise.all([
       checkFrame(
-        rendered.videoUrl,
+        videoUrl,
         "middle",
         plan.expectedState,
         session.anchorFrameUrl,
       ),
-      checkFrame(
-        rendered.videoUrl,
-        "last",
-        plan.expectedState,
-        session.anchorFrameUrl,
-      ),
+      checkFrame(videoUrl, "last", plan.expectedState, session.anchorFrameUrl),
     ]);
     verifyMs = Date.now() - verifyStarted;
     const result = evaluateFrameChecks({
@@ -416,17 +444,12 @@ export const generateClip = async (
     const verifyStarted = Date.now();
     const [midCheck, lastCheck] = await Promise.all([
       checkFrame(
-        rendered.videoUrl,
+        videoUrl,
         "middle",
         plan.expectedState,
         session.anchorFrameUrl,
       ),
-      checkFrame(
-        rendered.videoUrl,
-        "last",
-        plan.expectedState,
-        session.anchorFrameUrl,
-      ),
+      checkFrame(videoUrl, "last", plan.expectedState, session.anchorFrameUrl),
     ]);
     verifyMs = Date.now() - verifyStarted;
     const result = evaluateFrameChecks({
@@ -456,17 +479,12 @@ export const generateClip = async (
     const verifyStarted = Date.now();
     const [midCheck, lastCheck] = await Promise.all([
       checkFrame(
-        rendered.videoUrl,
+        videoUrl,
         "middle",
         plan.expectedState,
         session.anchorFrameUrl,
       ),
-      checkFrame(
-        rendered.videoUrl,
-        "last",
-        plan.expectedState,
-        session.anchorFrameUrl,
-      ),
+      checkFrame(videoUrl, "last", plan.expectedState, session.anchorFrameUrl),
     ]);
     verifyMs = Date.now() - verifyStarted;
     const result = evaluateFrameChecks({
@@ -546,7 +564,7 @@ export const generateClip = async (
   return {
     clipId: randomUUID(),
     jobKind: job.kind,
-    videoUrl: rendered.videoUrl,
+    videoUrl,
     durationSec: plan.durationSec,
     seedFrameUrl,
     loops: isAnchoredLoop,
@@ -558,6 +576,7 @@ export const generateClip = async (
     verdict,
     rejectReason,
     timings: { planMs, renderMs, frameMs, guardMs, repairMs: 0, verifyMs },
-    costUsd: rendered.costUsd,
+    costUsd,
+    swap: swapReport,
   };
 };

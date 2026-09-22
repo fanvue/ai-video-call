@@ -14,10 +14,6 @@ import type {
   LucyMetrics,
   LucyRealtimeState,
 } from "@/lib/live/client/lucyStream";
-import type {
-  SwapMetrics,
-  SwapStreamState,
-} from "@/lib/live/client/swapStream";
 
 type StudioOverlayProps = {
   liveState: LiveState | null;
@@ -33,10 +29,10 @@ type StudioOverlayProps = {
   // Lucy-only; absent (null) outside lucy mode.
   lucyMetrics?: LucyMetrics | null;
   lucyStreamState?: LucyRealtimeState | null;
-  // Swap-only; absent (null) outside swap mode.
-  swapMetrics?: SwapMetrics | null;
-  swapStreamState?: SwapStreamState | null;
 };
+
+const similarity = (value: number | null): string =>
+  value === null ? "-" : value.toFixed(2);
 
 const wardrobeSummary = (liveState: LiveState): string =>
   (["top", "bottom", "bra", "panties"] as const)
@@ -57,8 +53,6 @@ export const StudioOverlay = ({
   directorStreamState,
   lucyMetrics,
   lucyStreamState,
-  swapMetrics,
-  swapStreamState,
 }: StudioOverlayProps) => {
   const anchorAgeSec =
     anchorChangedAtMs !== null
@@ -86,22 +80,6 @@ export const StudioOverlay = ({
         <p className="m-0">
           Session p50/p95: {phases} · Spent $
           {directorMetrics.costUsd.toFixed(2)}
-        </p>
-      </div>
-    );
-  }
-
-  if (swapMetrics) {
-    return (
-      <div className="flex flex-col gap-1 rounded-xl bg-black/60 px-3 py-2 text-[11px] text-white/80">
-        <p className="m-0">
-          Swap stream: {swapStreamState ?? "-"} · GPU $
-          {swapMetrics.costUsd.toFixed(3)}
-        </p>
-        <p className="m-0">
-          Frames {swapMetrics.framesReceived}/{swapMetrics.framesSent} · RTT{" "}
-          {swapMetrics.lastRoundTripMs ?? "-"}ms · Server{" "}
-          {swapMetrics.serverFrameMs ?? "-"}ms/frame
         </p>
       </div>
     );
@@ -142,6 +120,14 @@ export const StudioOverlay = ({
           ? `${renderStats.p50}ms / ${renderStats.p95}ms (n=${renderStats.count})`
           : "-"}
       </p>
+      {lastTimings?.swap ? (
+        <p className="m-0">
+          Swap:{" "}
+          {lastTimings.swap.status === "swapped"
+            ? `${lastTimings.swap.frames}f in ${lastTimings.swap.swapMs}ms (${lastTimings.swap.msPerFrame}ms/f) · face ${lastTimings.swap.framesWithFace}/${lastTimings.swap.frames} · id ${similarity(lastTimings.swap.similarityBefore)} → ${similarity(lastTimings.swap.similarityAfter)}${lastTimings.swap.restored ? " · restored" : ""}`
+            : `failed after ${lastTimings.swap.swapMs}ms (${lastTimings.swap.reason ?? "unknown"})`}
+        </p>
+      ) : null}
     </div>
   );
 };

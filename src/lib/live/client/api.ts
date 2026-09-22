@@ -73,9 +73,9 @@ export const fetchLucyToken = async (): Promise<string> => {
   return token;
 };
 
-export const fetchSwapSession = async (): Promise<string> => {
-  const { url } = await postJson<{ url: string }>("/api/live/swapSession", {});
-  return url;
+// Fire-and-forget at session start in swap mode so the GPU container is loading while the first clip renders.
+export const warmSwap = async (): Promise<void> => {
+  await postJson<{ warm: boolean }>("/api/live/swapWarm", {});
 };
 
 export const composeDirectorPrompt = async (input: {
