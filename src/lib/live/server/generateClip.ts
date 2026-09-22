@@ -5,6 +5,7 @@ import {
 } from "@/lib/fal/extractLastFrame";
 import {
   LIVE_TUNABLES,
+  stateFrameKey,
   type ClipRequest,
   type ClipResult,
   type ClipSwapReport,
@@ -284,6 +285,16 @@ export const generateClip = async (
   // Explicit act with no wardrobe change of its own (useProp, twerk, ...) — checked like a hold clip but fails open on an unchecked frame; see evaluateFrameChecks.
   const isExplicitNonWardrobe = plan.wardrobeIntent === null && plan.explicit;
 
+  // Pose bank: a chain clip landing in a state seen before ends on that state's first clean frame and seeds from it, so the session seed stops accumulating one generation of drift per act.
+  const bankedEndFrameUrl =
+    backend === "swap" &&
+    LIVE_TUNABLES.SWAP_STATE_FRAMES &&
+    !LIVE_TUNABLES.VERIFY_FRAMES &&
+    !keepsSessionSeed &&
+    videoBackend.supportsEndFrame
+      ? session.stateFrames?.[stateFrameKey(plan.expectedState)]
+      : undefined;
+
   const renderStarted = Date.now();
   // The reference model has no first frame to inherit the room from, so the prompt establishes it and pins the upload to identity only.
   const prompt = greetingFromReference
@@ -293,7 +304,7 @@ export const generateClip = async (
     prompt,
     seedFrameUrl: session.seedFrameUrl,
     durationSec: plan.durationSec,
-    endFrameUrl: isAnchoredLoop ? session.seedFrameUrl : undefined,
+    endFrameUrl: isAnchoredLoop ? session.seedFrameUrl : bankedEndFrameUrl,
     identityReferenceUrl: useIdentityReference
       ? session.anchorFrameUrl
       : undefined,
@@ -328,7 +339,7 @@ export const generateClip = async (
   const rendered = await renderPromise;
   const renderMs = Date.now() - renderStarted;
   console.log(
-    `generateClip: renderMs=${renderMs} kind=${job.kind} backend=${backend} dualRef=${useIdentityReference}`,
+    `generateClip: renderMs=${renderMs} kind=${job.kind} backend=${backend} dualRef=${useIdentityReference} bankedEnd=${!!bankedEndFrameUrl}`,
   );
 
   // Swap backend: the swapped clip replaces turbo's output for playback and checks.
@@ -384,7 +395,9 @@ export const generateClip = async (
 
   if (!LIVE_TUNABLES.VERIFY_FRAMES) {
     // Vision guard off: no rejection, no reconciliation, canon is the plan. Only the last frame is extracted, since the next clip needs a seed; an anchored loop returns to its seed and needs none.
-    if (!keepsSessionSeed) {
+    if (bankedEndFrameUrl) {
+      seedFrameUrl = bankedEndFrameUrl;
+    } else if (!keepsSessionSeed) {
       const verifyStarted = Date.now();
       try {
         seedFrameUrl =

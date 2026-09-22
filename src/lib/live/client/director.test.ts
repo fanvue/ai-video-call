@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { LiveDirector } from "./director";
-import { LIVE_TUNABLES } from "@/lib/live/contract";
+import { LIVE_TUNABLES, stateFrameKey } from "@/lib/live/contract";
 import type {
   ClipResult,
   CreatorProfile,
@@ -548,6 +548,46 @@ describe("LiveDirector", () => {
     expect(director.getState().requestStatuses[entry.id]).toBe("generating");
     director.setRequestStatus(entry.id, "playing");
     expect(director.getState().requestStatuses[entry.id]).toBe("playing");
+  });
+
+  it("banks the first seed of each state and keeps it when the state comes back", () => {
+    const director = makeDirector();
+    director.nextJob();
+    director.clipCompleted(
+      clipResult({
+        jobKind: "greeting",
+        seedFrameUrl: "https://example.com/greeting-tail.png",
+      }),
+      1000,
+    );
+    const toppless: LiveState = {
+      ...dressedState,
+      wardrobe: {
+        ...dressedState.wardrobe,
+        top: garmentOff("tank top"),
+        removedOrder: ["top"],
+      },
+    };
+    director.clipCompleted(
+      clipResult({
+        jobKind: "beat",
+        state: toppless,
+        seedFrameUrl: "https://example.com/top-off.png",
+      }),
+      2000,
+    );
+    director.clipCompleted(
+      clipResult({
+        jobKind: "beat",
+        seedFrameUrl: "https://example.com/dressed-again.png",
+      }),
+      3000,
+    );
+    const { stateFrames } = director.snapshot(4000);
+    expect(stateFrames).toEqual({
+      [stateFrameKey(dressedState)]: "https://example.com/greeting-tail.png",
+      [stateFrameKey(toppless)]: "https://example.com/top-off.png",
+    });
   });
 
   it("ignores a duplicate clipCompleted for a clip it already committed", () => {

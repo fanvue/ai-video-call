@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   LIVE_TUNABLES,
+  stateFrameKey,
   type ClipRequest,
   type LiveSessionSnapshot,
 } from "../contract";
@@ -180,6 +181,39 @@ describe("generateClip on the swap backend with the deferred clip swap", () => {
     expect(extractLastFrameUrl).not.toHaveBeenCalled();
     expect(result.seedFrameUrl).toBe(session.seedFrameUrl);
     expect(result.swap?.status).toBe("pending");
+  });
+
+  it("a chain clip landing in a banked state ends on that frame and seeds from it without a tail decode", async () => {
+    const banked = "https://example.com/banked-sitting.png";
+    const result = await generateClip({
+      ...swapRequest({ kind: "checkIn", channel: "chat" }),
+      session: {
+        ...session,
+        stateFrames: { [stateFrameKey(session.state)]: banked },
+      },
+    });
+    expect(render).toHaveBeenCalledWith(
+      expect.objectContaining({
+        seedFrameUrl: session.seedFrameUrl,
+        endFrameUrl: banked,
+      }),
+    );
+    expect(swapServiceLastFrame).not.toHaveBeenCalled();
+    expect(result.seedFrameUrl).toBe(banked);
+  });
+
+  it("a chain clip into a state not banked yet chains from its own last frame", async () => {
+    const result = await generateClip({
+      ...swapRequest({ kind: "checkIn", channel: "chat" }),
+      session: {
+        ...session,
+        stateFrames: { "some|other|state": "https://example.com/other.png" },
+      },
+    });
+    expect(render).toHaveBeenCalledWith(
+      expect.objectContaining({ endFrameUrl: undefined }),
+    );
+    expect(result.seedFrameUrl).toBe("https://example.com/tail-raw.jpg");
   });
 
   it("never touches the swap service on other backends", async () => {

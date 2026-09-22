@@ -15,6 +15,8 @@ from typing import Any
 
 # inswapper_128 is research-only licensed (commercial license needed before this leaves the spike); deepinsight's repo is gated so this is a public mirror.
 INSWAPPER_URL = "https://huggingface.co/ezioruan/inswapper_128.onnx/resolve/main/inswapper_128.onnx"
+# FaceFusion's fp16 export of the same weights, float32 in and out: 9.5 vs 17.6 ms per call on an A10G.
+INSWAPPER_FP16_URL = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/inswapper_128_fp16.onnx"
 # Back on GPEN-256 (Non-Commercial, same as inswapper for this spike): RestoreFormer++ only ships at 512, which measured ~105ms/frame of restorer time alone vs GPEN-256's documented ~4x faster rate, and credit is too tight right now to run the slower model.
 RESTORER_URL = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/gpen_bfr_256.onnx"
 RESTORE_SIZE = 256
@@ -34,9 +36,13 @@ TONE_LOCK_BLEND = 0.5
 # FaceFusion's HyperSwap 1a (256 px, same ArcFace w600k_r50 identity as buffalo_l); the bake-off candidate against inswapper_128.
 HYPERSWAP_URL = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.3.0/hyperswap_1a_256.onnx"
 SWAP_SIZE = 256
-SWAP_MODELS = ("inswapper", "hyperswap")
+SWAP_MODELS = ("inswapper", "inswapper_fp16", "hyperswap")
+# fp16 matched fp32 at 46.7 dB PSNR and the same ArcFace (0.936) on a 362-frame clip, 13.4 vs 20.8 ms/frame.
+DEFAULT_SWAP_MODEL = "inswapper_fp16"
 # How much of the restored face replaces the swapped one; 1.0 looks waxy, FaceFusion defaults to 0.8. Down from 0.8: at 0.8 on every frame the face read contoured and over-sharpened by the fourth or fifth clip of a session.
 RESTORE_BLEND = 0.5
+# Per-frame GPEN off: at 0.5 it still airbrushed the face, and it was 13 of ~34 ms/frame (A10G, 362-frame persona clip: 33.6 -> 20.9 ms, ArcFace 0.92 -> 0.94).
+RESTORE_FRAMES = False
 # Off: it forced the upload's lighting onto every scene, so the face read as a lighter pasted mask against the neck. The drift it was added for came from seeding the chain with swapped frames, fixed at the source in generateClip.
 COLOR_LOCK_BLEND = 0.0
 MAX_CLIP_FRAMES = 30 * 20
@@ -107,6 +113,7 @@ class SwapEngine:
         restorer_path: str | None = None,
         enhancer_path: str | None = None,
         hyperswap_path: str | None = None,
+        inswapper_fp16_path: str | None = None,
     ) -> None:
         import insightface
         import numpy as np
@@ -126,6 +133,11 @@ class SwapEngine:
         self.identity.prepare(ctx_id=0, det_size=(640, 640))
         self.swapper = insightface.model_zoo.get_model(
             inswapper_path, providers=PROVIDERS
+        )
+        self.swapper_fp16 = (
+            insightface.model_zoo.get_model(inswapper_fp16_path, providers=PROVIDERS)
+            if inswapper_fp16_path
+            else None
         )
         self.restorer = None
         if restorer_path:
@@ -438,7 +450,13 @@ class SwapEngine:
         return swapped, matrix
 
     def swap_frame(
-        self, frame, source_face, faces, timings: dict[str, float] | None = None, model: str = "inswapper"
+        self,
+        frame,
+        source_face,
+        faces,
+        timings: dict[str, float] | None = None,
+        model: str = DEFAULT_SWAP_MODEL,
+        restore: bool = True,
     ):
         out = frame
         for face in faces:
@@ -448,11 +466,12 @@ class SwapEngine:
                 if patch is None:
                     continue
             else:
+                swapper = self.swapper_fp16 if model == "inswapper_fp16" and self.swapper_fp16 is not None else self.swapper
                 # insightface's own paste_back blends the whole frame in float; paste_patch touches only the face box.
-                patch, matrix = self.swapper.get(out, face, source_face, paste_back=False)
+                patch, matrix = swapper.get(out, face, source_face, paste_back=False)
             out = paste_patch(out, patch, matrix)
             swapped_at = time.perf_counter()
-            if self.restorer is not None:
+            if restore and self.restorer is not None:
                 out = self.restore_face(out, face, source_face)
             if timings is not None:
                 timings["swap"] += swapped_at - started
@@ -469,7 +488,14 @@ class SwapEngine:
         return float(np.dot(face.normed_embedding, source_face.normed_embedding))
 
     def swap_clip(
-        self, video_path: str, source_face, output_path: str, model: str = "inswapper"
+        self,
+        video_path: str,
+        source_face,
+        output_path: str,
+        model: str = DEFAULT_SWAP_MODEL,
+        detect_every: int = 1,
+        restore: bool = RESTORE_FRAMES,
+        workers: int = WORKERS,
     ) -> tuple[ClipSwapStats, bytes]:
         import cv2
 
@@ -503,12 +529,18 @@ class SwapEngine:
         last_frame = None
         last_swapped = None
 
-        def process(frame):
-            local = {"detect": 0.0, "swap": 0.0, "restore": 0.0}
+        def detect(frame):
             detect_started = time.perf_counter()
             faces = self.detector.get(frame)
-            local["detect"] = time.perf_counter() - detect_started
-            swapped = self.swap_frame(frame, source_face, faces, local, model)
+            with timings_lock:
+                timings["detect"] += time.perf_counter() - detect_started
+            return faces
+
+        def process(frame, faces):
+            local = {"swap": 0.0, "restore": 0.0}
+            if faces is None:
+                faces = detect(frame)
+            swapped = self.swap_frame(frame, source_face, faces, local, model, restore)
             with timings_lock:
                 for key, value in local.items():
                     timings[key] += value
@@ -516,7 +548,7 @@ class SwapEngine:
 
         pending: deque = deque()
         try:
-            with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
                 def drain_one() -> None:
                     nonlocal frames, frames_with_face, last_frame, last_swapped
                     frame, future = pending.popleft()
@@ -527,15 +559,44 @@ class SwapEngine:
                     last_swapped = swapped
                     frames += 1
 
-                submitted = 0
-                while submitted < MAX_CLIP_FRAMES:
-                    ok, frame = capture.read()
-                    if not ok:
-                        break
-                    pending.append((frame, pool.submit(process, frame)))
-                    submitted += 1
-                    if len(pending) >= WORKERS * 2:
+                def emit(frame, faces) -> None:
+                    pending.append((frame, pool.submit(process, frame, faces)))
+                    if len(pending) >= workers * 2:
                         drain_one()
+
+                submitted = 0
+                if detect_every <= 1:
+                    while submitted < MAX_CLIP_FRAMES:
+                        ok, frame = capture.read()
+                        if not ok:
+                            break
+                        emit(frame, None)
+                        submitted += 1
+                else:
+                    # Detection on every Nth frame only, landmarks interpolated between; a window whose face moved too far or changed count is detected frame by frame instead.
+                    ok, frame = capture.read()
+                    if ok:
+                        key_faces = pool.submit(detect, frame).result()
+                        emit(frame, key_faces)
+                        submitted = 1
+                    while ok and submitted < MAX_CLIP_FRAMES:
+                        window = []
+                        while len(window) < detect_every and submitted + len(window) < MAX_CLIP_FRAMES:
+                            ok, frame = capture.read()
+                            if not ok:
+                                break
+                            window.append(frame)
+                        if not window:
+                            break
+                        next_faces = pool.submit(detect, window[-1]).result()
+                        between = interpolate_faces(key_faces, next_faces, len(window) - 1)
+                        if between is None:
+                            between = [future.result() for future in [pool.submit(detect, f) for f in window[:-1]]]
+                        for mid_frame, mid_faces in zip(window[:-1], between):
+                            emit(mid_frame, mid_faces)
+                        emit(window[-1], next_faces)
+                        submitted += len(window)
+                        key_faces = next_faces
                 while pending:
                     drain_one()
         finally:
@@ -557,7 +618,7 @@ class SwapEngine:
             ms_per_frame=round(swap_ms / frames, 1),
             similarity_before=self.similarity(last_frame, source_face),
             similarity_after=self.similarity(last_swapped, source_face),
-            restored=self.restorer is not None,
+            restored=restore and self.restorer is not None,
             detect_ms=int(timings["detect"] * 1000),
             swap_stage_ms=int(timings["swap"] * 1000),
             restore_ms=int(timings["restore"] * 1000),
@@ -567,6 +628,40 @@ class SwapEngine:
             sharpness_after=sharpness_after,
         )
         return stats, self.encode_jpeg(seed_frame)
+
+
+# A face that moves further than this share of its eye distance between two detected frames is detected frame by frame instead.
+INTERPOLATE_MAX_SHIFT = 0.35
+
+
+def interpolate_faces(start_faces, end_faces, count: int):
+    import numpy as np
+    from insightface.app.common import Face
+
+    if count <= 0:
+        return []
+    if not start_faces and not end_faces:
+        return [[] for _ in range(count)]
+    if len(start_faces) != 1 or len(end_faces) != 1:
+        return None
+    start, end = start_faces[0], end_faces[0]
+    eye_distance = float(np.linalg.norm(start.kps[1] - start.kps[0]))
+    shift = float(np.linalg.norm(end.kps - start.kps, axis=1).max())
+    if shift > max(6.0, INTERPOLATE_MAX_SHIFT * eye_distance):
+        return None
+    faces = []
+    for index in range(count):
+        t = (index + 1) / (count + 1)
+        faces.append(
+            [
+                Face(
+                    bbox=start.bbox * (1 - t) + end.bbox * t,
+                    kps=(start.kps * (1 - t) + end.kps * t).astype(np.float32),
+                    det_score=min(float(start.det_score), float(end.det_score)),
+                )
+            ]
+        )
+    return faces
 
 
 def paste_patch(frame, patch, matrix):
@@ -636,7 +731,7 @@ def swap_clip_from_url(
     result["stats"]["download_ms"] = download_ms
     stats = result["stats"]
     print(
-        f"swapClip: frames={stats['frames']} download_ms={download_ms} swap_ms={stats['swap_ms']} "
+        f"swapClip: model={DEFAULT_SWAP_MODEL} restored={stats['restored']} frames={stats['frames']} download_ms={download_ms} swap_ms={stats['swap_ms']} "
         f"ms_per_frame={stats['ms_per_frame']} similarity={stats['similarity_before']}->{stats['similarity_after']} "
         f"enhance_ms={stats['enhance_ms']} sharpness={stats['sharpness_before']}->{stats['sharpness_after']}",
         flush=True,
@@ -738,7 +833,11 @@ def swap_tail_from_bytes(
 
 
 def swap_clip_from_bytes(
-    engine: SwapEngine, video: bytes, reference_data_uri: str, model: str = "inswapper"
+    engine: SwapEngine,
+    video: bytes,
+    reference_data_uri: str,
+    model: str = DEFAULT_SWAP_MODEL,
+    options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     # Response: base64 mp4 + base64 JPEG of the swapped last frame (the next clip's seed) + stats.
     if model not in SWAP_MODELS:
@@ -749,7 +848,7 @@ def swap_clip_from_bytes(
         output_path = os.path.join(directory, "swapped.mp4")
         with open(source_path, "wb") as file:
             file.write(video)
-        stats, last_frame = engine.swap_clip(source_path, source_face, output_path, model)
+        stats, last_frame = engine.swap_clip(source_path, source_face, output_path, model, **(options or {}))
         with open(output_path, "rb") as file:
             swapped = file.read()
     return {
@@ -757,3 +856,33 @@ def swap_clip_from_bytes(
         "last_frame_base64": base64.b64encode(last_frame).decode("ascii"),
         "stats": asdict(stats),
     }
+
+
+def profile_networks(engine: SwapEngine, video: bytes, reference_data_uri: str, runs: int = 30) -> dict[str, Any]:
+    source_face = engine.reference_face(reference_data_uri)
+    with tempfile.TemporaryDirectory() as directory:
+        source_path = os.path.join(directory, "source.mp4")
+        with open(source_path, "wb") as file:
+            file.write(video)
+        frame = engine.read_tail_frame(source_path)
+    faces = engine.detector.get(frame)
+    if not faces:
+        raise ValueError("no face in the profiled frame")
+    face = faces[0]
+
+    def timed(fn) -> float:
+        fn()
+        started = time.perf_counter()
+        for _ in range(runs):
+            fn()
+        return round((time.perf_counter() - started) * 1000 / runs, 2)
+
+    result = {
+        "detect_ms": timed(lambda: engine.detector.get(frame)),
+        "inswapper_ms": timed(lambda: engine.swapper.get(frame, face, source_face, paste_back=False)),
+        "restore_ms": timed(lambda: engine.restore_face(frame, face, source_face)),
+        "full_frame_ms": timed(lambda: engine.swap_frame(frame, source_face, engine.detector.get(frame))),
+    }
+    if engine.hyperswap is not None:
+        result["hyperswap_ms"] = timed(lambda: engine.hyperswap_patch(frame, face, source_face))
+    return result

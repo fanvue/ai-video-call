@@ -3,6 +3,7 @@
 import { isIntentSatisfied } from "@/lib/live/intents";
 import {
   LIVE_TUNABLES,
+  stateFrameKey,
   type ClipJob,
   type ClipResult,
   type CreatorProfile,
@@ -16,11 +17,7 @@ import {
 // Per-request lifecycle the UI can render (queue strip chip, transcript failure line). Driven by
 // pipeline events; see useLiveSession's handlePipelineEvent for the generating/playing transitions.
 export type RequestStatus =
-  | "queued"
-  | "generating"
-  | "playing"
-  | "done"
-  | "failed";
+  "queued" | "generating" | "playing" | "done" | "failed";
 
 export type DirectorState = {
   creator: CreatorProfile;
@@ -51,6 +48,7 @@ export type DirectorState = {
   chainClipsSinceIdentityReference: number;
   // The greeting's tail, the session's first rendered frame; later seeds are tone-locked to it.
   toneFrameUrl?: string;
+  stateFrames: Record<string, string>;
 };
 
 export type DirectorInit = {
@@ -88,6 +86,7 @@ export class LiveDirector {
       liveState: init.liveState,
       seedFrameUrl: init.seedFrameUrl,
       anchorFrameUrl: init.anchorFrameUrl,
+      stateFrames: {},
       startedAt: init.now,
       transcript: [],
       jobQueue: [{ kind: "greeting" }],
@@ -285,10 +284,19 @@ export class LiveDirector {
       requestStatuses = { ...requestStatuses, [requestId]: "done" };
     }
 
+    const stateKey = stateFrameKey(result.state);
+    const stateFrames =
+      stateKey in this.state.stateFrames ||
+      Object.keys(this.state.stateFrames).length >=
+        LIVE_TUNABLES.STATE_FRAMES_MAX
+        ? this.state.stateFrames
+        : { ...this.state.stateFrames, [stateKey]: result.seedFrameUrl };
+
     this.state = {
       ...this.state,
       liveState: result.state,
       seedFrameUrl: result.seedFrameUrl,
+      stateFrames,
       transcript,
       jobQueue: queue,
       requestStatuses,
@@ -411,6 +419,7 @@ export class LiveDirector {
       seedFrameUrl: this.state.seedFrameUrl,
       anchorFrameUrl: this.state.anchorFrameUrl,
       toneFrameUrl: this.state.toneFrameUrl,
+      stateFrames: this.state.stateFrames,
       elapsedSec: this.elapsedSec(now),
       transcript,
     };

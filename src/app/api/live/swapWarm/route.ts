@@ -2,8 +2,8 @@ import { NextResponse } from "next/server";
 import { env } from "@/env";
 import { getCurrentUser } from "@/lib/fanvue";
 
-// A cold swap container takes 60s+ (image pull, CUDA init, model load); the health probes make Modal
-// start four while the reference upload and first turbo render are still in flight.
+// The swap service scales to zero; a cold container is ~11 s to ready, so the photo upload fires these
+// probes and Modal starts four while the reference upload and first turbo render are still in flight.
 export const maxDuration = 120;
 
 export async function POST() {

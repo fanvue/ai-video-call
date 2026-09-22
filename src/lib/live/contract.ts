@@ -97,6 +97,26 @@ export const liveStateSchema = z.object({
 });
 export type LiveState = z.infer<typeof liveStateSchema>;
 
+// Which garments are on plus the whole body: two clips in the same key look the same, so one clean frame can stand for both.
+export const stateFrameKey = (
+  state: Pick<LiveState, "wardrobe" | "body">,
+): string => {
+  const { top, bottom, bra, panties } = state.wardrobe;
+  const { pose, facing, hands, contact, prop, framing } = state.body;
+  return [
+    top.on,
+    bottom.on,
+    bra.on,
+    panties.on,
+    pose,
+    facing,
+    hands,
+    contact,
+    prop,
+    framing,
+  ].join("|");
+};
+
 // Transcript
 
 export const inputChannelSchema = z.enum(["chat", "voice"]);
@@ -228,6 +248,8 @@ export const liveSessionSnapshotSchema = z.object({
   anchorFrameUrl: z.url(),
   // The session's first rendered frame (the greeting's tail): every later chain seed has its tone pulled back toward it, so the contrast and colour drift of chained renders stops compounding.
   toneFrameUrl: z.url().optional(),
+  // First seed seen in each stateFrameKey. A chain clip that lands in a banked state ends on that frame and seeds from it, so chaining drifts once per new state instead of once per clip.
+  stateFrames: z.record(z.string().max(200), z.url()).optional(),
   elapsedSec: z
     .number()
     .int()
@@ -351,6 +373,10 @@ export const LIVE_TUNABLES = {
   SWAP_GREETING_CLIP_SEC: 15,
   // Two-phase swap: the server swaps only the clip's last frame (about 1.5 s) so the next chain clip renders at once, and the client swaps the full clip in parallel before playing it. Off, the render call waits for the whole swap (about 7 s) before the chain can move.
   SWAP_DEFER_CLIP: true,
+  // Pose bank (see stateFrames): off falls back to chaining every clip from its own last frame.
+  SWAP_STATE_FRAMES: true,
+  // Bounds the snapshot; states past this chain as before.
+  STATE_FRAMES_MAX: 24,
   // Next idle length = measured idle production time + this headroom, clamped to the clip bounds.
   IDLE_HEADROOM_SEC: 1,
   // A chain job (reply/beat) gets 3 attempts total; idle stays at 2 (1 retry).

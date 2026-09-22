@@ -1034,6 +1034,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
 
   // The reference step (upload, look capture, staged still) is 20 to 25 s of the join; kicking it off from the setup screen hides it behind option-picking. A failure is dropped so start() retries it and reports the error itself.
   const uploadReference = deps.uploadReference;
+  const warmSwap = deps.warmSwap;
   const prepare = useCallback(
     (file: File, sceneId: SceneId, stage = true) => {
       const current = preparedReferenceRef.current;
@@ -1044,6 +1045,10 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         current.stage === stage
       ) {
         return;
+      }
+      // stage=false is swap mode; the swap service scales to zero, so its containers start with the upload.
+      if (!stage) {
+        warmSwap().catch(() => undefined);
       }
       const promise = uploadReference(file, sceneId, stage);
       const entry = { file, sceneId, stage, promise };
@@ -1067,7 +1072,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
           }
         });
     },
-    [uploadReference],
+    [uploadReference, warmSwap],
   );
 
   const start = useCallback(

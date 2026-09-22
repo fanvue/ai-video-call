@@ -5,14 +5,17 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 from swap_core import (
+    DEFAULT_SWAP_MODEL,
     ENHANCER_URL,
     HYPERSWAP_URL,
+    INSWAPPER_FP16_URL,
     INSWAPPER_URL,
     REQUIREMENTS,
     RESTORER_URL,
     SwapEngine,
     bearer_token,
     last_frame_from_url,
+    profile_networks,
     swap_clip_from_bytes,
     swap_clip_from_url,
     swap_tail_from_bytes,
@@ -41,6 +44,7 @@ image = (
         f"wget -q -O /models/restorer.onnx {RESTORER_URL}",
         f"wget -q -O /models/real_esrgan_x2.onnx {ENHANCER_URL}",
         f"wget -q -O /models/hyperswap_1a_256.onnx {HYPERSWAP_URL}",
+        f"wget -q -O /models/inswapper_128_fp16.onnx {INSWAPPER_FP16_URL}",
         # insightface otherwise downloads the 275MB buffalo_l pack on every cold start.
         "python -c \"from insightface.utils.storage import ensure_available; ensure_available('models', 'buffalo_l', root='/root/.insightface')\"",
     )
@@ -65,14 +69,14 @@ class LastFrameRequest(BaseModel):
     # Detection, paste-back and the x264 encode are CPU work; Modal's default fractional core starves them.
     cpu=8,
     secrets=[modal.Secret.from_name("ai-video-swap-token")],
-    # Long enough to survive the gap between a fan's sessions; a cold start is 60s+ (image pull + CUDA init).
-    scaledown_window=600,
+    # Covers a short gap between sessions; a cold container measured ~11 s to ready (four in parallel), inside the upload-to-first-swap window.
+    scaledown_window=300,
     # A join burst needs up to 4 real swaps in flight; one per container beats 3 sharing one GPU.
     max_containers=4,
     # Prod showed 8 to 15 s of queueing per clip when a fourth swap arrived and its container was still starting; keep two warm spares while the app has traffic.
     buffer_containers=2,
-    # This account's GPU quota capped out at 2 concurrent L40S workers (Modal: "waiting to be scheduled" above this); re-check headroom before raising it on A10G.
-    min_containers=2,
+    # Scale to zero between sessions: the client warms containers when a photo is uploaded, ahead of the first swap.
+    min_containers=0,
     timeout=600,
 )
 # One clip per container at a time: 3 packed onto one GPU measured ~3x slower per frame, not free concurrency.
@@ -85,12 +89,20 @@ class SwapService:
             "/models/restorer.onnx",
             "/models/real_esrgan_x2.onnx",
             "/models/hyperswap_1a_256.onnx",
+            "/models/inswapper_128_fp16.onnx",
         )
 
-    # Modal-authenticated path for smoke tests and the swapper bake-off from a laptop, so no clip needs a public URL; prod's web path stays on inswapper.
+    # Modal-authenticated path for smoke tests and the swapper bake-off from a laptop, so no clip needs a public URL; its defaults match the web path.
     @modal.method()
-    def swap_clip_bytes(self, video: bytes, reference_image: str, model: str = "inswapper") -> dict:
-        return swap_clip_from_bytes(self.engine, video, reference_image, model)
+    def swap_clip_bytes(
+        self, video: bytes, reference_image: str, model: str = DEFAULT_SWAP_MODEL, options: dict | None = None
+    ) -> dict:
+        return swap_clip_from_bytes(self.engine, video, reference_image, model, options)
+
+    # Sequential per-network latency on one real frame, to see which stage bounds the per-frame cost.
+    @modal.method()
+    def profile_bytes(self, video: bytes, reference_image: str, runs: int = 30) -> dict:
+        return profile_networks(self.engine, video, reference_image, runs)
 
     @modal.method()
     def swap_tail_bytes(self, video: bytes, reference_image: str) -> dict:
