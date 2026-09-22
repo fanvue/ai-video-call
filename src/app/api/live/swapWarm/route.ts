@@ -2,9 +2,9 @@ import { NextResponse } from "next/server";
 import { env } from "@/env";
 import { getCurrentUser } from "@/lib/fanvue";
 
-// A cold swap container takes ~35s to load its models; the health probe makes Modal start one while
-// the reference upload and first turbo render are still in flight.
-export const maxDuration = 60;
+// A cold swap container takes 60s+ (image pull, CUDA init, model load); the health probes make Modal
+// start two while the reference upload and first turbo render are still in flight.
+export const maxDuration = 120;
 
 export async function POST() {
   const user = await getCurrentUser();
@@ -22,7 +22,7 @@ export async function POST() {
     const responses = await Promise.all(
       [0, 1].map(() =>
         fetch(new URL("/health", env.SWAP_SERVICE_URL as string), {
-          signal: AbortSignal.timeout(55_000),
+          signal: AbortSignal.timeout(110_000),
         }),
       ),
     );

@@ -37,6 +37,8 @@ vi.mock("./frameGuard", () => ({
 
 // Never called on the turbo backend these suites use; mocked because the real module imports @/env.
 vi.mock("./swapClip", () => ({
+  SWAP_BUDGET_MS: 150_000,
+  SWAP_GREETING_BUDGET_MS: 25_000,
   swapClip: vi.fn(),
   failedSwapReport: vi.fn(),
 }));

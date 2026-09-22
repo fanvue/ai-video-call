@@ -18,7 +18,12 @@ import { guardFrame } from "./frameGuard";
 import { planClip, typingLeadSecFor } from "./planClip";
 import { reconcilePose, reconcileWardrobe } from "./reconcileState";
 import { renderBackendFor } from "./renderClip";
-import { failedSwapReport, swapClip } from "./swapClip";
+import {
+  failedSwapReport,
+  SWAP_BUDGET_MS,
+  SWAP_GREETING_BUDGET_MS,
+  swapClip,
+} from "./swapClip";
 import { writeCheckIn, writeReply } from "./writeReply";
 
 const ANATOMY_ISSUE_RE = /extra person|extra or malformed limbs/;
@@ -320,6 +325,8 @@ export const generateClip = async (
       const swapped = await swapClip({
         videoUrl,
         referenceImageUrl: session.anchorFrameUrl,
+        budgetMs:
+          job.kind === "greeting" ? SWAP_GREETING_BUDGET_MS : SWAP_BUDGET_MS,
       });
       videoUrl = swapped.videoUrl;
       costUsd += swapped.costUsd;

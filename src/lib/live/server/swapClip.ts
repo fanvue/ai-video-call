@@ -3,8 +3,10 @@ import { env } from "@/env";
 import { uploadToFal } from "@/lib/fal/uploadImage";
 import { LIVE_TUNABLES, type ClipSwapReport } from "../contract";
 
-// Cold container (~25s) + model warm-up + a 15s clip at ~50ms/frame all fit well inside this.
-const SWAP_BUDGET_MS = 150_000;
+// Cold container (60s+) + a 15s clip at ~20ms/frame fit inside this.
+export const SWAP_BUDGET_MS = 150_000;
+// The greeting gates the whole join, so it waits far less; a cold container just means the first clip plays unswapped.
+export const SWAP_GREETING_BUDGET_MS = 25_000;
 
 const swapServiceResponseSchema = z.object({
   video_base64: z.string().min(1),
@@ -43,9 +45,11 @@ const fetchAsDataUri = async (url: string): Promise<string> => {
 export const swapClip = async ({
   videoUrl,
   referenceImageUrl,
+  budgetMs = SWAP_BUDGET_MS,
 }: {
   videoUrl: string;
   referenceImageUrl: string;
+  budgetMs?: number;
 }): Promise<SwapClipOutcome> => {
   if (!env.SWAP_SERVICE_URL || !env.SWAP_TOKEN) {
     throw new Error("Swap service is not configured");
@@ -61,7 +65,7 @@ export const swapClip = async ({
       video_url: videoUrl,
       reference_image: await fetchAsDataUri(referenceImageUrl),
     }),
-    signal: AbortSignal.timeout(SWAP_BUDGET_MS),
+    signal: AbortSignal.timeout(budgetMs),
   });
   if (!response.ok) {
     const detail = await response.text().catch(() => "");

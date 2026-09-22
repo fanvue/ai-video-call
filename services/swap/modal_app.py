@@ -34,6 +34,8 @@ image = (
         "mkdir -p /models",
         f"wget -q -O /models/inswapper_128.onnx {INSWAPPER_URL}",
         f"wget -q -O /models/gpen_bfr.onnx {GPEN_URL}",
+        # insightface otherwise downloads the 275MB buffalo_l pack on every cold start.
+        "python -c \"from insightface.utils.storage import ensure_available; ensure_available('models', 'buffalo_l', root='/root/.insightface')\"",
     )
     .add_local_python_source("swap_core")
 )
@@ -50,7 +52,8 @@ class SwapClipRequest(BaseModel):
     # Detection, paste-back and the x264 encode are CPU work; Modal's default fractional core starves them.
     cpu=4,
     secrets=[modal.Secret.from_name("ai-video-swap-token")],
-    scaledown_window=120,
+    # Long enough to survive the gap between a fan's sessions; a cold start is 60s+ (image pull + CUDA init).
+    scaledown_window=300,
     # Idle fillers and a reply can be swapping at the same time; each container takes one clip at a time.
     max_containers=3,
     timeout=600,

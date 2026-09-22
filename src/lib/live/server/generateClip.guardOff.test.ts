@@ -25,6 +25,8 @@ vi.mock("./frameGuard", () => ({
 const swapClip = vi.fn();
 // Fully mocked: the real module pulls in @/env, which validates the server environment at import.
 vi.mock("./swapClip", () => ({
+  SWAP_BUDGET_MS: 150_000,
+  SWAP_GREETING_BUDGET_MS: 25_000,
   swapClip: (...args: unknown[]) => swapClip(...args),
   failedSwapReport: (swapMs: number, error: Error) => ({
     status: "failed",
@@ -201,6 +203,7 @@ describe("generateClip on the swap backend", () => {
     expect(swapClip).toHaveBeenCalledWith({
       videoUrl: "https://example.com/clip.mp4",
       referenceImageUrl: session.anchorFrameUrl,
+      budgetMs: 25_000,
     });
     expect(result.videoUrl).toBe("https://example.com/swapped.mp4");
     expect(result.seedFrameUrl).toBe("https://example.com/swapped-last.jpg");
@@ -209,11 +212,12 @@ describe("generateClip on the swap backend", () => {
     expect(result.swap?.status).toBe("swapped");
   });
 
-  it("idle clips are swapped too but still play from the session seed", async () => {
+  it("idle clips are swapped too, with the full budget, but still play from the session seed", async () => {
     swapClip.mockResolvedValue(swapped);
     const result = await generateClip(swapRequest({ kind: "idle" }));
     expect(result.videoUrl).toBe("https://example.com/swapped.mp4");
     expect(result.seedFrameUrl).toBe(session.seedFrameUrl);
+    expect(swapClip.mock.calls[0][0].budgetMs).toBe(150_000);
   });
 
   it("falls back to the unswapped clip and the fal last frame when the service fails, reporting the reason", async () => {
