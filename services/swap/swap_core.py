@@ -541,7 +541,8 @@ class SwapEngine:
             "sharpness_before": sharpness_before,
             "sharpness_after": sharpness_after,
         }
-        return stats, self.encode_jpeg(seed_frame)
+        # Lossless like /lastFrame: this seed_frame becomes the next chain clip's seed, and a JPEG round trip here is one more thing the next render would compound.
+        return stats, self.encode_png(seed_frame)
 
     # FaceFusion face_swapper's crop and tensor contract for HyperSwap and GHOST (model template at 256, (x/255 - 0.5)/0.5 RGB in, the inverse out); returns the swapped crop and the frame-to-crop matrix like insightface's paste_back=False path.
     def onnx_patch(self, frame, face, source_face, model: str):
@@ -1039,7 +1040,7 @@ def swap_tail_from_url(
         started = time.perf_counter()
         download(video_url, source_path)
         download_ms = int((time.perf_counter() - started) * 1000)
-        stats, seed_jpeg = engine.swap_tail(source_path, source_face)
+        stats, seed_png = engine.swap_tail(source_path, source_face)
     stats["download_ms"] = download_ms
     print(
         f"swapTail: download_ms={download_ms} swap_ms={stats['swap_ms']} had_face={stats['had_face']} "
@@ -1047,7 +1048,7 @@ def swap_tail_from_url(
         f"enhance_ms={stats['enhance_ms']} sharpness={stats['sharpness_before']}->{stats['sharpness_after']}",
         flush=True,
     )
-    return {"last_frame_base64": base64.b64encode(seed_jpeg).decode("ascii"), "stats": stats}
+    return {"last_frame_base64": base64.b64encode(seed_png).decode("ascii"), "stats": stats}
 
 
 # The session's first frame is the same URL for every seed of that session, so its LAB moments are computed once per container.
@@ -1146,8 +1147,8 @@ def swap_tail_from_bytes(
         source_path = os.path.join(directory, "source.mp4")
         with open(source_path, "wb") as file:
             file.write(video)
-        stats, seed_jpeg = engine.swap_tail(source_path, source_face)
-    return {"last_frame_base64": base64.b64encode(seed_jpeg).decode("ascii"), "stats": stats}
+        stats, seed_png = engine.swap_tail(source_path, source_face)
+    return {"last_frame_base64": base64.b64encode(seed_png).decode("ascii"), "stats": stats}
 
 
 def swap_clip_from_bytes(

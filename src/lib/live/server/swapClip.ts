@@ -228,6 +228,77 @@ export const swapServiceLastFrame = async ({
   return url;
 };
 
+// A warm container answers in about 1.5 s; 6 s leaves the raw /lastFrame fallback (8 s) inside generateClip's 15 s frame budget.
+const SWAP_TAIL_BUDGET_MS = 6_000;
+
+const swapTailResponseSchema = z.object({
+  last_frame_base64: z.string().min(1),
+  stats: z.object({
+    swap_ms: z.number().int().min(0),
+    had_face: z.boolean(),
+    similarity_before: z.number().nullable(),
+    similarity_after: z.number().nullable(),
+    download_ms: z.number().int().min(0).optional(),
+    enhanced: z.boolean().optional(),
+    enhance_ms: z.number().int().min(0).optional(),
+    sharpness_before: z.number().nullable().optional(),
+    sharpness_after: z.number().nullable().optional(),
+  }),
+});
+
+// Swaps and finishes only the clip's last frame, through the same persona gate and finishing as swapClip, so a chain
+// clip's seed carries the persona's identity forward instead of the raw render's own compounding drift.
+export const swapTail = async ({
+  videoUrl,
+  personaId,
+  budgetMs = SWAP_TAIL_BUDGET_MS,
+  jobKind = "unknown",
+}: {
+  videoUrl: string;
+  // Same gate as swapClip: an allowlisted manifest persona only, never a session upload.
+  personaId: string | undefined;
+  budgetMs?: number;
+  jobKind?: string;
+}): Promise<{ lastFrameUrl: string; costUsd: number }> => {
+  if (!personaId) {
+    throw new Error("No persona selected, the clip plays unswapped");
+  }
+  if (!env.SWAP_SERVICE_URL || !env.SWAP_TOKEN) {
+    throw new Error("Swap service is not configured");
+  }
+  const startedAt = Date.now();
+  const response = await fetch(new URL("/swapTail", env.SWAP_SERVICE_URL), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.SWAP_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ video_url: videoUrl, persona_id: personaId }),
+    signal: AbortSignal.timeout(budgetMs),
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(
+      `Swap service responded ${response.status}: ${detail.slice(0, 200)}`,
+    );
+  }
+  const parsed = swapTailResponseSchema.parse(await response.json());
+  const stamp = Date.now();
+  const lastFrameUrl = await uploadToFal(
+    Buffer.from(parsed.last_frame_base64, "base64"),
+    `swap-${stamp}-tail.png`,
+    "image/png",
+  );
+  const { stats } = parsed;
+  console.log(
+    `swapTail: kind=${jobKind} serviceMs=${stamp - startedAt} (swap ${stats.swap_ms}) rehostMs=${Date.now() - stamp} downloadMs=${stats.download_ms ?? 0} face=${stats.had_face} similarity=${stats.similarity_before}->${stats.similarity_after} sharpness=${stats.sharpness_before ?? "?"}->${stats.sharpness_after ?? "?"}`,
+  );
+  return {
+    lastFrameUrl,
+    costUsd: (stats.swap_ms / 1000) * LIVE_TUNABLES.SWAP_COST_PER_SEC_USD,
+  };
+};
+
 export const pendingSwapReport = (): ClipSwapReport => ({
   status: "pending",
   swapMs: 0,

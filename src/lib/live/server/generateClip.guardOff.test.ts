@@ -44,6 +44,8 @@ vi.mock("./swapClip", () => ({
   SWAP_GREETING_BUDGET_MS: 20_000,
   swapClip: (...args: unknown[]) => swapClip(...args),
   swapServiceLastFrame: () => Promise.reject(new Error("not configured")),
+  // Not under test here (see generateClip.deferredSwap.test.ts): the inline swap below always succeeds, so swappedLastFrameUrl short-circuits past this, except in the one test where swapClip itself fails.
+  swapTail: () => Promise.reject(new Error("not configured")),
   pendingSwapReport: () => ({ status: "pending" }),
   failedSwapReport: (swapMs: number, error: Error) => ({
     status: "failed",

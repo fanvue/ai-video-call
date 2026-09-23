@@ -27,12 +27,14 @@ vi.mock("./frameGuard", () => ({
 
 const swapClip = vi.fn();
 const swapServiceLastFrame = vi.fn();
+const swapTail = vi.fn();
 // Fully mocked: the real module pulls in @/env, which validates the server environment at import.
 vi.mock("./swapClip", () => ({
   SWAP_BUDGET_MS: 150_000,
   SWAP_GREETING_BUDGET_MS: 20_000,
   swapClip: (...args: unknown[]) => swapClip(...args),
   swapServiceLastFrame: (...args: unknown[]) => swapServiceLastFrame(...args),
+  swapTail: (...args: unknown[]) => swapTail(...args),
   pendingSwapReport: () => ({
     status: "pending",
     swapMs: 0,
@@ -133,6 +135,11 @@ beforeEach(() => {
   swapClip.mockReset();
   swapServiceLastFrame.mockReset();
   swapServiceLastFrame.mockResolvedValue("https://example.com/tail-raw.jpg");
+  swapTail.mockReset();
+  // No persona on these requests by default, so swapTail refuses exactly like the real client and every existing seed expectation still falls through to swapServiceLastFrame.
+  swapTail.mockRejectedValue(
+    new Error("No persona selected, the clip plays unswapped"),
+  );
   extractLastFrameUrl.mockReset();
   extractMidFrameUrl.mockReset();
   guardFrame.mockReset();
@@ -231,6 +238,86 @@ describe("generateClip on the swap backend with the deferred clip swap", () => {
   it("never touches the swap service on other backends", async () => {
     await generateClip(request({ kind: "greeting" }));
     expect(swapClip).not.toHaveBeenCalled();
+  });
+});
+
+// Seeding the chain: with a persona selected the next clip's seed comes from the swapped tail, not the raw render, so the swapped identity carries forward instead of the raw render's own drift compounding.
+describe("generateClip seeds a swap-mode chain clip from /swapTail", () => {
+  const personaRequest = (job: ClipRequest["job"]): ClipRequest => ({
+    ...request(job),
+    backend: "swap",
+    personaId: "synth-persona-01",
+  });
+  const reply: ClipRequest["job"] = {
+    kind: "reply",
+    requestId: "r1",
+    text: "hi",
+    channel: "chat",
+    from: "fan",
+    precededByIdle: false,
+  };
+
+  it("seeds from the swapped tail and adds its cost, without touching the raw lastFrame path", async () => {
+    swapTail.mockResolvedValue({
+      lastFrameUrl: "https://example.com/tail-swapped.png",
+      costUsd: 0.01,
+    });
+    const result = await generateClip(personaRequest(reply));
+    expect(swapTail).toHaveBeenCalledWith({
+      videoUrl: "https://example.com/clip.mp4",
+      personaId: "synth-persona-01",
+      jobKind: "reply",
+    });
+    expect(swapServiceLastFrame).not.toHaveBeenCalled();
+    expect(extractLastFrameUrl).not.toHaveBeenCalled();
+    expect(result.seedFrameUrl).toBe("https://example.com/tail-swapped.png");
+    expect(result.costUsd).toBeCloseTo(0.275 + 0.01, 6);
+  });
+
+  it("falls back to the raw last frame when the persona gate refuses the swapped tail", async () => {
+    swapTail.mockRejectedValue(
+      new Error("Swap service responded 422: persona gate: not in manifest"),
+    );
+    const result = await generateClip(personaRequest(reply));
+    expect(swapServiceLastFrame).toHaveBeenCalledWith({
+      videoUrl: "https://example.com/clip.mp4",
+    });
+    expect(result.seedFrameUrl).toBe("https://example.com/tail-raw.jpg");
+  });
+
+  it("falls back to the raw last frame with no persona selected", async () => {
+    const result = await generateClip({ ...request(reply), backend: "swap" });
+    expect(swapTail).toHaveBeenCalledWith(
+      expect.objectContaining({ personaId: undefined }),
+    );
+    expect(swapServiceLastFrame).toHaveBeenCalled();
+    expect(result.seedFrameUrl).toBe("https://example.com/tail-raw.jpg");
+  });
+
+  it("falls all the way through to fal's frame extraction when both swapTail and the raw lastFrame fail", async () => {
+    swapTail.mockRejectedValue(new Error("Swap service is not configured"));
+    swapServiceLastFrame.mockRejectedValue(
+      new Error("Swap service responded 503"),
+    );
+    const result = await generateClip(personaRequest(reply));
+    expect(extractLastFrameUrl).toHaveBeenCalledWith(
+      "https://example.com/clip.mp4",
+      expect.any(Number),
+    );
+    expect(result.seedFrameUrl).toBe("https://example.com/last.jpg");
+  });
+
+  it("a banked state frame still skips the tail decode entirely", async () => {
+    const banked = "https://example.com/banked-sitting.png";
+    const result = await generateClip({
+      ...personaRequest(reply),
+      session: {
+        ...session,
+        stateFrames: { [stateFrameKey(session.state)]: banked },
+      },
+    });
+    expect(swapTail).not.toHaveBeenCalled();
+    expect(result.seedFrameUrl).toBe(banked);
   });
 });
 

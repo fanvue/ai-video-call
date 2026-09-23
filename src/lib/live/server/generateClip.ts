@@ -30,6 +30,7 @@ import {
   SWAP_GREETING_BUDGET_MS,
   swapClip,
   swapServiceLastFrame,
+  swapTail,
 } from "./swapClip";
 import { writeCheckIn, writeReply } from "./writeReply";
 
@@ -377,7 +378,7 @@ export const generateClip = async (
   let swapReport: ClipSwapReport | undefined;
   let swappedLastFrameUrl: string | null = null;
   if (backend === "swap" && LIVE_TUNABLES.SWAP_DEFER_CLIP) {
-    // Two-phase swap: the clip comes back unswapped and pending, so the chain renders its next clip right after this render instead of after the 7 s clip swap; the client swaps the full clip before it plays (api/live/swap). The next seed is the raw render's last frame on purpose: seeding from a swapped tail had turbo re-render an already swapped and restored face that was then swapped again, and that stacking is what drifted the face over a session.
+    // Two-phase swap: the clip comes back unswapped and pending, so the chain renders its next clip right after this render instead of after the 7 s clip swap; the client swaps the full clip before it plays (api/live/swap). Seeding from a swapped tail was reverted in 820c0c6 for stacking a swap on an already swapped and restored face, but that was with GPEN restore at 0.8 plus colour lock at 0.5, and both are off now, so the seed below goes through /swapTail instead of staying on the raw render.
     swapReport = pendingSwapReport();
   } else if (backend === "swap") {
     const swapStarted = Date.now();
@@ -434,17 +435,32 @@ export const generateClip = async (
           swappedLastFrameUrl ??
           (await withTimeout(
             backend === "swap"
-              ? // The swap service decodes the tail in about 1 s; fal's ffmpeg-api took 5 to 6 s of the reply path. It stays the fallback.
-                swapServiceLastFrame({
+              ? // The swapped tail carries the persona's identity forward instead of the raw render's compounding drift; falls back to the raw /lastFrame path (then the fal extract) with no persona, a persona-gate refusal, or any other swapTail error.
+                swapTail({
                   videoUrl,
-                  toneReferenceUrl: session.toneFrameUrl,
-                }).catch((error: unknown) => {
-                  console.warn(
-                    "generateClip: swap service lastFrame failed, using fal extract",
-                    error,
-                  );
-                  return extractLastFrameUrl(videoUrl, FRAME_BUDGET_MS);
+                  personaId: request.personaId,
+                  jobKind: job.kind,
                 })
+                  .then((swapped) => {
+                    costUsd += swapped.costUsd;
+                    return swapped.lastFrameUrl;
+                  })
+                  .catch((error: unknown) => {
+                    console.warn(
+                      "generateClip: swapTail failed, seeding from the raw last frame",
+                      error,
+                    );
+                    return swapServiceLastFrame({
+                      videoUrl,
+                      toneReferenceUrl: session.toneFrameUrl,
+                    }).catch((fallbackError: unknown) => {
+                      console.warn(
+                        "generateClip: swap service lastFrame failed, using fal extract",
+                        fallbackError,
+                      );
+                      return extractLastFrameUrl(videoUrl, FRAME_BUDGET_MS);
+                    });
+                  })
               : extractLastFrameUrl(videoUrl, FRAME_BUDGET_MS),
             FRAME_BUDGET_MS,
             "extractFrame",
