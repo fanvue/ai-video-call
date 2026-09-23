@@ -1,5 +1,6 @@
 // Thin fetch wrappers for the server routes. See docs/LIVE_ENGINE.md.
 import {
+  CLIP_STREAM_CONTENT_TYPE,
   clipResultSchema,
   clipSwapReportSchema,
   type ClipRequest,
@@ -80,9 +81,66 @@ const postJson = async <T>(url: string, body: unknown): Promise<T> => {
   return data;
 };
 
-export const renderClip = async (req: ClipRequest): Promise<ClipResult> => {
-  const raw = await postJson<unknown>("/api/live/clip", req);
-  return clipResultSchema.parse(raw);
+const clipStreamLineSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("rendered"), videoUrl: z.string().min(1) }),
+  z.object({ type: z.literal("result"), result: clipResultSchema }),
+  z.object({ type: z.literal("error"), error: z.string() }),
+]);
+
+// With onRendered, reads the route's NDJSON stream so the caller hears the unswapped clip's url before the seed swap finishes.
+export const renderClip = async (
+  req: ClipRequest,
+  onRendered?: (videoUrl: string) => void,
+): Promise<ClipResult> => {
+  if (!onRendered) {
+    const raw = await postJson<unknown>("/api/live/clip", req);
+    return clipResultSchema.parse(raw);
+  }
+  const res = await fetch("/api/live/clip", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: CLIP_STREAM_CONTENT_TYPE,
+    },
+    body: JSON.stringify(req),
+  });
+  if (!res.ok || !res.body) {
+    const data = (await res.json().catch(() => null)) as {
+      error?: string;
+    } | null;
+    throw new Error(
+      data?.error ?? `Request to /api/live/clip failed (${res.status})`,
+    );
+  }
+  // A route or proxy that ignores the Accept header still answers with the plain result.
+  if (!res.headers.get("content-type")?.includes(CLIP_STREAM_CONTENT_TYPE)) {
+    return clipResultSchema.parse(await res.json());
+  }
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffered = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    buffered += value ?? "";
+    const lines = buffered.split("\n");
+    buffered = done ? "" : (lines.pop() ?? "");
+    for (const line of lines) {
+      if (!line.trim()) {
+        continue;
+      }
+      const parsed = clipStreamLineSchema.parse(JSON.parse(line));
+      if (parsed.type === "rendered") {
+        onRendered(parsed.videoUrl);
+      } else if (parsed.type === "result") {
+        void reader.cancel();
+        return parsed.result;
+      } else {
+        throw new Error(parsed.error);
+      }
+    }
+    if (done) {
+      throw new Error("/api/live/clip stream ended without a result");
+    }
+  }
 };
 
 const swapResultSchema = z.object({
@@ -96,7 +154,7 @@ export type SwapRenderedClipResult = z.infer<typeof swapResultSchema>;
 
 // Second phase of a swap-mode clip: finishes the face swap of a clip that came back with swap.status "pending".
 export const swapRenderedClip = async (
-  result: ClipResult,
+  result: Pick<ClipResult, "videoUrl" | "jobKind">,
   personaId: string | undefined,
   swapProfile?: SwapProfile,
   swapFaceLock?: boolean,

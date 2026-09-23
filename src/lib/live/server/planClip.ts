@@ -33,7 +33,24 @@ export type ClipPlan = {
   // This clip's own sexual-content status (see buildPrompt's CONTENT_LOCK). Used with wardrobeIntent
   // by generateClip to decide whether this is a hold clip that must be frame-verified before it can play.
   explicit: boolean;
+  // Reply/beat only: a step ahead of the request's real action (see isSetupIntent).
+  setupOnly?: boolean;
 };
+
+// Steps that only get her ready for what was asked: prod showed the reply text landing on "moves into bent over" or a wave while the asked-for action came a clip later.
+const isSetupIntent = (intent: BeatIntent): boolean =>
+  intent.type === "pose" ||
+  intent.type === "framing" ||
+  intent.type === "fetchProp" ||
+  intent.type === "hold" ||
+  (intent.type === "act" && intent.act === "gesture");
+
+// A setup step counts only when a real action follows it; "wave" or "stand up" on its own is the action.
+const setupBeforeAction = (intents: BeatIntent[], index: number): boolean =>
+  isSetupIntent(intents[index] as BeatIntent) &&
+  intents
+    .slice(index + 1)
+    .some((intent) => intent.type !== "rest" && !isSetupIntent(intent));
 
 const ACTION_BEAT_SEC = LIVE_TUNABLES.ACTION_CLIP_SEC;
 
@@ -1682,12 +1699,14 @@ const planReply = (
   if (lastPlannedIntent.type !== "rest") {
     cappedFollowUps = [...cappedFollowUps, { type: "rest" }];
   }
+  const planned = [first, ...cappedFollowUps];
   const followUps: PlannedBeat[] = cappedFollowUps.map((intent, index) => ({
     id: `${job.requestId}-follow-${index}`,
     intent,
     attempt: 0,
     // Lets the director cancel only this request's dependents if a step of it fails.
     requestId: job.requestId,
+    ...(setupBeforeAction(planned, index + 1) ? { setupOnly: true } : {}),
   }));
 
   // Matches the physical lead-in gate above: no idle stretch, no typing beat anywhere in the reply.
@@ -1718,6 +1737,7 @@ const planReply = (
     wardrobeIntent,
     targetGarment,
     explicit: beatPlan.explicit,
+    setupOnly: setupBeforeAction(planned, 0),
   };
 };
 
@@ -1767,6 +1787,7 @@ const planBeat = (
     wardrobeIntent,
     targetGarment,
     explicit: beatPlan.explicit,
+    setupOnly: job.beat.setupOnly === true,
   };
 };
 

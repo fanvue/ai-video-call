@@ -39,6 +39,11 @@ import {
   releaseClipSource,
 } from "@/lib/live/client/clipSource";
 import { ClipPipeline, type PipelineEvent } from "@/lib/live/client/pipeline";
+import { createEarlySwaps } from "@/lib/live/client/earlySwaps";
+import {
+  type PendingReveal,
+  replyRevealDue,
+} from "@/lib/live/client/replyReveal";
 import {
   GaplessPlayer,
   type ClipToPlay,
@@ -120,7 +125,10 @@ export type StartOptions = {
 };
 
 export type UseLiveSessionDeps = {
-  renderClip: (req: ClipRequest) => Promise<ClipResult>;
+  renderClip: (
+    req: ClipRequest,
+    onRendered?: (videoUrl: string) => void,
+  ) => Promise<ClipResult>;
   uploadReference: (
     file: File,
     sceneId: SceneId,
@@ -153,7 +161,7 @@ export type UseLiveSessionDeps = {
   warmSwap: () => Promise<void>;
   // Swap mode only: second phase of a clip that came back with swap.status "pending".
   swapRenderedClip?: (
-    result: ClipResult,
+    result: Pick<ClipResult, "videoUrl" | "jobKind">,
     personaId: string | undefined,
     swapProfile?: SwapProfile,
     swapFaceLock?: boolean,
@@ -404,12 +412,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   // The clip actually on screen right now (set from onClipStarted), used to gate background
   // timers on whether that clip is a real request/beat vs. idle filler.
   const currentPlayingClipIdRef = useRef<string | null>(null);
-  const pendingRevealRef = useRef<{
-    clipId: string;
-    text: string;
-    channel: InputChannel;
-    typingLeadSec: number;
-  } | null>(null);
+  const pendingRevealRef = useRef<PendingReveal | null>(null);
 
   const clearPendingReveal = useCallback(() => {
     pendingRevealRef.current = null;
@@ -417,13 +420,9 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     setTypingDevice(null);
   }, []);
 
-  const revealIfDue = useCallback((currentTimeSec: number, clipId: string) => {
-    const pending = pendingRevealRef.current;
+  const appendReply = useCallback((pending: PendingReveal) => {
     const director = directorRef.current;
-    if (!pending || !director || pending.clipId !== clipId) {
-      return;
-    }
-    if (currentTimeSec < pending.typingLeadSec) {
+    if (!director) {
       return;
     }
     pendingRevealRef.current = null;
@@ -444,6 +443,31 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       },
     ]);
   }, []);
+
+  const revealIfDue = useCallback(
+    (currentTimeSec: number, clipId: string) => {
+      const pending = pendingRevealRef.current;
+      if (!pending || !directorRef.current) {
+        return;
+      }
+      const meta = clipMetaRef.current.get(clipId);
+      const due = replyRevealDue(
+        pending,
+        {
+          clipId,
+          currentTimeSec,
+          requestId: requestIdByClipIdRef.current.get(clipId) ?? null,
+          setupOnly: meta?.setupOnly === true,
+          idle: meta?.jobKind === "idle",
+        },
+        Date.now(),
+      );
+      if (due) {
+        appendReply(pending);
+      }
+    },
+    [appendReply],
+  );
 
   const getNextClip = useCallback((): ClipToPlay | null => {
     const pipeline = pipelineRef.current;
@@ -916,11 +940,20 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       }
       refreshRequestStatuses();
       if (result.reply) {
+        const held = pendingRevealRef.current;
+        // A held reply whose clip already played still belongs in chat before the next one.
+        if (held?.holdForAction && held.replySeen) {
+          appendReply(held);
+        }
         pendingRevealRef.current = {
           clipId: result.clipId,
+          requestId: requestIdByClipIdRef.current.get(result.clipId) ?? null,
           text: result.reply.text,
           channel: result.reply.channel,
           typingLeadSec: result.reply.typingLeadSec,
+          holdForAction: result.setupOnly === true,
+          replySeen: false,
+          readyAtMs: Date.now(),
         };
         setTypingCreator(true);
         setTypingDevice(
@@ -943,6 +976,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       maybeGoLive();
     },
     [
+      appendReply,
       player,
       prefetchedSources,
       refreshBufferDepth,
@@ -1504,8 +1538,29 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       setQueueStrip(EMPTY_QUEUE_STRIP);
 
       const swapRenderedClip = deps.swapRenderedClip;
+      const runSwap = swapRenderedClip
+        ? (clip: Pick<ClipResult, "videoUrl" | "jobKind">) =>
+            swapRenderedClip(
+              clip,
+              options.swapPersonaId,
+              options.swapProfile,
+              options.swapFaceLock,
+            )
+        : null;
+      const earlySwaps = runSwap ? createEarlySwaps(runSwap) : null;
+      const earlyReplySwaps =
+        options.backend === "swap" &&
+        earlySwaps !== null &&
+        LIVE_TUNABLES.SWAP_DEFER_CLIP &&
+        LIVE_TUNABLES.SWAP_EARLY_REPLY_SWAP;
       const pipeline = new ClipPipeline({
-        render: deps.renderClip,
+        render: earlyReplySwaps
+          ? (req) =>
+              deps.renderClip(
+                req,
+                req.job.kind === "reply" ? earlySwaps.start : undefined,
+              )
+          : deps.renderClip,
         now: () => Date.now(),
         onEvent: handlePipelineEvent,
         backend: options.backend ?? "turbo",
@@ -1521,14 +1576,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         needsIdentityReference: () =>
           directorRef.current?.consumeIdentityReferenceDue(Date.now()) ?? false,
         finalizeSwap:
-          options.backend === "swap" && swapRenderedClip
-            ? (result) =>
-                swapRenderedClip(
-                  result,
-                  options.swapPersonaId,
-                  options.swapProfile,
-                  options.swapFaceLock,
-                )
+          options.backend === "swap" && runSwap
+            ? (result) => earlySwaps?.take(result) ?? runSwap(result)
             : undefined,
       });
       pipelineRef.current = pipeline;

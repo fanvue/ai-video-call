@@ -1019,3 +1019,41 @@ describe("planClip: typing stays in the chat, never on camera", () => {
     expect(fast.replyDraft?.typingLeadSec).toBe(0);
   });
 });
+
+describe("planClip: setupOnly marks steps ahead of the real action", () => {
+  it('"bend over and spank your ass" holds the reply past the move into bent over', () => {
+    const plan = replyPlan("bend over and spank your ass");
+    expect(plan.setupOnly).toBe(true);
+    expect(plan.followUps[0]?.intent).toEqual({ type: "act", act: "sway" });
+    expect(plan.followUps[0]?.setupOnly).toBeUndefined();
+  });
+
+  it('"stand up then spread your legs" holds through both pose steps', () => {
+    const plan = replyPlan("stand up then spread your legs");
+    expect(plan.setupOnly).toBe(true);
+    expect(plan.followUps.map((b) => b.setupOnly === true)).toEqual([
+      true,
+      false,
+      false,
+    ]);
+  });
+
+  it('"get on all fours and spank your ass" reveals on the doggy clip, itself a requested act', () => {
+    expect(replyPlan("get on all fours and spank your ass").setupOnly).toBe(
+      false,
+    );
+  });
+
+  it('"spank your ass" alone is the action itself', () => {
+    expect(replyPlan("spank your ass").setupOnly).toBe(false);
+  });
+
+  it('"wave" on its own is the action, not a setup step', () => {
+    const plan = replyPlan("wave at me");
+    expect(plan.setupOnly).toBe(false);
+  });
+
+  it("the return-to-idle step never counts as the action a setup waits for", () => {
+    expect(replyPlan("stand up").setupOnly).toBe(false);
+  });
+});

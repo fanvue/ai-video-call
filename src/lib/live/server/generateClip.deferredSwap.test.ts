@@ -241,6 +241,12 @@ describe("generateClip on the swap backend with the deferred clip swap", () => {
     await generateClip(request({ kind: "greeting" }));
     expect(swapClip).not.toHaveBeenCalled();
   });
+
+  it("never calls onRendered off the swap backend, where there is no second phase to start", async () => {
+    const onRendered = vi.fn();
+    await generateClip(request({ kind: "checkIn", channel: "chat" }), onRendered);
+    expect(onRendered).not.toHaveBeenCalled();
+  });
 });
 
 // Seeding the chain: with a persona selected the next clip's seed comes from the swapped tail, not the raw render, so the swapped identity carries forward instead of the raw render's own drift compounding.
@@ -274,6 +280,21 @@ describe("generateClip seeds a swap-mode chain clip from /swapTail", () => {
     expect(extractLastFrameUrl).not.toHaveBeenCalled();
     expect(result.seedFrameUrl).toBe("https://example.com/tail-swapped.png");
     expect(result.costUsd).toBeCloseTo(0.275 + 0.01, 6);
+  });
+
+  it("hands the unswapped clip url to onRendered before the seed swap starts", async () => {
+    const order: string[] = [];
+    swapTail.mockImplementation(async () => {
+      order.push("swapTail");
+      return { lastFrameUrl: "https://example.com/tail-swapped.png", costUsd: 0.01 };
+    });
+    await generateClip(personaRequest(reply), (videoUrl) =>
+      order.push(`rendered ${videoUrl}`),
+    );
+    expect(order).toEqual([
+      "rendered https://example.com/clip.mp4",
+      "swapTail",
+    ]);
   });
 
   it("maps Face lock to the longlive recipe on the seed swap too", async () => {

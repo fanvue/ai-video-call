@@ -194,6 +194,8 @@ export const plannedBeatSchema = z.object({
   attempt: z.number().int().min(0).max(1),
   // The fan/viewer request this beat follows up on; undefined for director-originated beats.
   requestId: z.string().optional(),
+  // A pose/framing/prop/greeting step ahead of the request's real action; the reply text waits for the action clip.
+  setupOnly: z.boolean().optional(),
 });
 export type PlannedBeat = z.infer<typeof plannedBeatSchema>;
 
@@ -389,6 +391,8 @@ export const clipResultSchema = z.object({
     .nullable(),
   // Further beats to run in order after this clip (from reply / checkIn / beat jobs).
   followUps: z.array(plannedBeatSchema).max(6),
+  // This clip only sets up the request's action (see plannedBeatSchema.setupOnly), so its reply text is held for the action clip.
+  setupOnly: z.boolean().optional(),
   guard: frameGuardReportSchema,
   observed: observedStateSchema.nullable(),
   // See docs/LIVE_ENGINE.md "Frame guard" for when a hold vs. non-hold clip is rejected.
@@ -407,6 +411,9 @@ export const clipResultSchema = z.object({
   swap: clipSwapReportSchema.optional(),
 });
 export type ClipResult = z.infer<typeof clipResultSchema>;
+
+// /api/live/clip streams NDJSON lines ("rendered", then "result" or "error") when the request accepts this type.
+export const CLIP_STREAM_CONTENT_TYPE = "application/x-ndjson";
 
 // Tunables shared by both halves
 
@@ -467,6 +474,8 @@ export const LIVE_TUNABLES = {
   SWAP_SKIP_STALE_IDLE_SWAPS: true,
   // Download each swapped clip as soon as it lands instead of when the player pulls it, so a clip that lands after a boundary plays about a second sooner (prod: 1.3 to 2.3 s from swap landed to on screen).
   SWAP_PREFETCH_READY_CLIPS: true,
+  // Start a reply's full swap from the clip route's render stream instead of after its seed swap, taking that 2 to 4 s off the reply's wait; at most one such early swap runs, outside the pipeline's swap slots.
+  SWAP_EARLY_REPLY_SWAP: true,
   // Timeupdate fires about four times a second, so a deferred cut-in on a looping element needs a wider boundary window than SWAP_LEAD_SEC or the wrap slips past it.
   CUT_IN_LEAD_SEC: 0.35,
   // Stage an in-scene still (selected room, canon lingerie) from the upload before the greeting; the raw photo's clothes and room otherwise contradict the prompt and the first clip visibly morphs.

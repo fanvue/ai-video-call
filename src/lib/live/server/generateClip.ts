@@ -268,6 +268,8 @@ const evaluateFrameChecks = ({
 
 export const generateClip = async (
   request: ClipRequest,
+  // Two-phase swap only: the unswapped clip's url as soon as it renders, so the client can start the full swap while the seed swap and checks still run.
+  onRendered?: (videoUrl: string) => void,
 ): Promise<ClipResult> => {
   const { session, job, backend, speechMode, useIdentityReference } = request;
 
@@ -382,6 +384,7 @@ export const generateClip = async (
   if (backend === "swap" && LIVE_TUNABLES.SWAP_DEFER_CLIP) {
     // Two-phase swap: the clip comes back unswapped and pending, so the chain renders its next clip right after this render instead of after the 7 s clip swap; the client swaps the full clip before it plays (api/live/swap). Seeding from a swapped tail was reverted in 820c0c6 for stacking a swap on an already swapped and restored face, but that was with GPEN restore at 0.8 plus colour lock at 0.5, and both are off now, so the seed below goes through /swapTail instead of staying on the raw render.
     swapReport = pendingSwapReport();
+    onRendered?.(videoUrl);
   } else if (backend === "swap") {
     const swapStarted = Date.now();
     const recipe = swapRecipeFor(request.swapFaceLock);
@@ -700,6 +703,7 @@ export const generateClip = async (
     state: finalState,
     reply,
     followUps: plan.followUps,
+    ...(plan.setupOnly ? { setupOnly: true } : {}),
     guard,
     observed: guardOutcome.observed,
     verdict,

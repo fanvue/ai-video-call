@@ -747,6 +747,29 @@ describe("generateClip: non-hold clips (requested wardrobe change or explicit ac
     expect(result.verdict).toBe("approved");
   });
 
+  it("a reply that only moves her into position carries setupOnly so the client holds its text", async () => {
+    renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
+    writeReply.mockResolvedValue({ text: "mmm okay", nextWorld: "w" });
+    guardFrame.mockResolvedValue({ checked: true, issues: [], observed: { wardrobe: {} } });
+    const job = {
+      kind: "reply" as const,
+      requestId: "r1",
+      channel: "chat" as const,
+      from: "fan" as const,
+      precededByIdle: false,
+    };
+
+    const setup = await generateClip(
+      clipRequest({ job: { ...job, text: "bend over and spank your ass" } }),
+    );
+    const action = await generateClip(
+      clipRequest({ job: { ...job, text: "spank your ass" } }),
+    );
+
+    expect(setup.setupOnly).toBe(true);
+    expect(action.setupOnly).toBeUndefined();
+  });
+
   it("a beat whose guard observes bra on while expected off commits the observed state", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
     guardFrame.mockResolvedValue({
