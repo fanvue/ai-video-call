@@ -430,7 +430,15 @@ export const LIVE_TUNABLES = {
   // Boundary swaps hold the incoming clip on frame 0 until the outgoing one is on its last frame, then play and hard-cut. Measured in Chrome: the hidden early start revealed the next clip at frame 8 after skipping the outgoing's last 2, a 10-frame jump (face ~15 px on the swapseed chain) under a 320 ms ghosting dissolve, while the render's own seam is 0.6 px.
   FRAME_EXACT_BOUNDARY: true,
   // A reply arriving while an idle loops waits for the loop boundary only when the idle wraps within this many seconds; otherwise it cuts in at once through a blur dissolve. Always waiting for the wrap cost about half an idle per request (prod: 16 to 21 s dispatch to visible, 5 to 7 s of it spent waiting on the loop).
-  CUT_IN_WAIT_MAX_SEC: 0.6,
+  // Raised from 0.6: prod (Sept 23, opzehypqf) cut replies in 1.8 and 2.55 s before the wrap and her face jumped 13 to 26 px, against 0.7 to 1.6 px when a reply starts on the wrap from the anchor it was seeded from.
+  CUT_IN_WAIT_MAX_SEC: 3,
+  // A wait for the wrap never pushes a reply past this long after the fan sent it; replies already later than that cut in at once.
+  CUT_IN_VISIBLE_BY_MS: 15_000,
+  // A cut-in that cannot wait dissolves through a slight push-in plus blur, so the pose change reads as a camera move; off, it is the plain blur dissolve. Boundaries still hard-cut.
+  CUT_IN_EFFECT: true,
+  CUT_IN_EFFECT_MS: 420,
+  CUT_IN_EFFECT_SCALE: 1.04,
+  CUT_IN_EFFECT_BLUR_PX: 8,
   // Just after a wrap the idle is still on the anchor pose the reply starts from, so a reply that lands moments after the boundary cuts in now instead of waiting the whole loop (prod: landed 1 s late, seen 10 s later).
   // Past 0.4 s the idle has already moved off that anchor pose.
   CUT_IN_AFTER_WRAP_SEC: 0.4,

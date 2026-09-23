@@ -397,6 +397,11 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       return null;
     }
     clipMetaRef.current.set(result.clipId, result);
+    const requestId = requestIdByClipIdRef.current.get(result.clipId);
+    const sentAtMs =
+      requestId === undefined
+        ? undefined
+        : requestSentAtMsRef.current.get(requestId);
     return {
       id: result.clipId,
       videoUrl: result.videoUrl,
@@ -405,6 +410,9 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       loops: result.loops,
       interrupts: result.jobKind !== "idle",
       startSec: pipeline.startSecFor(result.clipId),
+      ...(sentAtMs === undefined
+        ? {}
+        : { visibleByMs: sentAtMs + LIVE_TUNABLES.CUT_IN_VISIBLE_BY_MS }),
     };
   }, []);
 

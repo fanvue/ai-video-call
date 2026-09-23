@@ -328,18 +328,18 @@ export const LiveStudio = () => {
           ) : null}
         </div>
       ) : null}
-      <div className="relative isolate min-h-0 flex-1 bg-black">
+      <div className="relative isolate min-h-0 flex-1 overflow-hidden bg-black">
         <video
           ref={bindVideoA}
           playsInline
           disablePictureInPicture
-          className="absolute inset-0 h-full w-full object-cover transition-[opacity,filter] duration-150"
+          className="absolute inset-0 h-full w-full object-cover transition-[opacity,filter,transform] duration-150"
         />
         <video
           ref={bindVideoB}
           playsInline
           disablePictureInPicture
-          className="absolute inset-0 h-full w-full object-cover transition-[opacity,filter] duration-150"
+          className="absolute inset-0 h-full w-full object-cover transition-[opacity,filter,transform] duration-150"
         />
         <div className="absolute inset-x-0 top-0 bg-gradient-to-b from-black/70 to-transparent">
           <TopBar

@@ -4,8 +4,8 @@ import {
   type ClipToPlay,
 } from "@/lib/live/client/gaplessPlayer";
 
-// Lets a test run the pre-frame-exact boundary (hidden early start, 320 ms dissolve).
-const tunables = vi.hoisted(() => ({ frameExact: true }));
+// Lets a test run the pre-frame-exact boundary (hidden early start, 320 ms dissolve), or the plain blur cut-in.
+const tunables = vi.hoisted(() => ({ frameExact: true, cutInEffect: true }));
 vi.mock("@/lib/live/contract", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/live/contract")>();
   return {
@@ -14,6 +14,9 @@ vi.mock("@/lib/live/contract", async (importOriginal) => {
       ...actual.LIVE_TUNABLES,
       get FRAME_EXACT_BOUNDARY() {
         return tunables.frameExact;
+      },
+      get CUT_IN_EFFECT() {
+        return tunables.cutInEffect;
       },
     },
   };
@@ -24,7 +27,13 @@ type Listener = (event: { currentTarget: FakeVideo }) => void;
 // Minimal stand-in for HTMLVideoElement: enough surface for the player's load/play/swap path.
 class FakeVideo {
   src = "";
-  style = { opacity: "", zIndex: "", transitionDuration: "", filter: "" };
+  style = {
+    opacity: "",
+    zIndex: "",
+    transitionDuration: "",
+    filter: "",
+    transform: "",
+  };
   loop = false;
   muted = false;
   volume = 1;
@@ -128,6 +137,7 @@ describe("GaplessPlayer", () => {
     vi.stubGlobal("cancelAnimationFrame", () => {});
     vi.stubGlobal("performance", { now: () => 0 });
     tunables.frameExact = true;
+    tunables.cutInEffect = true;
   });
 
   afterEach(() => {
@@ -271,7 +281,7 @@ describe("GaplessPlayer", () => {
     expect(b.loop).toBe(false);
   });
 
-  it("a requested clip replaces the preloaded idle and cuts in mid-loop through a blur dissolve, returning the displaced idle", async () => {
+  it("a requested clip replaces the preloaded idle and cuts in mid-loop through a push-in blur dissolve, returning the displaced idle", async () => {
     const queue: ClipToPlay[] = [clip("loop1", true), clip("idle2", true)];
     const { a, b, player } = setup(queue);
     const returned: string[] = [];
@@ -289,18 +299,122 @@ describe("GaplessPlayer", () => {
     await flush();
     expect(returned).toEqual(["idle2"]);
     expect(b.src).toBe(clip("reply").videoUrl);
-    expect(b.style.filter).toBe("blur(6px)");
+    expect(b.style.filter).toBe("blur(8px)");
+    expect(b.style.transform).toBe("scale(1.04)");
     b.fire("playing");
     await flush();
     expect(player.getActiveSlot()).toBe("b");
     expect(b.paused).toBe(false);
     expect(b.style.opacity).toBe("1");
     expect(b.style.filter).toBe("");
-    expect(a.style.filter).toBe("blur(6px)");
-    expect(b.style.transitionDuration).toBe("450ms");
-    vi.advanceTimersByTime(450);
+    expect(b.style.transform).toBe("");
+    expect(a.style.filter).toBe("blur(8px)");
+    expect(a.style.transform).toBe("scale(1.04)");
+    expect(b.style.transitionDuration).toBe("420ms");
+    vi.advanceTimersByTime(420);
     expect(a.style.opacity).toBe("0");
     expect(a.style.filter).toBe("");
+    expect(a.style.transform).toBe("");
+  });
+
+  it("with CUT_IN_EFFECT off, a cut-in is the plain 450 ms blur dissolve with no push-in", async () => {
+    tunables.cutInEffect = false;
+    const queue: ClipToPlay[] = [clip("loop1", true)];
+    const { a, b, player } = setup(queue);
+    player.setInterruptReadyHandler(() => queue.some((c) => c.interrupts));
+    player.start();
+    await flush();
+    a.fireTimeUpdate(3);
+    queue.unshift(clip("reply", false, true));
+    player.checkForClip();
+    await flush();
+    expect(b.style.filter).toBe("blur(6px)");
+    expect(b.style.transform).toBe("");
+    b.fire("playing");
+    await flush();
+    expect(player.getActiveSlot()).toBe("b");
+    expect(a.style.filter).toBe("blur(6px)");
+    expect(a.style.transform).toBe("");
+    expect(b.style.transitionDuration).toBe("450ms");
+  });
+
+  it("drops the push-in but keeps the blur dissolve when the viewer prefers reduced motion", async () => {
+    vi.stubGlobal("window", {
+      setTimeout,
+      clearTimeout,
+      matchMedia: (query: string) => ({
+        matches: query === "(prefers-reduced-motion: reduce)",
+      }),
+    });
+    const queue: ClipToPlay[] = [clip("loop1", true)];
+    const { a, b, player } = setup(queue);
+    player.setInterruptReadyHandler(() => queue.some((c) => c.interrupts));
+    player.start();
+    await flush();
+    a.fireTimeUpdate(3);
+    queue.unshift(clip("reply", false, true));
+    player.checkForClip();
+    await flush();
+    expect(b.style.filter).toBe("blur(8px)");
+    expect(b.style.transform).toBe("");
+    b.fire("playing");
+    await flush();
+    expect(player.getActiveSlot()).toBe("b");
+    expect(a.style.filter).toBe("blur(8px)");
+    expect(a.style.transform).toBe("");
+  });
+
+  it("waits out an idle with under CUT_IN_WAIT_MAX_SEC left and hard-cuts the reply on its wrap, with no effect", async () => {
+    const queue: ClipToPlay[] = [clip("loop1", true)];
+    const { a, b, player } = setup(queue);
+    player.setInterruptReadyHandler(() => queue.some((c) => c.interrupts));
+    player.start();
+    await flush();
+    // Prod: a reply cut in with 2.55 s of the idle left and her face jumped 14 to 26 px.
+    a.fireTimeUpdate(7.45);
+    await flush();
+    queue.unshift({
+      ...clip("reply", false, true),
+      visibleByMs: Date.now() + 10_000,
+    });
+    player.checkForClip();
+    await flush();
+    b.fire("playing");
+    await flush();
+    expect(player.getActiveSlot()).toBe("a");
+    expect(b.style.filter).toBe("");
+    expect(b.style.transform).toBe("");
+    a.fireTimeUpdate(9.7);
+    await flush();
+    a.fire("ended");
+    await flush();
+    b.fire("playing");
+    await flush();
+    expect(player.getActiveSlot()).toBe("b");
+    expect(b.style.transitionDuration).toBe("0ms");
+    expect(a.style.filter).toBe("");
+    expect(a.style.transform).toBe("");
+  });
+
+  it("cuts in at once instead of waiting for the wrap when waiting would show the reply after its visibleByMs", async () => {
+    const queue: ClipToPlay[] = [clip("loop1", true)];
+    const { a, b, player } = setup(queue);
+    player.setInterruptReadyHandler(() => queue.some((c) => c.interrupts));
+    player.start();
+    await flush();
+    a.fireTimeUpdate(7.45);
+    await flush();
+    queue.unshift({
+      ...clip("reply", false, true),
+      visibleByMs: Date.now() + 1_000,
+    });
+    player.checkForClip();
+    await flush();
+    b.fire("playing");
+    await flush();
+    expect(player.getActiveSlot()).toBe("b");
+    expect(a.currentTime).toBe(7.45);
+    expect(b.style.transitionDuration).toBe("420ms");
   });
 
   it("defers a cut-in to the loop boundary when the idle is within CUT_IN_WAIT_MAX_SEC of wrapping, so the reply starts from the anchor pose", async () => {

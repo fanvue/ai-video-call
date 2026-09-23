@@ -11,6 +11,31 @@ const CROSSFADE_MS = 320;
 const CUT_IN_CROSSFADE_MS = 450;
 // Cut-ins dissolve through a blur: the incoming clip sharpens as it fades in over a blurring outgoing one, so the pose change reads as a soft transition instead of a jump.
 const CUT_IN_BLUR = "blur(6px)";
+const CUT_IN_EFFECT_BLUR = `blur(${LIVE_TUNABLES.CUT_IN_EFFECT_BLUR_PX}px)`;
+const CUT_IN_PUNCH = `scale(${LIVE_TUNABLES.CUT_IN_EFFECT_SCALE})`;
+
+type CutInLook = { filter: string; transform: string; fadeMs: number };
+
+// Holds already follow on from the frozen frame, so they keep the plain blur dissolve.
+const BLUR_DISSOLVE: CutInLook = {
+  filter: CUT_IN_BLUR,
+  transform: "",
+  fadeMs: CUT_IN_CROSSFADE_MS,
+};
+
+const prefersReducedMotion = (): boolean =>
+  typeof window.matchMedia === "function" &&
+  window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// Read per cut-in so the tunable and the viewer's motion setting apply without a reload; reduced motion keeps the blur but drops the push-in.
+const cutInLook = (): CutInLook =>
+  LIVE_TUNABLES.CUT_IN_EFFECT
+    ? {
+        filter: CUT_IN_EFFECT_BLUR,
+        transform: prefersReducedMotion() ? "" : CUT_IN_PUNCH,
+        fadeMs: LIVE_TUNABLES.CUT_IN_EFFECT_MS,
+      }
+    : BLUR_DISSOLVE;
 // The incoming slot fades in above the outgoing one, which stays opaque until the fade ends, so a late first paint shows the outgoing's last frame instead of black. Negative so the studio chrome (z auto) stays above both; the container is `isolate`.
 const Z_INCOMING = "-1";
 const Z_OUTGOING = "-2";
@@ -46,6 +71,8 @@ export type ClipToPlay = {
   interrupts: boolean;
   // Plays from here instead of 0: a split reply's rest falling back to the raw render's own frames.
   startSec?: number;
+  // Epoch ms the fan should see this clip by; a cut-in only waits for the idle's wrap while it still lands before it.
+  visibleByMs?: number;
 };
 
 // A paused active element that should be playing gets one play() nudge per this window.
@@ -432,7 +459,14 @@ export class GaplessPlayer {
       // The element's own clock, not the last timeupdate: a wrap may have happened since the last tick.
       const atSec = this.getActive()?.currentTime ?? this.currentTimeSec;
       const remaining = this.currentDurationSec - atSec;
-      if (remaining > CUT_IN_WAIT_MAX_SEC || atSec <= CUT_IN_AFTER_WRAP_SEC) {
+      const lateForFan =
+        clip.visibleByMs !== undefined &&
+        Date.now() + remaining * 1000 > clip.visibleByMs;
+      if (
+        remaining > CUT_IN_WAIT_MAX_SEC ||
+        lateForFan ||
+        atSec <= CUT_IN_AFTER_WRAP_SEC
+      ) {
         void this.performSwap(clip, false);
         return;
       }
@@ -647,8 +681,14 @@ export class GaplessPlayer {
     const generation = this.swapGeneration;
     this.swappingClip = clip;
     this.applyAudioPolicy(incoming, clip);
-    // Set while the slot is still hidden, so the reveal transitions it back to sharp.
-    incoming.style.filter = atBoundary ? "" : CUT_IN_BLUR;
+    const look = atBoundary
+      ? null
+      : this.status === "holding"
+        ? BLUR_DISSOLVE
+        : cutInLook();
+    // Set while the slot is still hidden, so the reveal transitions it back to sharp and unscaled.
+    incoming.style.filter = look?.filter ?? "";
+    incoming.style.transform = look?.transform ?? "";
     const frameExact =
       LIVE_TUNABLES.FRAME_EXACT_BOUNDARY && atBoundary && outgoing !== null;
     if (frameExact) {
@@ -714,16 +754,14 @@ export class GaplessPlayer {
     this.currentTimeSec = 0;
     this.activeSlot = this.activeSlot === "a" ? "b" : "a";
     // A frame-exact boundary hard-cuts: a dissolve over the frozen last frame ghosts the incoming clip's first motion.
-    const fadeMs = frameExact
-      ? 0
-      : atBoundary
-        ? CROSSFADE_MS
-        : CUT_IN_CROSSFADE_MS;
+    const fadeMs = frameExact ? 0 : (look?.fadeMs ?? CROSSFADE_MS);
     this.showSlot(this.activeSlot, fadeMs);
     incoming.style.filter = "";
-    if (outgoing && !atBoundary) {
+    incoming.style.transform = "";
+    if (outgoing && look) {
       outgoing.style.transitionDuration = `${fadeMs}ms`;
-      outgoing.style.filter = CUT_IN_BLUR;
+      outgoing.style.filter = look.filter;
+      outgoing.style.transform = look.transform;
     }
     this.preloadedSlot = null;
     this.preloadedClip = null;
@@ -758,6 +796,7 @@ export class GaplessPlayer {
       // Hidden only now, under an already opaque incoming slot, so the fade never dips to black.
       outgoing.style.opacity = "0";
       outgoing.style.filter = "";
+      outgoing.style.transform = "";
       outgoing.pause();
       // The next preload reuses this element, so it waits until the element is hidden: reloading it mid-fade blanked it under the half-transparent incoming clip.
       this.releaseElementSource(outgoing);
