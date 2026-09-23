@@ -77,19 +77,12 @@ describe("POST /api/live/longlivePrompt", () => {
     const response = await post(body("take your top off"));
     const data = (await response.json()) as {
       prompt: string;
-      fallbackPrompt: string;
-      handoff: boolean;
       reply: string;
       state: { wardrobe: { top: { on: boolean } } };
       wardrobeCheck: string[];
     };
     expect(data.reply).toBe("coming right up");
-    // A removal plays from a swap clip; the stream gets a lead-in and keeps its own attempt as the fallback.
-    expect(data.handoff).toBe(true);
-    expect(data.prompt).toContain("getting ready");
-    expect(data.fallbackPrompt).toContain(
-      "pulls her white crop top up over her head",
-    );
+    expect(data.prompt).toContain("pulls her white crop top up over her head");
     expect(data.state.wardrobe.top.on).toBe(false);
     expect(data.wardrobeCheck).toEqual(["top"]);
   });
@@ -110,7 +103,7 @@ describe("POST /api/live/longlivePrompt", () => {
       wardrobeObserved: true,
     });
     expect(
-      ((await changing.json()) as { fallbackPrompt: string }).fallbackPrompt,
+      ((await changing.json()) as { prompt: string }).prompt,
     ).not.toContain("wearing");
   });
 

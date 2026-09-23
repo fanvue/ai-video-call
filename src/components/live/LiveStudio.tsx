@@ -8,7 +8,6 @@ import {
   fetchLucyToken,
   observeLongLiveWardrobe,
   renderClip,
-  renderLongLiveHandoff,
   reportTelemetry,
   swapRenderedClip,
   uploadReference,
@@ -85,7 +84,6 @@ export const LiveStudio = () => {
     fetchLongLiveTicket,
     composeLongLivePrompt,
     observeLongLiveWardrobe,
-    renderLongLiveHandoff,
     warmSwap,
     swapRenderedClip,
     reportTelemetry,
@@ -363,14 +361,11 @@ export const LiveStudio = () => {
           className="absolute inset-0 h-full w-full object-cover transition-[opacity,filter] duration-150"
         />
         {session.backend === "longlive" ? (
-          // Paints the LongLive stream frame by frame over the unused video pair; hidden while a handoff clip plays on videoA beneath it.
+          // Paints the LongLive stream frame by frame over the unused video pair.
           <canvas
             ref={bindLongLiveCanvas}
             aria-hidden="true"
-            className={
-              "absolute inset-0 h-full w-full bg-black object-cover" +
-              (session.longliveClipVisible ? " invisible" : "")
-            }
+            className="absolute inset-0 h-full w-full bg-black object-cover"
           />
         ) : null}
 

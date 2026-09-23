@@ -27,8 +27,6 @@ import {
   LongLiveSession,
   type LongLiveComposeInput,
   type LongLiveComposed,
-  type LongLiveHandoffClip,
-  type LongLiveHandoffRequest,
   type LongLiveMetrics,
   type LongLiveObservation,
   type LongLiveObserveInput,
@@ -139,10 +137,6 @@ export type UseLiveSessionDeps = {
   observeLongLiveWardrobe?: (
     input: LongLiveObserveInput,
   ) => Promise<LongLiveObservation>;
-  // LongLive mode only; plays actions the stream cannot perform as a swap clip. Absent, the stream attempts them itself.
-  renderLongLiveHandoff?: (
-    input: LongLiveHandoffRequest,
-  ) => Promise<LongLiveHandoffClip>;
   // Swap mode only; starts the GPU container before the first clip needs it.
   warmSwap: () => Promise<void>;
   // Swap mode only: second phase of a clip that came back with swap.status "pending".
@@ -324,8 +318,6 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     useState<LongLiveMetrics | null>(null);
   const [longliveStreamState, setLongliveStreamState] =
     useState<LongLiveStreamState | null>(null);
-  // True while a handoff clip plays on videoA and the LongLive canvas is hidden above it.
-  const [longliveClipVisible, setLongliveClipVisible] = useState(false);
 
   const directorRef = useRef<LiveDirector | null>(null);
   const pipelineRef = useRef<ClipPipeline | null>(null);
@@ -1181,8 +1173,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
           ms: CONNECT_STALL_MS,
         });
       }, CONNECT_STALL_MS);
-      // LongLive hands hard actions to the swap service, so its first handoff should not wait on a cold container.
-      if (options.backend === "swap" || options.backend === "longlive") {
+      if (options.backend === "swap") {
         deps.warmSwap().catch(() => undefined);
       }
       greetingPlayedRef.current = false;
@@ -1257,48 +1248,9 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         setQueueStrip(EMPTY_QUEUE_STRIP);
         setLongliveMetrics(null);
         setLongliveStreamState("opening");
-        setLongliveClipVisible(false);
         const startedAtMs = Date.now();
         setSessionStartedAtMs(startedAtMs);
         setConnectStage("renderingFirstClip");
-
-        const renderLongLiveHandoff = deps.renderLongLiveHandoff;
-        // Silent like the stream itself, so autoplay is never blocked mid-call.
-        const playHandoffClip = (videoUrl: string): Promise<void> => {
-          const el = videoARef.current;
-          if (!el) return Promise.reject(new Error("no video element"));
-          return new Promise<void>((resolve, reject) => {
-            const cleanup = () => {
-              el.removeEventListener("playing", onPlaying);
-              el.removeEventListener("ended", onEnded);
-              el.removeEventListener("error", onError);
-            };
-            // Revealed on its first rendered frame, so the stream never cuts to an empty element while the clip loads.
-            const onPlaying = () => setLongliveClipVisible(true);
-            const onEnded = () => {
-              cleanup();
-              resolve();
-            };
-            const onError = () => {
-              cleanup();
-              reject(new Error("handoff clip playback failed"));
-            };
-            el.addEventListener("playing", onPlaying);
-            el.addEventListener("ended", onEnded);
-            el.addEventListener("error", onError);
-            el.loop = false;
-            el.muted = true;
-            el.src = videoUrl;
-            el.play().catch((error: unknown) => {
-              cleanup();
-              reject(error instanceof Error ? error : new Error(String(error)));
-            });
-          });
-        };
-        const hideHandoffClip = () => {
-          setLongliveClipVisible(false);
-          videoARef.current?.pause();
-        };
 
         const longliveSession = new LongLiveSession({
           fetchTicket: deps.fetchLongLiveTicket,
@@ -1313,20 +1265,6 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
               canvas.toBlob(resolve, "image/jpeg", 0.85),
             ),
           observeWardrobe: deps.observeLongLiveWardrobe,
-          ...(renderLongLiveHandoff
-            ? {
-                renderHandoffClip: (input) =>
-                  renderLongLiveHandoff({
-                    ...input,
-                    speechMode: options.speechMode ?? "text",
-                    intentParser: options.intentParser,
-                    swapProfile: options.swapProfile,
-                    anchorFrameUrl: reference.anchorFrameUrl,
-                  }),
-                playHandoffClip,
-                hideHandoffClip,
-              }
-            : {}),
           onTranscriptEntry: (entry) =>
             setTranscript((prev) => [...prev, entry]),
           onRequestStatus: (requestId, requestStatus) =>
@@ -1898,7 +1836,6 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       lucyStreamState,
       longliveMetrics,
       longliveStreamState,
-      longliveClipVisible,
       prepareStatus,
       preparedSeedUrl,
       prepare,
@@ -1944,7 +1881,6 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       lucyStreamState,
       longliveMetrics,
       longliveStreamState,
-      longliveClipVisible,
       prepareStatus,
       preparedSeedUrl,
       prepare,

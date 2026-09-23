@@ -2,7 +2,6 @@
 import {
   clipResultSchema,
   clipSwapReportSchema,
-  liveStateSchema,
   type ClipRequest,
   type ClipResult,
   type CreatorProfile,
@@ -16,8 +15,6 @@ import type { ReferenceUploadResult } from "@/lib/live/client/useLiveSession";
 import type {
   LongLiveComposeInput,
   LongLiveComposed,
-  LongLiveHandoffClip,
-  LongLiveHandoffRequest,
   LongLiveObservation,
   LongLiveObserveInput,
   LongLiveTicket,
@@ -166,25 +163,6 @@ export const observeLongLiveWardrobe = async ({
     ...input,
     frameBase64: await readFileAsBase64(frame),
   });
-
-const longliveHandoffSchema = z.object({
-  videoUrl: z.url(),
-  lastFrameUrl: z.url(),
-  state: liveStateSchema,
-  settlePrompt: z.string().min(1),
-});
-
-// Renders and swaps the clip for an action the stream cannot perform; the stream frame goes up inline like an observe read.
-export const renderLongLiveHandoff = async ({
-  seedFrame,
-  ...input
-}: LongLiveHandoffRequest): Promise<LongLiveHandoffClip> =>
-  longliveHandoffSchema.parse(
-    await postJson<unknown>("/api/live/longliveHandoff", {
-      ...input,
-      frameBase64: await readFileAsBase64(seedFrame),
-    }),
-  );
 
 // Fire-and-forget from the setup screen when LongLive is picked; the model load is the whole cold start.
 export const warmLongLive = async (): Promise<void> => {

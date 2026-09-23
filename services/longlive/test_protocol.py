@@ -11,7 +11,6 @@ from protocol import (
     PromptMessage,
     ReanchorMessage,
     ProtocolError,
-    RestartMessage,
     StartMessage,
     StopMessage,
     is_allowed_image_url,
@@ -163,37 +162,6 @@ class MessageTest(unittest.TestCase):
         self.assertEqual(parse_client_message('{"type":"reanchor","id":"a1"}'), ReanchorMessage("a1"))
         self.assert_bad('{"type":"reanchor"}')
         self.assert_bad(json.dumps({"type": "reanchor", "id": "x" * 129}))
-
-    def restart(self, **overrides):
-        message = {
-            "type": "restart",
-            "id": "r1",
-            "referenceImageUrl": "https://v3.fal.media/files/last.png",
-            "prompt": " an adult woman kneels ",
-        }
-        message.update(overrides)
-        return json.dumps(message)
-
-    def test_restart(self):
-        self.assertEqual(
-            parse_client_message(self.restart()),
-            RestartMessage("r1", "https://v3.fal.media/files/last.png", "an adult woman kneels"),
-        )
-
-    def test_restart_validated_like_start(self):
-        self.assert_bad(self.restart(referenceImageUrl="https://example.com/a.png"))
-        self.assert_bad(self.restart(referenceImageUrl="http://v3.fal.media/files/a.png"))
-        self.assert_bad(self.restart(referenceImageUrl=None))
-        self.assert_bad(self.restart(prompt=""))
-        self.assert_bad(self.restart(prompt="x" * 2001))
-        self.assert_bad(self.restart(id=""))
-        self.assert_bad(self.restart(id="x" * 129))
-        self.assert_bad(json.dumps({"type": "restart", "referenceImageUrl": "https://v3.fal.media/a.png", "prompt": "p"}))
-
-    def test_restart_data_uri_needs_explicit_opt_in(self):
-        text = self.restart(referenceImageUrl="data:image/png;base64,iVBORw0KGgo=")
-        self.assert_bad(text)
-        self.assertIsInstance(parse_client_message(text, allow_data_uri=True), RestartMessage)
 
     def test_pack_frame(self):
         self.assertEqual(pack_frame(258, b"\xff\xd8"), b"\x00\x00\x01\x02\xff\xd8")

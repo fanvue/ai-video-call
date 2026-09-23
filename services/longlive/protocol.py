@@ -57,13 +57,6 @@ class ReanchorMessage:
 
 
 @dataclass(frozen=True)
-class RestartMessage:
-    id: str
-    reference_image_url: str
-    prompt: str
-
-
-@dataclass(frozen=True)
 class StopMessage:
     pass
 
@@ -157,16 +150,9 @@ def _message_id(message: dict, kind: str) -> str:
     return message_id
 
 
-def _reference_url(message: dict, allow_data_uri: bool) -> str:
-    url = message.get("referenceImageUrl")
-    if not isinstance(url, str) or not (is_allowed_image_url(url) or (allow_data_uri and is_data_uri(url))):
-        raise ProtocolError(CLOSE_BAD_REQUEST, "referenceImageUrl host not allowed")
-    return url
-
-
 def parse_client_message(
     text: str, *, allow_data_uri: bool = False
-) -> StartMessage | PromptMessage | ReanchorMessage | RestartMessage | StopMessage:
+) -> StartMessage | PromptMessage | ReanchorMessage | StopMessage:
     try:
         message = json.loads(text)
     except ValueError:
@@ -180,14 +166,12 @@ def parse_client_message(
         return PromptMessage(prompt=_prompt_text(message.get("prompt")), id=_message_id(message, "prompt"))
     if kind == "reanchor":
         return ReanchorMessage(id=_message_id(message, "reanchor"))
-    if kind == "restart":
-        return RestartMessage(
-            id=_message_id(message, "restart"),
-            reference_image_url=_reference_url(message, allow_data_uri),
-            prompt=_prompt_text(message.get("prompt")),
-        )
     if kind == "start":
-        url = _reference_url(message, allow_data_uri)
+        url = message.get("referenceImageUrl")
+        if not isinstance(url, str) or not (
+            is_allowed_image_url(url) or (allow_data_uri and is_data_uri(url))
+        ):
+            raise ProtocolError(CLOSE_BAD_REQUEST, "referenceImageUrl host not allowed")
         width = _dimension(message.get("width", 480), "width")
         height = _dimension(message.get("height", 832), "height")
         if width * height > MAX_PIXELS:

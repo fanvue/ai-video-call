@@ -9,7 +9,6 @@ import {
   type IntentParser,
   type LiveState,
   type SpeechMode,
-  type SwapProfile,
   type TranscriptEntry,
 } from "@/lib/live/contract";
 import type { RequestStatus } from "@/lib/live/client/director";
@@ -29,8 +28,6 @@ export const LONGLIVE_MIN_ACTION_MS = 7_000;
 export const LONGLIVE_WARDROBE_CHECK_AFTER_MS = 4_000;
 export const LONGLIVE_WARDROBE_CHECK_EVERY_MS = 1_500;
 export const LONGLIVE_WARDROBE_CHECK_ATTEMPTS = 4;
-// Covers the server's reference fetch (15 s cap), the wait for a block boundary and the decoder drain.
-export const LONGLIVE_RESTART_TIMEOUT_MS = 30_000;
 // services/longlive closes with these for a bad ticket and a bad start message; retrying cannot fix either.
 const CLOSE_BAD_REQUEST = 4400;
 const CLOSE_UNAUTHORIZED = 4401;
@@ -151,15 +148,6 @@ export class FramePacer<F extends PacedFrame> {
     return frame;
   }
 
-  // Drops the queued frames and re-buffers the lead; the last painted frame stays on the canvas.
-  flush(): void {
-    for (const frame of this.queue) frame.close();
-    this.queue = [];
-    this.started = false;
-    this.starving = false;
-    this.nextDueAtMs = null;
-  }
-
   dispose(): void {
     for (const frame of this.queue) frame.close();
     this.queue = [];
@@ -194,16 +182,6 @@ const serverMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("reanchored"),
     id: z.string(),
     atFrame: z.number().optional(),
-  }),
-  z.object({
-    type: z.literal("restarted"),
-    id: z.string(),
-    atFrame: z.number().optional(),
-  }),
-  z.object({
-    type: z.literal("restartFailed"),
-    id: z.string(),
-    message: z.string().optional(),
   }),
   z.object({ type: z.literal("error"), message: z.string().optional() }),
 ]);
@@ -250,39 +228,6 @@ export type LongLiveComposed = {
   reply: string | null;
   // Garments the prompt changes; confirmed by vision at the settle point.
   wardrobeCheck?: GarmentId[];
-  // True when a swap clip plays the action and `prompt` is only the stream's lead-in meanwhile.
-  handoff?: boolean;
-  // The stream's own attempt at the action, for when the clip path is absent or fails.
-  fallbackPrompt?: string;
-};
-
-export type LongLiveHandoffInput = {
-  requestId: string;
-  text: string;
-  channel: InputChannel;
-  paid?: boolean;
-  creator: CreatorProfile;
-  state: LiveState;
-  transcript: TranscriptEntry[];
-  elapsedSec: number;
-  // The stream frame the clip starts from.
-  seedFrame: Blob;
-};
-
-// The handoff route's body: the session's input plus the session-wide settings and the identity anchor the swap needs.
-export type LongLiveHandoffRequest = LongLiveHandoffInput & {
-  speechMode: SpeechMode;
-  intentParser?: IntentParser;
-  swapProfile?: SwapProfile;
-  anchorFrameUrl: string;
-};
-
-export type LongLiveHandoffClip = {
-  videoUrl: string;
-  lastFrameUrl: string;
-  state: LiveState;
-  // The scene the stream restarts in, naming what the clip left her wearing.
-  settlePrompt: string;
 };
 
 export type LongLiveObserveInput = {
@@ -335,13 +280,6 @@ export type LongLiveSessionDeps = {
   observeWardrobe?: (
     input: LongLiveObserveInput,
   ) => Promise<LongLiveObservation>;
-  // All three plus captureFrame present: an action the stream cannot perform plays as a swap clip, then the stream restarts from its last frame.
-  renderHandoffClip?: (
-    input: LongLiveHandoffInput,
-  ) => Promise<LongLiveHandoffClip | null>;
-  // Resolves when the clip ends, leaving its last frame on screen; rejects on a playback error.
-  playHandoffClip?: (videoUrl: string) => Promise<void>;
-  hideHandoffClip?: () => void;
   onTranscriptEntry: (entry: TranscriptEntry) => void;
   onRequestStatus: (requestId: string, status: RequestStatus) => void;
   onLiveState: (state: LiveState) => void;
@@ -388,18 +326,6 @@ export class LongLiveSession {
   private creator: CreatorProfile | null = null;
   private state: LiveState | null = null;
   private referenceImageUrl = "";
-  // What a start message carries: the reference, or the last handoff clip's final frame once the stream restarted from it.
-  private streamImageUrl = "";
-  // Bumped on a restart, so frames still decoding from before it never reach the buffer.
-  private frameEpoch = 0;
-  private pendingRestart: {
-    id: string;
-    prompt: string;
-    imageUrl: string;
-    finish: (ok: boolean) => void;
-  } | null = null;
-  // The handoff clip stays over the canvas until the restarted stream paints its first frame.
-  private revealOnPaint = false;
   private speechMode: SpeechMode = "text";
   private intentParser: IntentParser | undefined;
   private startedAtMs = 0;
@@ -489,10 +415,6 @@ export class LongLiveSession {
       const frame = this.pacer.tick(this.deps.now());
       if (frame) {
         this.paint(frame);
-        if (this.revealOnPaint) {
-          this.revealOnPaint = false;
-          this.deps.hideHandoffClip?.();
-        }
         this.framesPainted += 1;
         if (this.framesPainted === 1) {
           this.firstFrameMs = this.deps.now() - this.startedAtMs;
@@ -508,7 +430,6 @@ export class LongLiveSession {
     this.creator = input.creator;
     this.state = input.state;
     this.referenceImageUrl = input.referenceImageUrl;
-    this.streamImageUrl = input.referenceImageUrl;
     this.speechMode = input.speechMode;
     this.startedAtMs = input.startedAtMs;
     this.intentParser = input.intentParser;
@@ -588,7 +509,7 @@ export class LongLiveSession {
       ws.send(
         JSON.stringify({
           type: "start",
-          referenceImageUrl: this.streamImageUrl,
+          referenceImageUrl: this.referenceImageUrl,
           prompt: this.currentPrompt,
           width: LONGLIVE_STREAM.width,
           height: LONGLIVE_STREAM.height,
@@ -617,8 +538,6 @@ export class LongLiveSession {
 
   private handleClose(code: number): void {
     if (this.closed) return;
-    // A restart the old socket never acknowledged is lost with it.
-    this.pendingRestart?.finish(false);
     this.deps.onDiagnostic?.(`socket closed code=${code}`);
     if (code === CLOSE_UNAUTHORIZED || code === CLOSE_BAD_REQUEST) {
       this.fail(
@@ -702,26 +621,6 @@ export class LongLiveSession {
         this.deps.onDiagnostic?.(
           `re-anchored ${message.id} at frame ${message.atFrame ?? "?"}`,
         );
-        return;
-      }
-      case "restarted": {
-        const restart = this.pendingRestart;
-        if (restart?.id !== message.id) return;
-        this.deps.onDiagnostic?.(
-          `restarted ${message.id} at frame ${message.atFrame ?? "?"}`,
-        );
-        // Everything queued was generated before the restart; the clip's last frame holds until the new scene paints.
-        this.frameEpoch += 1;
-        this.pacer.flush();
-        this.streamImageUrl = restart.imageUrl;
-        this.currentPrompt = restart.prompt;
-        this.revealOnPaint = true;
-        restart.finish(true);
-        return;
-      }
-      case "restartFailed": {
-        if (this.pendingRestart?.id === message.id)
-          this.pendingRestart.finish(false);
         return;
       }
       case "error": {
@@ -900,12 +799,11 @@ export class LongLiveSession {
     const jpeg = new Blob([data.slice(FRAME_HEADER_BYTES)], {
       type: "image/jpeg",
     });
-    const epoch = this.frameEpoch;
     // Decoded one at a time so frames reach the buffer in the order they were sent.
     this.decodeChain = this.decodeChain.then(async () => {
       try {
         const frame = await this.deps.decodeFrame(jpeg);
-        if (this.closed || epoch !== this.frameEpoch) {
+        if (this.closed) {
           frame.close();
           return;
         }
@@ -935,7 +833,7 @@ export class LongLiveSession {
     this.deps.onRequestStatus(entry.id, "queued");
     // Chained so concurrent asks compose against the state the previous one left behind.
     this.sendQueue = this.sendQueue.then(() =>
-      this.sendRequest(entry, trimmed, channel, paid),
+      this.sendRequest(entry, trimmed, channel),
     );
   }
 
@@ -943,7 +841,6 @@ export class LongLiveSession {
     entry: TranscriptEntry,
     text: string,
     channel: InputChannel,
-    paid?: boolean,
   ): Promise<void> {
     const creator = this.creator;
     const state = this.state;
@@ -966,29 +863,10 @@ export class LongLiveSession {
       return;
     }
     if (this.closed) return;
-    if (composed.handoff && this.handoffReady()) {
-      await this.handOff(entry, text, channel, paid, composed);
-      return;
-    }
     await this.holdPlayingAction();
     if (this.closed) return;
     this.applyComposedState(composed.state);
     this.pushReply(composed.reply, channel);
-    // Without the clip path the stream attempts a handed-off action itself, as before handoffs existed.
-    this.sendAction(
-      entry,
-      composed,
-      composed.handoff
-        ? (composed.fallbackPrompt ?? composed.prompt)
-        : composed.prompt,
-    );
-  }
-
-  private sendAction(
-    entry: TranscriptEntry,
-    composed: LongLiveComposed,
-    prompt: string,
-  ): void {
     const garments = composed.wardrobeCheck ?? [];
     // An asked change is unseen until confirmed; until then prompts stop naming clothing at all.
     if (garments.length > 0) this.wardrobeObserved = false;
@@ -1011,153 +889,7 @@ export class LongLiveSession {
       },
     ];
     this.deps.onRequestStatus(entry.id, "generating");
-    this.sendPrompt(prompt, entry.id);
-  }
-
-  private handoffReady(): boolean {
-    const {
-      renderHandoffClip,
-      playHandoffClip,
-      hideHandoffClip,
-      captureFrame,
-    } = this.deps;
-    return Boolean(
-      renderHandoffClip &&
-      playHandoffClip &&
-      hideHandoffClip &&
-      captureFrame &&
-      this.canvas,
-    );
-  }
-
-  // The stream plays a lead-in while a swap clip renders the action; the clip plays over the canvas, then the stream restarts from its last frame.
-  private async handOff(
-    entry: TranscriptEntry,
-    text: string,
-    channel: InputChannel,
-    paid: boolean | undefined,
-    composed: LongLiveComposed,
-  ): Promise<void> {
-    this.pushReply(composed.reply, channel);
-    this.clearSettleTimer();
-    this.clearWardrobeTimer();
-    // Anything sent before is over: the lead-in and then the clip own the screen.
-    for (const older of this.pending) {
-      this.deps.onRequestStatus(older.requestId, "done");
-    }
-    this.pending = [];
-    if (this.playingRequestId) {
-      this.deps.onRequestStatus(this.playingRequestId, "done");
-    }
-    this.playingRequestId = entry.id;
-    this.playingSinceMs = this.deps.now();
-    this.deps.onRequestStatus(entry.id, "generating");
-    this.sendPrompt(composed.prompt, this.nextId("leadin"));
-
-    let shown = false;
-    let clip: LongLiveHandoffClip | null = null;
-    let failure: string | null = null;
-    try {
-      clip = await this.runHandoffClip(entry, text, channel, paid, () => {
-        shown = true;
-      });
-    } catch (error) {
-      failure = error instanceof Error ? error.message : String(error);
-    }
-    if (this.closed) {
-      if (shown) this.deps.hideHandoffClip?.();
-      return;
-    }
-    this.playingRequestId = null;
-    this.playingSinceMs = null;
-    if (!clip) {
-      this.deps.onDiagnostic?.(`handoff ${entry.id} fell back: ${failure}`);
-      this.revealOnPaint = false;
-      if (shown) this.deps.hideHandoffClip?.();
-      this.applyComposedState(composed.state);
-      this.sendAction(
-        entry,
-        composed,
-        composed.fallbackPrompt ?? composed.prompt,
-      );
-      return;
-    }
-    // The clip is ground truth for what she wears now, so prompts name it.
-    this.applyComposedState(clip.state);
-    this.wardrobeObserved = true;
-    this.deps.onRequestStatus(entry.id, "done");
-  }
-
-  // Throws on any failure, so the caller falls back to the stream's own attempt.
-  private async runHandoffClip(
-    entry: TranscriptEntry,
-    text: string,
-    channel: InputChannel,
-    paid: boolean | undefined,
-    markShown: () => void,
-  ): Promise<LongLiveHandoffClip> {
-    const { renderHandoffClip, playHandoffClip, captureFrame } = this.deps;
-    const canvas = this.canvas;
-    const creator = this.creator;
-    const state = this.state;
-    if (
-      !renderHandoffClip ||
-      !playHandoffClip ||
-      !captureFrame ||
-      !canvas ||
-      !creator ||
-      !state
-    ) {
-      throw new Error("handoff unavailable");
-    }
-    const seedFrame = await captureFrame(canvas);
-    if (!seedFrame) throw new Error("no stream frame to start the clip from");
-    const clip = await renderHandoffClip({
-      requestId: entry.id,
-      text,
-      channel,
-      ...(paid !== undefined ? { paid } : {}),
-      creator,
-      state,
-      transcript: this.transcript.slice(-LIVE_TUNABLES.TRANSCRIPT_WINDOW),
-      elapsedSec: this.elapsedSec(),
-      seedFrame,
-    });
-    if (!clip) throw new Error("no handoff clip");
-    if (this.closed) throw new Error("session closed");
-    this.deps.onRequestStatus(entry.id, "playing");
-    markShown();
-    await playHandoffClip(clip.videoUrl);
-    if (!(await this.restartStream(clip.lastFrameUrl, clip.settlePrompt))) {
-      throw new Error("restart failed");
-    }
-    return clip;
-  }
-
-  private restartStream(imageUrl: string, prompt: string): Promise<boolean> {
-    const ws = this.ws;
-    if (this.closed || !ws || ws.readyState !== WS_OPEN) {
-      return Promise.resolve(false);
-    }
-    const id = this.nextId("restart");
-    return new Promise((resolve) => {
-      let timer: ReturnType<typeof setTimeout> | null = null;
-      const finish = (ok: boolean) => {
-        if (timer) clearTimeout(timer);
-        if (this.pendingRestart?.id === id) this.pendingRestart = null;
-        resolve(ok);
-      };
-      timer = setTimeout(() => finish(false), LONGLIVE_RESTART_TIMEOUT_MS);
-      this.pendingRestart = { id, prompt, imageUrl, finish };
-      ws.send(
-        JSON.stringify({
-          type: "restart",
-          id,
-          referenceImageUrl: imageUrl,
-          prompt,
-        }),
-      );
-    });
+    this.sendPrompt(composed.prompt, entry.id);
   }
 
   private async holdPlayingAction(): Promise<void> {
@@ -1305,8 +1037,6 @@ export class LongLiveSession {
       if (ws.readyState === WS_OPEN) ws.send(JSON.stringify({ type: "stop" }));
       ws.close(CLOSE_NORMAL);
     }
-    this.pendingRestart?.finish(false);
-    if (this.revealOnPaint) this.deps.hideHandoffClip?.();
     // The canvas keeps its last pixels; only the bitmaps are released.
     this.pacer.dispose();
     this.settleOpen(new Error(`LongLive session ended (${reason})`));
