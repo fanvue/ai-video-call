@@ -402,7 +402,7 @@ export const SetupScreen = ({
                 </label>
                 <p className="text-xs text-[var(--muted)]">
                   Persona swap plus GFPGAN face restore, as in LongLive; about
-                  3x the swap GPU time
+                  2.3x the swap GPU time
                 </p>
               </div>
             ) : null}
