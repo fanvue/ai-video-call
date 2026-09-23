@@ -21,6 +21,8 @@ export const env = createEnv({
     // Self-hosted Swap service (services/swap); either unset makes every swap clip report "failed".
     SWAP_SERVICE_URL: z.url().optional(),
     SWAP_TOKEN: z.string().min(16).optional(),
+    // Test-only language and vision models; unset leaves every OpenRouter option unavailable.
+    OPENROUTER_API_KEY: z.string().min(1).optional(),
   },
   runtimeEnv: {
     OAUTH_CLIENT_ID: process.env.OAUTH_CLIENT_ID,
@@ -39,6 +41,7 @@ export const env = createEnv({
     GROQ_API_KEY: process.env.GROQ_API_KEY,
     SWAP_SERVICE_URL: process.env.SWAP_SERVICE_URL,
     SWAP_TOKEN: process.env.SWAP_TOKEN,
+    OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
   },
   emptyStringAsUndefined: true,
 });
