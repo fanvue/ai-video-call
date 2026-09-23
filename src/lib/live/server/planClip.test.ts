@@ -602,6 +602,94 @@ describe("planBeatIntent: in-clip lead-ins", () => {
     expect(plan.nextWardrobe.bottom.on).toBe(false);
   });
 
+  it("bra removal opens the back clasp, takes the straps off one shoulder at a time, and lifts the bra away whole", () => {
+    const plan = planBeatIntent(
+      { type: "removeGarment", garment: "bra" },
+      state(),
+    );
+    const clasp = plan.physical.indexOf("behind her back");
+    const rightStrap = plan.physical.indexOf("off her right shoulder");
+    const leftStrap = plan.physical.indexOf("off her left shoulder");
+    const lift = plan.physical.indexOf(
+      "lifts the bra away from her chest in one piece",
+    );
+    expect(plan.physical).toMatch(
+      /clasp of her black lace bra at the centre of her back and unhooks it/,
+    );
+    expect(clasp).toBeGreaterThan(-1);
+    expect(rightStrap).toBeGreaterThan(clasp);
+    expect(leftStrap).toBeGreaterThan(rightStrap);
+    expect(lift).toBeGreaterThan(leftStrap);
+    expect(plan.physical).toMatch(/drops it to her side/);
+    expect(plan.physical).toMatch(/cups rest whole over her breasts/);
+    expect(plan.physical).not.toMatch(/fall forward|front|splits?|opens? at/i);
+    expect(plan.nextWardrobe.bra.on).toBe(false);
+  });
+
+  const toyState = (overrides: Partial<Body> = {}, w: Wardrobe = wardrobe()) =>
+    state({
+      wardrobe: w,
+      body: body({ hands: "holdingProp", prop: "vibrator", ...overrides }),
+    });
+  const TOY_NEGATION = /\b(no|not|never|without|don't|avoid)\b/i;
+
+  it("external toy use places it between her open thighs at her pelvis, right hand, seated facing the lens", () => {
+    const plan = planBeatIntent(
+      { type: "useProp", mode: "external" },
+      toyState(),
+    );
+    expect(plan.physical).toMatch(
+      /^0-3s: sitting upright on the edge of the bed facing the webcam, she holds the vibrator in her right hand\./,
+    );
+    expect(plan.physical).toMatch(/spreads her knees wide apart/);
+    expect(plan.physical).toMatch(
+      /pelvis and inner thighs face the lens in the lower centre of the frame/,
+    );
+    expect(plan.physical).toMatch(
+      /her right hand lowers the vibrator down between her open thighs and presses its tip against the front of her black lace panties, low between her legs/,
+    );
+    expect(plan.physical).toMatch(
+      /stays at her pelvis between her thighs the whole time/,
+    );
+    expect(plan.physical).not.toMatch(
+      /stomach|belly|torso|chest|against herself|her skin/i,
+    );
+    expect(plan.physical).not.toMatch(TOY_NEGATION);
+    expect(plan.nextBody).toMatchObject({
+      pose: "sitting",
+      facing: "camera",
+      hands: "holdingProp",
+      contact: "self",
+    });
+  });
+
+  it("external toy use from another pose first settles her seated facing the lens, and names her bare vulva when nude", () => {
+    const nude = wardrobe({
+      top: { on: false, description: "top" },
+      bottom: { on: false, description: "bottoms" },
+      bra: { on: false, description: "bra" },
+      panties: { on: false, description: "panties" },
+    });
+    const plan = planBeatIntent(
+      { type: "useProp", mode: "external" },
+      toyState({ pose: "standing", prop: "dildo" }, nude),
+    );
+    expect(plan.physical).toMatch(
+      /^0-3s: she settles onto the edge of the bed, sitting upright facing the webcam, the dildo in her right hand\./,
+    );
+    expect(plan.physical).toMatch(/presses its tip against her bare vulva/);
+    expect(plan.physical).not.toMatch(TOY_NEGATION);
+    expect(plan.nextBody.pose).toBe("sitting");
+  });
+
+  it("mouth toy use keeps it at her mouth in positive wording", () => {
+    const plan = planBeatIntent({ type: "useProp", mode: "mouth" }, toyState());
+    expect(plan.physical).toMatch(
+      /licks and sucks the tip of the vibrator at her mouth/,
+    );
+    expect(plan.physical).not.toMatch(TOY_NEGATION);
+  });
+
   it("removing the bra while holding a prop sets it down first, in the same clip", () => {
     const s = state({
       body: body({ hands: "holdingProp", prop: "vibrator" }),

@@ -360,12 +360,15 @@ const removalChoreo = (
   const desc = describeGarment(wardrobe, id);
   switch (id) {
     case "bra":
+      // Prod rendered "the cups fall forward" as the bra splitting open at the front; it fastens at the back, so the clasp opens there and the bra lifts away whole.
       return (
-        `0-3s: both hands reach behind her back and find the clasp of her ${desc}, unhooking it with ` +
-        "a single hook release. 3-6s: her shoulders roll forward as the straps loosen and slide down " +
-        "her upper arms. 6-9s: she brings one arm through, then the other. 9-13s: the cups fall " +
-        "forward; she catches it in one hand, lowers it, and sets it out of frame. 13-15s: hands come " +
-        "to rest, still, chest bare."
+        `0-3s: she reaches both hands behind her back, elbows out to the sides, to the clasp of her ${desc} ` +
+        "at the centre of her back and unhooks it; the band loosens around her ribs and both cups rest " +
+        "whole over her breasts. 3-6s: her right hand slides the right strap down off her right shoulder, " +
+        "then her left hand slides the left strap down off her left shoulder. 6-9s: she draws her arms out " +
+        "of the straps one at a time, her forearm holding the cups against her chest. 9-13s: she lifts the " +
+        "bra away from her chest in one piece with her right hand and drops it to her side. " +
+        "13-15s: her hands come to rest, still, chest bare."
       );
     case "top":
       return (
@@ -657,7 +660,13 @@ const planAct = (
             "her shoulder at the lens. 3-9s: one hand comes around and spanks her own ass cheek, a few firm slaps, " +
             "visible skin reaction. 9-11s: she holds the pose, hand resting on her hip, eyes on the lens.",
           nextWardrobe: wardrobe,
-          nextBody: { ...body, pose: "kneeling", facing: "side", hands: "free", contact: "none" },
+          nextBody: {
+            ...body,
+            pose: "kneeling",
+            facing: "side",
+            hands: "free",
+            contact: "none",
+          },
           durationSec: ACTION_BEAT_SEC,
           explicit: true,
         };
@@ -787,14 +796,46 @@ const planBeatIntentCore = (
         explicit: false,
       };
     case "useProp": {
-      const useLine =
-        intent.mode === "mouth"
-          ? "She brings it to her mouth and sucks/licks it there, mouth only, never lower."
-          : "She holds it against herself and uses it externally against her skin, external contact only, eyes on the lens.";
+      const toy =
+        body.prop === "dildo" || body.prop === "vibrator" ? body.prop : "toy";
+      if (intent.mode === "mouth") {
+        return {
+          physical:
+            `0-3s: she raises the ${toy} in her right hand up to her face. 3-9s: she parts her lips and ` +
+            `licks and sucks the tip of the ${toy} at her mouth, her right hand holding its base just below ` +
+            `her chin. 9-11s: she lowers the ${toy} to her lap, eyes on the lens. Only one object is visible.`,
+          nextWardrobe: wardrobe,
+          nextBody: { ...body, hands: "holdingProp", contact: "self" },
+          durationSec: ACTION_BEAT_SEC,
+          explicit: true,
+        };
+      }
+      // Prod rendered "against herself" as the toy pressed into her stomach: she sits facing the lens with her knees apart so the placement reads, and every beat names her pelvis between her thighs.
+      const target = wardrobe.panties.on
+        ? `the front of her ${describeGarment(wardrobe, "panties")}, low between her legs`
+        : wardrobe.bottom.on
+          ? `the crotch of her ${describeGarment(wardrobe, "bottom")}, low between her legs`
+          : "her bare vulva";
+      const seated = body.pose === "sitting" && body.facing === "camera";
+      const leadIn = seated
+        ? `0-3s: sitting upright on the edge of the bed facing the webcam, she holds the ${toy} in her right hand.`
+        : `0-3s: she settles onto the edge of the bed, sitting upright facing the webcam, the ${toy} in her right hand.`;
       return {
-        physical: `${useLine} Only one object is visible.`,
+        physical:
+          `${leadIn} 3-5s: she spreads her knees wide apart, feet planted, so her pelvis and inner thighs face ` +
+          `the lens in the lower centre of the frame. 5-9s: her right hand lowers the ${toy} down between her ` +
+          `open thighs and presses its tip against ${target}, moving it in slow small circles there while her ` +
+          `left hand rests on her left inner thigh; the ${toy} stays at her pelvis between her thighs the whole ` +
+          "time. 9-11s: her hips rock gently against it and her breathing quickens, eyes on the lens. Only one " +
+          "object is visible.",
         nextWardrobe: wardrobe,
-        nextBody: { ...body, hands: "holdingProp", contact: "self" },
+        nextBody: {
+          ...body,
+          pose: "sitting",
+          facing: "camera",
+          hands: "holdingProp",
+          contact: "self",
+        },
         durationSec: ACTION_BEAT_SEC,
         explicit: true,
       };
