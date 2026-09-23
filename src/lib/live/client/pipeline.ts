@@ -136,8 +136,11 @@ export class ClipPipeline {
   private pendingChainSwaps = 0;
   private activeSwaps = 0;
   private activeChainSwaps = 0;
-  private queuedSwaps: Array<{ lane: "idle" | "chained"; run: () => void }> =
-    [];
+  private queuedSwaps: Array<{
+    lane: "idle" | "chained";
+    run: () => void;
+    result: ClipResult;
+  }> = [];
   // Chain swaps waiting for the one before them to land; see beginPendingSwap.
   // First settled frame per look (the upload for the initial one); a finished plan re-seeds from it, so generated descendants never stack deeper than one plan.
   private trustedSeedByLook = new Map<string, string>();
@@ -295,7 +298,7 @@ export class ClipPipeline {
           this.announceIfRecovered();
           this.fillIdleStockpile();
         });
-    this.queuedSwaps.push({ lane, run: runSwap });
+    this.queuedSwaps.push({ lane, run: runSwap, result });
     this.dispatchSwaps();
     return true;
   }
@@ -303,16 +306,19 @@ export class ClipPipeline {
   // Swaps run at most SWAP_MAX_CONCURRENT at a time (one per GPU; a third request queued inside Modal and stretched a reply's swap to 12 s). One slot is always kept for the chain so a reply never waits behind fillers; chain clips play in order, so chain swaps also run one at a time.
   private dispatchSwaps(): void {
     const max = LIVE_TUNABLES.SWAP_MAX_CONCURRENT;
+    if (LIVE_TUNABLES.SWAP_SKIP_STALE_IDLE_SWAPS) {
+      this.skipStaleIdleSwaps();
+    }
     for (;;) {
       const chainIndex = this.queuedSwaps.findIndex(
         (q) => q.lane === "chained",
       );
-      const idleIndex = this.queuedSwaps.findIndex((q) => q.lane === "idle");
+      const idleIndex = this.nextIdleSwapIndex();
       const activeIdleSwaps = this.activeSwaps - this.activeChainSwaps;
       let index = -1;
       if (
         chainIndex !== -1 &&
-        this.activeChainSwaps === 0 &&
+        this.activeChainSwaps < LIVE_TUNABLES.SWAP_CHAIN_MAX_CONCURRENT &&
         this.activeSwaps < max
       ) {
         index = chainIndex;
@@ -331,6 +337,56 @@ export class ClipPipeline {
         this.activeChainSwaps += 1;
       }
       next.run();
+    }
+  }
+
+  // The filler that covers the frame playback is on now goes first; the rest keep submit order.
+  private nextIdleSwapIndex(): number {
+    const onCursor = this.queuedSwaps.findIndex(
+      (q) =>
+        q.lane === "idle" &&
+        this.sameSeed(
+          this.idleAnchorByClipId.get(q.result.clipId) ?? "",
+          this.playoutCursorFrameUrl,
+        ),
+    );
+    return onCursor !== -1
+      ? onCursor
+      : this.queuedSwaps.findIndex((q) => q.lane === "idle");
+  }
+
+  // Frames playback can still stand on: now, after a chain clip already on the shelf, or at the chain's tail and anchor.
+  private idleAnchorCanPlay(frameUrl: string): boolean {
+    return (
+      this.sameSeed(frameUrl, this.playoutCursorFrameUrl) ||
+      this.sameSeed(frameUrl, this.anchor.frameUrl) ||
+      frameUrl === this.chainTail?.frameUrl ||
+      this.chainedReady.some((clip) =>
+        this.sameSeed(frameUrl, clip.seedFrameUrl),
+      )
+    );
+  }
+
+  // A queued filler that can never play is dropped before it takes a swap slot; its render is already spent, so it is reported like any other discarded clip.
+  private skipStaleIdleSwaps(): void {
+    const stale = this.queuedSwaps.filter(
+      (q) =>
+        q.lane === "idle" &&
+        !this.idleAnchorCanPlay(
+          this.idleAnchorByClipId.get(q.result.clipId) ?? "",
+        ),
+    );
+    if (stale.length === 0) {
+      return;
+    }
+    this.queuedSwaps = this.queuedSwaps.filter((q) => !stale.includes(q));
+    for (const { result } of stale) {
+      this.pendingSwapClipIds.delete(result.clipId);
+      this.idleReady = this.idleReady.filter(
+        (clip) => clip.clipId !== result.clipId,
+      );
+      this.idleAnchorByClipId.delete(result.clipId);
+      this.onEvent({ type: "clipDiscarded", result, costUsd: result.costUsd });
     }
   }
 

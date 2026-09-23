@@ -13,6 +13,7 @@ import type {
   ClipJob,
   ClipRequest,
   ClipResult,
+  ClipSwapReport,
   LiveSessionSnapshot,
   LiveState,
 } from "@/lib/live/contract";
@@ -135,6 +136,18 @@ const defer = <T>(): Deferred<T> => {
 // A render that resolves via a fake timer, so instant-resolving fakes don't spin the pipeline
 // forever (it resubmits idles the instant one settles).
 const RENDER_DELAY_MS = 10;
+
+const SWAPPED_REPORT: ClipSwapReport = {
+  status: "swapped",
+  swapMs: 6000,
+  frames: 360,
+  framesWithFace: 360,
+  msPerFrame: 16,
+  similarityBefore: 0.6,
+  similarityAfter: 0.9,
+  restored: true,
+  reason: null,
+};
 const delayed = <T>(value: () => T): Promise<T> =>
   new Promise((resolve, reject) => {
     setTimeout(() => {
@@ -2004,7 +2017,7 @@ describe("ClipPipeline", () => {
     expect(pipeline.nextClip()?.clipId).toBe(replyId);
   });
 
-  it("two-phase swap: chain swaps run one at a time, so the clip behind a reply only starts swapping once the reply's swap lands", async () => {
+  it("two-phase swap: the clip behind a reply swaps alongside it, and still plays only after the reply", async () => {
     const queue = makeJobQueue();
     const finalize = new Map<
       string,
@@ -2035,10 +2048,15 @@ describe("ClipPipeline", () => {
           },
         })),
       finalizeSwap: (result) => {
-        // Fillers swap on their own lane; only the chain order is under test.
-        if (result.jobKind !== "idle") {
-          finalizeOrder.push(result.jobKind);
+        // Fillers land at once so they hold no slot; only the chain lane is under test.
+        if (result.jobKind === "idle") {
+          return Promise.resolve({
+            videoUrl: `${result.videoUrl}#swapped`,
+            costUsd: 0,
+            report: { ...SWAPPED_REPORT },
+          });
         }
+        finalizeOrder.push(result.jobKind);
         const deferred = defer<{
           videoUrl: string;
           costUsd: number;
@@ -2055,8 +2073,14 @@ describe("ClipPipeline", () => {
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting rendered, plays unswapped
     pipeline.nextClip();
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // reply rendered: its swap starts
-    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // checkIn rendered behind it: its swap must wait
-    expect(finalizeOrder).toEqual(["reply"]);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // checkIn rendered behind it: it swaps alongside
+    expect(LIVE_TUNABLES.SWAP_CHAIN_MAX_CONCURRENT).toBe(2);
+    expect(finalizeOrder).toEqual(["reply", "checkIn"]);
+
+    // The checkIn landing first must not jump the reply still swapping.
+    finalize.get("checkIn")?.resolve({ videoUrl: "https://example.com/checkin-swapped.mp4", costUsd: 0.004, report: { ...SWAPPED_REPORT } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pipeline.hasChainedReady()).toBe(false);
 
     finalize.get("reply")?.resolve({
       videoUrl: "https://example.com/reply-swapped.mp4",
@@ -2074,8 +2098,8 @@ describe("ClipPipeline", () => {
       },
     });
     await vi.advanceTimersByTimeAsync(0);
-    expect(finalizeOrder).toEqual(["reply", "checkIn"]);
     expect(pipeline.nextClip()?.jobKind).toBe("reply");
+    expect(pipeline.nextClip()?.jobKind).toBe("checkIn");
   });
 
   it("two-phase swap: fillers share SWAP_MAX_CONCURRENT minus one slot, the chain keeps its own, and a queued filler starts when one lands", async () => {
@@ -2123,14 +2147,16 @@ describe("ClipPipeline", () => {
     pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
     await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting rendered, two fillers submitted
     pipeline.nextClip();
-    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // both fillers rendered: one swaps, one queues
-    expect(started).toEqual(["idle"]);
-    expect(LIVE_TUNABLES.SWAP_MAX_CONCURRENT).toBe(2);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // both fillers rendered: they take the two filler slots
+    expect(started).toEqual(["idle", "idle"]);
+    expect(LIVE_TUNABLES.SWAP_MAX_CONCURRENT).toBe(3);
 
     queue.push(REPLY_JOB);
     pipeline.onRequestEnqueued();
-    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // reply rendered: its reserved slot is free, it does not wait behind the queued filler
-    expect(started).toEqual(["idle", "reply"]);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // reply rendered: its reserved slot is free, it does not wait behind the fillers
+    expect(started).toEqual(["idle", "idle", "reply"]);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // the reply's bridge filler rendered: both filler slots are taken, so it queues
+    expect(started).toEqual(["idle", "idle", "reply"]);
 
     const [firstIdle] = [...finalize.entries()];
     firstIdle?.[1].resolve({
@@ -2149,7 +2175,81 @@ describe("ClipPipeline", () => {
       },
     });
     await vi.advanceTimersByTimeAsync(0);
-    expect(started).toEqual(["idle", "reply", "idle"]);
+    expect(started).toEqual(["idle", "idle", "reply", "idle"]);
+  });
+
+  it("two-phase swap: a queued filler whose anchor playback has moved past is dropped instead of swapped", async () => {
+    const queue = makeJobQueue();
+    const events: PipelineEvent[] = [];
+    const started: ClipResult[] = [];
+    const finalize = new Map<
+      string,
+      Deferred<{
+        videoUrl: string;
+        costUsd: number;
+        report: ClipResult["swap"] & object;
+      }>
+    >();
+    const pipeline = trackedPipeline({
+      backend: "swap",
+      now: nowFn,
+      onEvent: (event) => events.push(event),
+      render: async (req) =>
+        delayed(() => ({
+          ...chainAdvancingResult(req),
+          swap: { ...SWAPPED_REPORT, status: "pending" as const },
+        })),
+      finalizeSwap: (result) => {
+        started.push(result);
+        const deferred = defer<{
+          videoUrl: string;
+          costUsd: number;
+          report: ClipResult["swap"] & object;
+        }>();
+        finalize.set(result.clipId, deferred);
+        return deferred.promise;
+      },
+    });
+    const land = async (clip: ClipResult | undefined) => {
+      finalize.get(clip?.clipId ?? "")?.resolve({
+        videoUrl: `${clip?.videoUrl}#swapped`,
+        costUsd: 0,
+        report: { ...SWAPPED_REPORT },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+    };
+
+    queue.push(REPLY_JOB);
+    queue.push({ kind: "checkIn", channel: "chat" });
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // greeting plays; two fillers and the reply render
+    pipeline.nextClip();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // fillers take both filler slots, the reply its own; the reply's bridge filler renders
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS); // bridge filler queued; checkIn rendered
+    const reply = started.find((clip) => clip.jobKind === "reply");
+    const bridge = events.find(
+      (event): event is Extract<PipelineEvent, { type: "clipRendered" }> =>
+        event.type === "clipRendered" &&
+        event.result.jobKind === "idle" &&
+        event.result.seedFrameUrl === reply?.seedFrameUrl,
+    )?.result;
+    expect(bridge).toBeDefined();
+    expect(started).not.toContain(bridge);
+
+    await land(reply);
+    expect(pipeline.nextClip()?.jobKind).toBe("reply");
+    await land(started.find((clip) => clip.jobKind === "checkIn"));
+    expect(pipeline.nextClip()?.jobKind).toBe("checkIn");
+
+    // Playback is past the reply's tail now, so the bridge filler can never follow it.
+    await land(started.find((clip) => clip.jobKind === "idle"));
+    expect(started).not.toContain(bridge);
+    expect(
+      events.some(
+        (event) =>
+          event.type === "clipDiscarded" && event.result.clipId === bridge?.clipId,
+      ),
+    ).toBe(true);
   });
 
   it("two-phase swap: a playable idle on the old anchor does not stop the bridge idle for a new chain tail while that clip's swap is in flight", async () => {

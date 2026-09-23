@@ -178,6 +178,8 @@ export type PrepareStatus =
 const CONNECT_STALL_MS = 60_000;
 // A 3 MB clip downloads in well under a second; past this it streams instead of holding the swap.
 const CLIP_PREFETCH_TIMEOUT_MS = 6_000;
+// About 3 MB each; more than the shelf ever holds playable at once in swap mode.
+const PREFETCH_MAX_CLIPS = 4;
 
 const EMPTY_BUFFER_DEPTH: BufferDepth = {
   idleReady: 0,
@@ -372,6 +374,10 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   const greetingPlayedRef = useRef(false);
   // Clip ids whose canon already advanced on clipRendered (two-phase swap), so clipReady does not advance it twice.
   const canonAdvancedRef = useRef(new Set<string>());
+  // Swap mode: downloads started when a clip's swap landed, taken by the player's next preload of that URL (SWAP_PREFETCH_READY_CLIPS). A stable Map, not a ref, because the player's lazy init closes over it.
+  const [prefetchedSources] = useState(
+    () => new Map<string, Promise<string>>(),
+  );
   const liveStateRef = useRef<LiveState | null>(null);
   const currentOwnerRef = useRef<QueueOwner>({ type: "studio" });
   const currentActRef = useRef<QueueStripEntry | null>(null);
@@ -481,7 +487,10 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     () =>
       new GaplessPlayer({
         resolveSource: async (url) => {
-          const src = await fetchClipSource(url, CLIP_PREFETCH_TIMEOUT_MS);
+          const prefetched = prefetchedSources.get(url);
+          prefetchedSources.delete(url);
+          const src = await (prefetched ??
+            fetchClipSource(url, CLIP_PREFETCH_TIMEOUT_MS));
           if (src === url) {
             deps.reportTelemetry?.("clipPrefetchFallback", {});
           }
@@ -858,6 +867,24 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
 
       const result = event.result;
       clipMetaRef.current.set(result.clipId, result);
+      if (
+        LIVE_TUNABLES.SWAP_PREFETCH_READY_CLIPS &&
+        result.swap !== undefined &&
+        !prefetchedSources.has(result.videoUrl)
+      ) {
+        prefetchedSources.set(
+          result.videoUrl,
+          fetchClipSource(result.videoUrl, CLIP_PREFETCH_TIMEOUT_MS),
+        );
+        // Bounded so clips that never play (session end, a dropped filler) cannot pile up blobs.
+        for (const [url, pending] of prefetchedSources) {
+          if (prefetchedSources.size <= PREFETCH_MAX_CLIPS) {
+            break;
+          }
+          prefetchedSources.delete(url);
+          void pending.then(releaseClipSource);
+        }
+      }
       setCostTotal((total) => total + result.costUsd);
       setLastTimings({
         jobKind: result.jobKind,
@@ -917,6 +944,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     },
     [
       player,
+      prefetchedSources,
       refreshBufferDepth,
       refreshQueueStrip,
       refreshRequestStatuses,

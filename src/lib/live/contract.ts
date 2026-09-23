@@ -459,7 +459,14 @@ export const LIVE_TUNABLES = {
   // Past 0.4 s the idle has already moved off that anchor pose.
   CUT_IN_AFTER_WRAP_SEC: 0.4,
   // The swap account has two GPUs; a third swap request queues inside Modal and stretched a reply's swap from 9 to 12 s. One slot is reserved for the chain, fillers share the rest.
-  SWAP_MAX_CONCURRENT: 2,
+  // Raised to 3: the app now runs up to 4 A10G/L4 containers, warmed at upload and held by buffer_containers, so a third swap uses a container already billed; prod (Sept 23) ran fillers through one slot and they queued 12 to 50 s. The fourth container stays free for the chain's /swapTail seed.
+  SWAP_MAX_CONCURRENT: 3,
+  // Chain clips still play in order (pickNext waits on the head's swap), so two may swap at once; one at a time left a beat 11 to 23 s in the queue behind its reply's 13 s swap and held playback 3.2 s (prod, Face lock on).
+  SWAP_CHAIN_MAX_CONCURRENT: 2,
+  // A queued filler whose anchor no longer matches the cursor, the anchor, the chain tail or a queued chain clip can never play; skipping its swap frees the slot for one that can. Prod swapped several such fillers 30 to 50 s after they rendered.
+  SWAP_SKIP_STALE_IDLE_SWAPS: true,
+  // Download each swapped clip as soon as it lands instead of when the player pulls it, so a clip that lands after a boundary plays about a second sooner (prod: 1.3 to 2.3 s from swap landed to on screen).
+  SWAP_PREFETCH_READY_CLIPS: true,
   // Timeupdate fires about four times a second, so a deferred cut-in on a looping element needs a wider boundary window than SWAP_LEAD_SEC or the wrap slips past it.
   CUT_IN_LEAD_SEC: 0.35,
   // Stage an in-scene still (selected room, canon lingerie) from the upload before the greeting; the raw photo's clothes and room otherwise contradict the prompt and the first clip visibly morphs.
