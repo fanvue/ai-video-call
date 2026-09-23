@@ -9,6 +9,7 @@ from protocol import (
     CLOSE_BAD_REQUEST,
     CLOSE_BAD_TICKET,
     PromptMessage,
+    ReanchorMessage,
     ProtocolError,
     StartMessage,
     StopMessage,
@@ -156,6 +157,11 @@ class MessageTest(unittest.TestCase):
         self.assert_bad("[]")
         self.assert_bad("nope")
         self.assert_bad('{"type":"dance"}')
+
+    def test_reanchor(self):
+        self.assertEqual(parse_client_message('{"type":"reanchor","id":"a1"}'), ReanchorMessage("a1"))
+        self.assert_bad('{"type":"reanchor"}')
+        self.assert_bad(json.dumps({"type": "reanchor", "id": "x" * 129}))
 
     def test_pack_frame(self):
         self.assertEqual(pack_frame(258, b"\xff\xd8"), b"\x00\x00\x01\x02\xff\xd8")

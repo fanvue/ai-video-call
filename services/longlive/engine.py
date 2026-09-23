@@ -72,6 +72,7 @@ class _SessionState:
     current_start_frame: int = 0
     next_pixel_frame: int = 0
     pending_recache: bool = False
+    pending_reanchor: bool = False
     recent: list[_CachedBlock] = field(default_factory=list)
 
 
@@ -213,6 +214,20 @@ class LongLiveEngine:
         state.pending_recache = True
         return state.next_pixel_frame
 
+    def reanchor(self) -> int:
+        """Queues pinning the newest clean block as a second sink beside the reference; returns the pixel frame after it."""
+        state = self._require_state()
+        state.pending_reanchor = True
+        return state.next_pixel_frame
+
+    def _pin_newest_block(self, state: _SessionState) -> None:
+        state.pending_reanchor = False
+        # Block 0 already is the permanent sink; there is nothing newer to pin yet.
+        if state.block_index < 2:
+            return
+        # LongLive's multi-shot sink: the pinned chunk moves next to the global sink on the next roll and stays until the next pin.
+        self.pipe._pin_current_chunk(self.pipe.kv_cache_pos, self.options.num_frame_per_block)
+
     def stop(self) -> None:
         self._state = None
         self.pipe.vae.model.clear_cache()
@@ -256,6 +271,9 @@ class LongLiveEngine:
         start.record()
         if state.pending_recache:
             self._recache(state)
+        # After the recache, which ends on the newest block, so the pin covers that block's current-prompt KV.
+        if state.pending_reanchor:
+            self._pin_newest_block(state)
         after_recache.record()
 
         first_block = state.block_index == 0

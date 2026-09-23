@@ -52,6 +52,11 @@ class PromptMessage:
 
 
 @dataclass(frozen=True)
+class ReanchorMessage:
+    id: str
+
+
+@dataclass(frozen=True)
 class StopMessage:
     pass
 
@@ -138,7 +143,16 @@ def _dimension(value: object, name: str) -> int:
     return value
 
 
-def parse_client_message(text: str, *, allow_data_uri: bool = False) -> StartMessage | PromptMessage | StopMessage:
+def _message_id(message: dict, kind: str) -> str:
+    message_id = message.get("id")
+    if not isinstance(message_id, str) or not message_id or len(message_id) > 128:
+        raise ProtocolError(CLOSE_BAD_REQUEST, f"{kind} id required")
+    return message_id
+
+
+def parse_client_message(
+    text: str, *, allow_data_uri: bool = False
+) -> StartMessage | PromptMessage | ReanchorMessage | StopMessage:
     try:
         message = json.loads(text)
     except ValueError:
@@ -149,10 +163,9 @@ def parse_client_message(text: str, *, allow_data_uri: bool = False) -> StartMes
     if kind == "stop":
         return StopMessage()
     if kind == "prompt":
-        message_id = message.get("id")
-        if not isinstance(message_id, str) or not message_id or len(message_id) > 128:
-            raise ProtocolError(CLOSE_BAD_REQUEST, "prompt id required")
-        return PromptMessage(prompt=_prompt_text(message.get("prompt")), id=message_id)
+        return PromptMessage(prompt=_prompt_text(message.get("prompt")), id=_message_id(message, "prompt"))
+    if kind == "reanchor":
+        return ReanchorMessage(id=_message_id(message, "reanchor"))
     if kind == "start":
         url = message.get("referenceImageUrl")
         if not isinstance(url, str) or not (

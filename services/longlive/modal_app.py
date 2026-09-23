@@ -15,6 +15,7 @@ from protocol import (
     CLOSE_BAD_REQUEST,
     MAX_IMAGE_BYTES,
     PromptMessage,
+    ReanchorMessage,
     ProtocolError,
     StartMessage,
     StopMessage,
@@ -94,6 +95,7 @@ class StreamRun:
         self.stop_event = threading.Event()
         self.pending_lock = threading.Lock()
         self.pending: PromptMessage | None = None
+        self.pending_reanchor: ReanchorMessage | None = None
         self.queued_frames = 0
         self.queued_lock = threading.Lock()
         self.stop_reason: tuple[int, str] | None = None
@@ -142,9 +144,13 @@ class StreamRun:
                         continue
                 with self.pending_lock:
                     pending, self.pending = self.pending, None
+                    reanchor, self.pending_reanchor = self.pending_reanchor, None
                 if pending is not None:
                     at_frame = engine.switch_prompt(pending.prompt)
                     self._emit_text({"type": "promptApplied", "id": pending.id, "atFrame": at_frame})
+                if reanchor is not None:
+                    at_frame = engine.reanchor()
+                    self._emit_text({"type": "reanchored", "id": reanchor.id, "atFrame": at_frame})
                 block = engine.diffuse_block()
                 scheduled += block.frame_count
                 while not self.stop_event.is_set():
@@ -230,6 +236,9 @@ class StreamRun:
                     # Last one wins: a newer request inside the same block replaces the queued one.
                     with self.pending_lock:
                         self.pending = message
+                if isinstance(message, ReanchorMessage):
+                    with self.pending_lock:
+                        self.pending_reanchor = message
                 # A second start is ignored; the contract sends it exactly once.
         except WebSocketDisconnect:
             self._finish(1000, "client closed")

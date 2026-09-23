@@ -51,6 +51,7 @@ class FakeEngine:
         self.next_frame = 0
         self.blocks = 0
         self.stopped = threading.Event()
+        self.reanchors: list[int] = []
 
     def start(self, image, prompt, width, height, seed=None):
         image.load()
@@ -60,6 +61,10 @@ class FakeEngine:
 
     def switch_prompt(self, prompt):
         self.prompts.append(prompt)
+        return self.next_frame
+
+    def reanchor(self):
+        self.reanchors.append(self.blocks)
         return self.next_frame
 
     def diffuse_block(self):
@@ -154,6 +159,36 @@ class ServiceTest(unittest.TestCase):
         stats = [t for t in texts if t["type"] == "stats"]
         self.assertTrue(stats and {"genFps", "blockMs", "decodeMs", "queueFrames"} <= stats[0].keys())
         self.assertTrue(self.engine.stopped.wait(2))
+
+    def test_reanchor_is_applied_once_at_a_block_boundary_and_acknowledged(self):
+        self.engine.block_s = 0.3
+        texts = []
+        with self.client.websocket_connect(f"/ws?ticket={self.ticket()}") as ws:
+            ws.send_text(self.start_message())
+            ws.receive_text()
+            # Two inside one block collapse to one pin, like prompts.
+            ws.send_text(json.dumps({"type": "reanchor", "id": "a1"}))
+            ws.send_text(json.dumps({"type": "reanchor", "id": "a2"}))
+            frames = 0
+            while frames < 29 + 32 * 2:
+                message = ws.receive()
+                if message.get("bytes") is not None:
+                    frames += 1
+                elif message.get("text") is not None:
+                    texts.append(json.loads(message["text"]))
+            ws.send_text(json.dumps({"type": "stop"}))
+            self.assertEqual(self.close_code(ws), 1000)
+        acks = [t for t in texts if t["type"] == "reanchored"]
+        self.assertEqual([t["id"] for t in acks], ["a2"])
+        self.assertEqual(acks[0]["atFrame"], 29)
+        self.assertEqual(self.engine.reanchors, [1])
+
+    def test_reanchor_without_id_closes_4400(self):
+        with self.client.websocket_connect(f"/ws?ticket={self.ticket()}") as ws:
+            ws.send_text(self.start_message())
+            ws.receive_text()
+            ws.send_text(json.dumps({"type": "reanchor"}))
+            self.assertEqual(self.close_code(ws), 4400)
 
     def test_client_disconnect_stops_generation(self):
         with self.client.websocket_connect(f"/ws?ticket={self.ticket()}") as ws:
