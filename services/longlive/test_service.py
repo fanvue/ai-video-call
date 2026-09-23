@@ -2,6 +2,7 @@
 # Run: cd services/longlive && ../../.venv-fal/bin/python -m unittest -v test_service
 import asyncio
 import base64
+import functools
 import hashlib
 import json
 import os
@@ -13,6 +14,7 @@ import time
 import unittest
 from dataclasses import dataclass
 from io import BytesIO
+from unittest import mock
 
 try:
     from fastapi.testclient import TestClient
@@ -21,7 +23,7 @@ try:
 
     import modal_app
     from protocol import sign_ticket
-    from restore_stage import PassthroughCodec
+    from restore_stage import PassthroughCodec, RestoreStage
 except ImportError as error:  # pragma: no cover - plain-python runs only get test_protocol.
     modal_app = None
     SKIP_REASON = f"needs fastapi + modal: {error}"
@@ -280,7 +282,9 @@ class ServiceTest(unittest.TestCase):
 
     def test_failing_restore_passes_frames_through_in_order_and_trips_the_breaker(self):
         restorer = FakeRestorer(fail=True)
-        frames, stats = self.stream_with_restorer(restorer, 29 + 32 * 5)
+        # The fake engine finishes all blocks inside the warm-up grace, so the grace is off to see the trip.
+        with mock.patch.object(modal_app, "RestoreStage", functools.partial(RestoreStage, grace_s=0)):
+            frames, stats = self.stream_with_restorer(restorer, 29 + 32 * 5)
         self.assertEqual([index for index, _ in frames], list(range(len(frames))))
         self.assertTrue(all(jpeg == b"\xff\xd8jpeg" for _, jpeg in frames))
         self.assertEqual(restorer.calls, 3)

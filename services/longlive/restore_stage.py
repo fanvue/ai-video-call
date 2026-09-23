@@ -16,6 +16,12 @@ COMPOSE_RESERVE_S = 0.2
 MAX_CONSECUTIVE_FAILURES = 3
 # Two blocks in flight so the round trip overlaps the next block's decode instead of adding to it.
 MAX_INFLIGHT = 2
+# Round trips live at once: MAX_INFLIGHT queued for the emitter, one it is collecting, one the decoder holds while the queue is full.
+MAX_OUTSTANDING = MAX_INFLIGHT + 2
+# Failures this soon after the first block went out do not count: the session-start burst ran every block past budget in prod while compute was 0.7 s.
+WARMUP_GRACE_S = 8.0
+# Once tripped, one block every this often tests the GPU in the background, so a blip costs seconds of raw faces rather than the session.
+PROBE_INTERVAL_S = 10.0
 
 
 class PassthroughCodec:
@@ -54,6 +60,9 @@ class RestoreTicket:
     submitted_at: float
     deadline: float
     call: Any = None
+    probe: bool = False
+    started_at: float | None = None
+    sent_at: float | None = None
     abandoned: bool = False
     cancel_sent: bool = False
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -77,6 +86,8 @@ class RestoreStage:
         codec=None,
         timeout_s: float = RESTORE_TIMEOUT_S,
         max_failures: int = MAX_CONSECUTIVE_FAILURES,
+        grace_s: float = WARMUP_GRACE_S,
+        probe_interval_s: float = PROBE_INTERVAL_S,
         log: Callable[[str], None] = lambda line: print(line, flush=True),
     ):
         # `spawn(frames)` starts the remote call and returns a handle with get(timeout=) and cancel(), like a Modal FunctionCall.
@@ -84,9 +95,15 @@ class RestoreStage:
         self._codec = codec or PassthroughCodec()
         self._timeout_s = timeout_s
         self._max_failures = max_failures
+        self._grace_s = grace_s
+        self._probe_interval_s = probe_interval_s
         self._log = log
         self._lock = threading.Lock()
-        self._pool = ThreadPoolExecutor(MAX_INFLIGHT + 1)
+        # One thread per live round trip plus the warm-up, so no block's budget burns waiting for a local thread.
+        self._pool = ThreadPoolExecutor(MAX_OUTSTANDING + 1)
+        self._grace_until: float | None = None
+        # Set while tripped by failures; a warm-up failure leaves it None, so that trip is final.
+        self._probe_at: float | None = None
         self.consecutive_failures = 0
         self.tripped = False
         self.fail_open = 0
@@ -115,10 +132,42 @@ class RestoreStage:
         ticket = RestoreTicket(list(jpegs), None, now, now + self._timeout_s)
         if not self.tripped:
             if self._ready():
+                with self._lock:
+                    if self._grace_until is None:
+                        self._grace_until = now + self._grace_s
                 ticket.future = self._pool.submit(self._round_trip, ticket)
             elif not self.tripped:
                 self.skipped_warming += 1
+        elif self._take_probe(now):
+            ticket.probe = True
+            ticket.future = self._pool.submit(self._round_trip, ticket)
+            ticket.future.add_done_callback(lambda future: self._probe_done(ticket, future))
         return ticket
+
+    def _take_probe(self, now: float) -> bool:
+        with self._lock:
+            if self._probe_at is None or now < self._probe_at:
+                return False
+            # Cleared while the probe is out, so only one block tests the GPU at a time.
+            self._probe_at = None
+            return True
+
+    def _probe_done(self, ticket: RestoreTicket, future: Future) -> None:
+        if future.cancelled():
+            return
+        error = future.exception()
+        elapsed = time.monotonic() - ticket.submitted_at
+        if error is None and elapsed <= self._timeout_s:
+            with self._lock:
+                self.tripped = False
+                self.consecutive_failures = 0
+                self._probe_at = None
+            self._log(f"[longlive] face restore back on, probe block round trip {elapsed * 1000:.0f} ms")
+            return
+        with self._lock:
+            self._probe_at = time.monotonic() + self._probe_interval_s
+        reason = repr(error) if error is not None else f"{elapsed * 1000:.0f} ms, over the {self._timeout_s:.1f}s budget"
+        self._log(f"[longlive] face restore probe failed ({reason}), next in {self._probe_interval_s:.0f}s")
 
     def _cancel(self, ticket: RestoreTicket) -> None:
         # future.cancel() cannot stop a call already running remotely; the handle's cancel does, so late blocks never pile up on the GPU.
@@ -135,7 +184,9 @@ class RestoreStage:
             self.cancelled += 1
 
     def _round_trip(self, ticket: RestoreTicket):
+        ticket.started_at = time.monotonic()
         frames, state = self._codec.pack(ticket.jpegs)
+        ticket.sent_at = time.monotonic()
         call = self._spawn(frames)
         with ticket.lock:
             ticket.call = call
@@ -158,15 +209,24 @@ class RestoreStage:
             raise ValueError(f"restore returned {len(replies) if isinstance(replies, list) else type(replies).__name__} frames for {len(ticket.jpegs)}")
         compute_ms = reply.get("computeMs")
         swapped = reply.get("swapped", 0)
-        return self._codec.unpack(ticket.jpegs, state, replies), compute_ms, swapped if isinstance(swapped, int) else 0
+        replied_at = time.monotonic()
+        jpegs = self._codec.unpack(ticket.jpegs, state, replies)
+        # Splits the round trip so a slow block shows whether it waited locally, packed, sat in transport or composited.
+        timing = (
+            f"queued {_ms(ticket.started_at - ticket.submitted_at)}, pack {_ms(ticket.sent_at - ticket.started_at)}, "
+            f"call {_ms(replied_at - ticket.sent_at)} (remote receive delay {_fmt(reply.get('receiveDelayMs'))}, compute {_fmt(compute_ms)}), "
+            f"compose {_ms(time.monotonic() - replied_at)}"
+        )
+        return jpegs, compute_ms, swapped if isinstance(swapped, int) else 0, timing
 
     def collect(self, ticket: RestoreTicket) -> RestoreOutcome:
         """Waits at most until the ticket's deadline; any error, timeout or malformed reply sends the originals."""
-        if ticket.future is None:
+        # A probe never holds the stream: while tripped the lead has no restore lag left to absorb a 2 s wait.
+        if ticket.future is None or ticket.probe:
             return RestoreOutcome(ticket.jpegs, False, None)
         remaining = ticket.deadline - time.monotonic()
         try:
-            jpegs, compute_ms, swapped = ticket.future.result(timeout=max(remaining, 0.0))
+            jpegs, compute_ms, swapped, timing = ticket.future.result(timeout=max(remaining, 0.0))
             if len(jpegs) != len(ticket.jpegs):
                 raise ValueError(f"composited {len(jpegs)} frames for {len(ticket.jpegs)}")
         except FutureTimeout:
@@ -180,21 +240,45 @@ class RestoreStage:
         with self._lock:
             self.consecutive_failures = 0
             self.restored_blocks += 1
+            # Any success proves the GPU answers in budget; only a warm-up failure trips with nothing sent, so this never undoes it.
+            rearmed = self.tripped
+            self.tripped = False
+            self._probe_at = None
+        round_trip_ms = (time.monotonic() - ticket.submitted_at) * 1000
+        self._log(f"[longlive] face restore round trip {round_trip_ms:.0f} ms: {timing}")
+        if rearmed:
+            self._log("[longlive] face restore back on after a block landed in budget")
         compute = float(compute_ms) if isinstance(compute_ms, (int, float)) and not isinstance(compute_ms, bool) else None
-        return RestoreOutcome(jpegs, True, (time.monotonic() - ticket.submitted_at) * 1000, compute, swapped)
+        return RestoreOutcome(jpegs, True, round_trip_ms, compute, swapped)
 
     def _failed(self, ticket: RestoreTicket, reason: str) -> RestoreOutcome:
+        now = time.monotonic()
         with self._lock:
             self.fail_open += 1
-            self.consecutive_failures += 1
+            in_grace = self._grace_until is not None and ticket.submitted_at < self._grace_until
+            if not in_grace:
+                self.consecutive_failures += 1
             trip = not self.tripped and self.consecutive_failures >= self._max_failures
             if trip:
                 self.tripped = True
-        self._log(f"[longlive] face restore failed open ({reason}), block sent unrestored")
+                self._probe_at = now + self._probe_interval_s
+        grace = ", warm-up grace, not counted" if in_grace else ""
+        self._log(f"[longlive] face restore failed open ({reason}{grace}), block sent unrestored")
         if trip:
-            self._log(f"[longlive] face restore off for this session after {self._max_failures} consecutive failures")
+            self._log(
+                f"[longlive] face restore off after {self._max_failures} consecutive failures, probing a block every {self._probe_interval_s:.0f}s"
+            )
         return RestoreOutcome(ticket.jpegs, False, None)
 
     def close(self) -> None:
         self._pool.shutdown(wait=False, cancel_futures=True)
         self._codec.close()
+
+
+def _ms(seconds: float) -> str:
+    return f"{seconds * 1000:.0f} ms"
+
+
+def _fmt(ms) -> str:
+    return f"{ms:.0f} ms" if isinstance(ms, (int, float)) and not isinstance(ms, bool) else "n/a"
+

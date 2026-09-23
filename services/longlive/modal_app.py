@@ -34,7 +34,7 @@ from protocol import (
     verify_register_token,
     verify_ticket,
 )
-from restore_stage import MAX_INFLIGHT, RESTORE_TIMEOUT_S, BlockingCall, RestoreStage, RestoreTicket
+from restore_stage import MAX_INFLIGHT, MAX_OUTSTANDING, RESTORE_TIMEOUT_S, BlockingCall, RestoreStage, RestoreTicket
 
 # Dev deploys set their own name so they never replace the live app.
 app = modal.App(os.environ.get("LONGLIVE_APP_NAME", "ai-video-longlive"))
@@ -613,8 +613,10 @@ class FaceRestore:
     @modal.method()
     def process(self, request: dict) -> dict:
         started = time.perf_counter()
+        # Wall clocks across containers, so this is transport plus input queueing to within clock skew.
+        receive_delay_ms = (time.time() - float(request.get("sentAt", 0))) * 1000
         # A block that already sat past its budget in the queue is dropped: the caller has sent it unrestored.
-        if time.time() - float(request.get("sentAt", 0)) > float(request.get("budgetMs", 0)) / 1000:
+        if receive_delay_ms > float(request.get("budgetMs", 0)):
             print("[restore] dropped an expired block", flush=True)
             return {"expired": True}
         persona_id = request.get("personaId")
@@ -625,8 +627,11 @@ class FaceRestore:
         out = self.restorer.process_block(frames, source, bool(request.get("restore", True)))
         compute_ms = (time.perf_counter() - started) * 1000
         swapped = sum(o is not None for o in out) if source is not None else 0
-        print(f"[restore] {len(frames)} frames in {compute_ms:.0f} ms, {sum(o is None for o in out)} unchanged, {swapped} swapped", flush=True)
-        return {"frames": out, "computeMs": compute_ms, "swapped": swapped}
+        print(
+            f"[restore] {len(frames)} frames in {compute_ms:.0f} ms, {sum(o is None for o in out)} unchanged, {swapped} swapped, received {receive_delay_ms:.0f} ms after send",
+            flush=True,
+        )
+        return {"frames": out, "computeMs": compute_ms, "swapped": swapped, "receiveDelayMs": receive_delay_ms}
 
 
 class RemoteRestorer:
@@ -634,7 +639,7 @@ class RemoteRestorer:
 
     def __init__(self):
         self.service = FaceRestore()
-        self._calls = ThreadPoolExecutor(MAX_INFLIGHT + 1)
+        self._calls = ThreadPoolExecutor(MAX_OUTSTANDING)
 
     def warm(self, persona_id: str | None = None) -> dict:
         return self.service.warm.remote(persona_id)
