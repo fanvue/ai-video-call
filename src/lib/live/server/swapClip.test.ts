@@ -226,6 +226,30 @@ describe("swapClip", () => {
     expect(hungSignal?.aborted).toBe(true);
   });
 
+  it("does not hedge the longlive recipe at the legacy 8s delay, only once its own 30s passes", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockImplementationOnce(() => new Promise(() => undefined));
+    const pending = swapClip({
+      videoUrl: "https://fal.test/turbo.mp4",
+      personaId: "synth-persona-01",
+      recipe: "longlive",
+    });
+    // Legacy's hedge point: a longlive swap at 45.5ms/frame is still healthy here, so no second request yet.
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    fetchMock.mockResolvedValueOnce(swapped());
+    uploadToFal
+      .mockResolvedValueOnce("https://fal.test/swap.mp4")
+      .mockResolvedValueOnce("https://fal.test/last.jpg");
+    await vi.advanceTimersByTimeAsync(22_000);
+    const outcome = await pending;
+    vi.useRealTimers();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(outcome.videoUrl).toBe("https://fal.test/swap.mp4");
+  });
+
   it("gives up after a second 408", async () => {
     fetchMock
       .mockResolvedValueOnce(new Response("Missing request", { status: 408 }))

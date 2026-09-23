@@ -1,12 +1,29 @@
 import { z } from "zod";
 import { env } from "@/env";
 import { uploadToFal } from "@/lib/fal/uploadImage";
-import { LIVE_TUNABLES, type ClipSwapReport } from "../contract";
+import {
+  LIVE_TUNABLES,
+  type ClipSwapReport,
+  type SwapRecipe,
+} from "../contract";
 
 // Cold container (60s+) + a 15s clip at ~20ms/frame fit inside this.
 export const SWAP_BUDGET_MS = 150_000;
-// The greeting gates the whole join, so it waits less than a mid-session clip: a warm swap of a 15 s greeting is 6 s, and past this the container is cold (93 s measured) and the reference-to-video greeting already carries the identity, so the unswapped fallback (one fal frame extract) is the faster join.
-export const SWAP_GREETING_BUDGET_MS = 20_000;
+
+// Per-recipe timing: legacy keeps today's numbers exactly, longlive gets more room because it
+// runs at 45.5 ms/frame (measured), about 2.3x legacy's ~20ms/frame.
+type SwapTiming = { hedgeMs: number; greetingBudgetMs: number };
+const SWAP_TIMING: Record<SwapRecipe, SwapTiming> = {
+  // The greeting gates the whole join, so it waits less than a mid-session clip: a warm swap of a 15 s greeting is 6 s, and past this the container is cold (93 s measured) and the reference-to-video greeting already carries the identity, so the unswapped fallback (one fal frame extract) is the faster join.
+  legacy: { hedgeMs: 8_000, greetingBudgetMs: 20_000 },
+  // At 45.5 ms/frame a 15 s greeting is ~360 frames = 16.6 s plus download, so the legacy 20 s budget missed it and played unswapped; and the legacy 8 s hedge always fired before a longlive swap (11-13 s) came back, doubling GPU load on every clip.
+  longlive: { hedgeMs: 30_000, greetingBudgetMs: 40_000 },
+};
+const timingFor = (recipe: SwapRecipe | undefined): SwapTiming =>
+  SWAP_TIMING[recipe ?? "legacy"];
+// Kept as an export for callers that still choose the greeting budget from outside swapClip (route.ts, generateClip.ts).
+export const swapGreetingBudgetMsFor = (recipe: SwapRecipe | undefined) =>
+  timingFor(recipe).greetingBudgetMs;
 
 const swapServiceResponseSchema = z.object({
   video_base64: z.string().min(1),
@@ -38,8 +55,8 @@ export type SwapClipOutcome = {
 // Sends a rendered turbo clip through the self-hosted swap service (services/swap) and rehosts
 // the swapped mp4 and its last frame on fal storage so the client and the next render can fetch them.
 const RETRYABLE_SWAP_STATUSES = new Set([408, 500, 502, 503, 504]);
-// Healthy swaps return in ~4.5 s; Modal has held a lost input for 36 s before a 500, so a second request races the first after this.
-const SWAP_HEDGE_MS = 8_000;
+// Healthy swaps return in ~4.5 s; Modal has held a lost input for 36 s before a 500, so a second
+// request races the first after this. Per recipe: see SWAP_TIMING above.
 
 class SwapServiceError extends Error {
   constructor(
@@ -49,6 +66,14 @@ class SwapServiceError extends Error {
     super(`Swap service responded ${status}: ${detail.slice(0, 200)}`);
   }
 }
+
+// AbortSignal.timeout() rejects fetch with a DOMException named TimeoutError (or AbortError for
+// the losing hedge request's own cancellation); anything else is a hard failure from the service.
+export const swapFailureReason = (error: unknown): "timeout" | "error" =>
+  error instanceof DOMException &&
+  (error.name === "TimeoutError" || error.name === "AbortError")
+    ? "timeout"
+    : "error";
 
 export const swapClip = async ({
   videoUrl,
@@ -64,7 +89,7 @@ export const swapClip = async ({
   budgetMs?: number;
   jobKind?: string;
   swapModel?: string;
-  recipe?: string;
+  recipe?: SwapRecipe;
 }): Promise<SwapClipOutcome> => {
   if (!personaId) {
     throw new Error("No persona selected, the clip plays unswapped");
@@ -112,7 +137,7 @@ export const swapClip = async ({
       };
       const timer = setTimeout(
         () => launch("first not back yet"),
-        SWAP_HEDGE_MS,
+        timingFor(recipe).hedgeMs,
       );
       first.then(
         () => clearTimeout(timer),

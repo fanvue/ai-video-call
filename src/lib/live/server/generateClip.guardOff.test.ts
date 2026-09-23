@@ -41,7 +41,12 @@ const swapClip = vi.fn();
 // Fully mocked: the real module pulls in @/env, which validates the server environment at import.
 vi.mock("./swapClip", () => ({
   SWAP_BUDGET_MS: 150_000,
-  SWAP_GREETING_BUDGET_MS: 20_000,
+  swapGreetingBudgetMsFor: (recipe?: string) =>
+    recipe === "longlive" ? 40_000 : 20_000,
+  swapFailureReason: (error: unknown) =>
+    error instanceof DOMException && error.name === "TimeoutError"
+      ? "timeout"
+      : "error",
   swapClip: (...args: unknown[]) => swapClip(...args),
   swapServiceLastFrame: () => Promise.reject(new Error("not configured")),
   // Not under test here (see generateClip.deferredSwap.test.ts): the inline swap below always succeeds, so swappedLastFrameUrl short-circuits past this, except in the one test where swapClip itself fails.
@@ -300,6 +305,32 @@ describe("generateClip on the swap backend", () => {
     expect(result.videoUrl).toBe("https://example.com/swapped.mp4");
     expect(result.loops).toBe(false);
     expect(result.seedFrameUrl).toBe("https://example.com/swapped-last.jpg");
+  });
+
+  it("gives the longlive greeting the longer swap budget", async () => {
+    swapClip.mockResolvedValue(swapped);
+    await generateClip({
+      ...swapRequest({ kind: "greeting" }),
+      session: { ...session, seedFrameUrl: session.anchorFrameUrl },
+      swapFaceLock: true,
+    });
+    expect(swapClip.mock.calls[0][0].budgetMs).toBe(40_000);
+  });
+
+  it("logs the reason and recipe when a greeting swap falls back to unswapped", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const timeout = new DOMException("aborted", "TimeoutError");
+    swapClip.mockRejectedValue(timeout);
+    await generateClip({
+      ...swapRequest({ kind: "greeting" }),
+      session: { ...session, seedFrameUrl: session.anchorFrameUrl },
+      swapFaceLock: true,
+    });
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(/greeting.*reason=timeout.*recipe=longlive/),
+      timeout,
+    );
+    warn.mockRestore();
   });
 
   it("renders a raw-upload swap greeting through reference-to-video with the upload pinned to identity and the scene set by the prompt", async () => {

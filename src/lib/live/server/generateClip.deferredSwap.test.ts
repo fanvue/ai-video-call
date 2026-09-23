@@ -31,7 +31,9 @@ const swapTail = vi.fn();
 // Fully mocked: the real module pulls in @/env, which validates the server environment at import.
 vi.mock("./swapClip", () => ({
   SWAP_BUDGET_MS: 150_000,
-  SWAP_GREETING_BUDGET_MS: 20_000,
+  swapGreetingBudgetMsFor: (recipe?: string) =>
+    recipe === "longlive" ? 40_000 : 20_000,
+  swapFailureReason: () => "error",
   swapClip: (...args: unknown[]) => swapClip(...args),
   swapServiceLastFrame: (...args: unknown[]) => swapServiceLastFrame(...args),
   swapTail: (...args: unknown[]) => swapTail(...args),

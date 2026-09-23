@@ -3,7 +3,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/fanvue", () => ({ getCurrentUser: vi.fn() }));
 vi.mock("@/lib/live/server/swapClip", () => ({
   SWAP_BUDGET_MS: 150_000,
-  SWAP_GREETING_BUDGET_MS: 20_000,
+  swapGreetingBudgetMsFor: (recipe?: string) =>
+    recipe === "longlive" ? 40_000 : 20_000,
+  swapFailureReason: (error: unknown) =>
+    error instanceof DOMException && error.name === "TimeoutError"
+      ? "timeout"
+      : "error",
   swapClip: vi.fn(),
   failedSwapReport: (swapMs: number, error: Error) => ({
     status: "failed",
@@ -175,5 +180,25 @@ describe("POST /api/live/swap", () => {
     expect(data.videoUrl).toBe(body.videoUrl);
     expect(data.report.status).toBe("failed");
     expect(data.report.reason).toMatch(/503/);
+  });
+
+  it("gives the longlive greeting the longer budget", async () => {
+    vi.mocked(swapClip).mockRejectedValue(new Error("stop"));
+    await POST(jsonBody({ ...body, jobKind: "greeting", swapFaceLock: true }));
+    expect(swapClip).toHaveBeenCalledWith(
+      expect.objectContaining({ budgetMs: 40_000, jobKind: "greeting" }),
+    );
+  });
+
+  it("logs the reason and recipe when a greeting swap falls back to unswapped", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const timeout = new DOMException("aborted", "TimeoutError");
+    vi.mocked(swapClip).mockRejectedValue(timeout);
+    await POST(jsonBody({ ...body, jobKind: "greeting", swapFaceLock: true }));
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(/greeting.*reason=timeout.*recipe=longlive/),
+      timeout,
+    );
+    warn.mockRestore();
   });
 });

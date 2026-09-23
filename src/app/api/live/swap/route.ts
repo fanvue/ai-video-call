@@ -10,8 +10,9 @@ import {
 import {
   failedSwapReport,
   SWAP_BUDGET_MS,
-  SWAP_GREETING_BUDGET_MS,
   swapClip,
+  swapFailureReason,
+  swapGreetingBudgetMsFor,
 } from "@/lib/live/server/swapClip";
 
 // A queued full-clip swap can sit behind two fillers on the one warm container.
@@ -51,16 +52,19 @@ export async function POST(request: Request) {
   }
   const { videoUrl, personaId, jobKind, swapProfile, swapFaceLock } =
     parsed.data;
+  const recipe = swapRecipeFor(swapFaceLock);
   const startedAt = Date.now();
   try {
     const swapped = await swapClip({
       videoUrl,
       personaId,
       budgetMs:
-        jobKind === "greeting" ? SWAP_GREETING_BUDGET_MS : SWAP_BUDGET_MS,
+        jobKind === "greeting"
+          ? swapGreetingBudgetMsFor(recipe)
+          : SWAP_BUDGET_MS,
       jobKind,
       swapModel: swapModelFor(swapProfile),
-      recipe: swapRecipeFor(swapFaceLock),
+      recipe,
     });
     return NextResponse.json({
       videoUrl: swapped.videoUrl,
@@ -69,7 +73,18 @@ export async function POST(request: Request) {
       report: swapped.report,
     });
   } catch (error) {
-    console.warn(`live/swap: ${jobKind} swap failed, playing unswapped`, error);
+    if (jobKind === "greeting") {
+      // The greeting gates the join, so a missed budget here is the join looking different from the rest of the session; recipe and reason pin down whether it's the longlive budget still too tight or a genuine service error.
+      console.warn(
+        `live/swap: greeting swap fell back to unswapped, reason=${swapFailureReason(error)} recipe=${recipe ?? "legacy"}`,
+        error,
+      );
+    } else {
+      console.warn(
+        `live/swap: ${jobKind} swap failed, playing unswapped`,
+        error,
+      );
+    }
     return NextResponse.json({
       videoUrl,
       costUsd: 0,

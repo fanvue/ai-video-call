@@ -28,8 +28,9 @@ import {
   failedSwapReport,
   pendingSwapReport,
   SWAP_BUDGET_MS,
-  SWAP_GREETING_BUDGET_MS,
   swapClip,
+  swapFailureReason,
+  swapGreetingBudgetMsFor,
   swapServiceLastFrame,
   swapTail,
 } from "./swapClip";
@@ -383,15 +384,18 @@ export const generateClip = async (
     swapReport = pendingSwapReport();
   } else if (backend === "swap") {
     const swapStarted = Date.now();
+    const recipe = swapRecipeFor(request.swapFaceLock);
     try {
       const swapped = await swapClip({
         videoUrl,
         personaId: request.personaId,
         budgetMs:
-          job.kind === "greeting" ? SWAP_GREETING_BUDGET_MS : SWAP_BUDGET_MS,
+          job.kind === "greeting"
+            ? swapGreetingBudgetMsFor(recipe)
+            : SWAP_BUDGET_MS,
         jobKind: job.kind,
         swapModel: swapModelFor(request.swapProfile),
-        recipe: swapRecipeFor(request.swapFaceLock),
+        recipe,
       });
       videoUrl = swapped.videoUrl;
       costUsd += swapped.costUsd;
@@ -399,10 +403,18 @@ export const generateClip = async (
       swappedLastFrameUrl = swapped.lastFrameUrl;
     } catch (error) {
       // Quality feature, not a guard: the unswapped clip plays and the studio overlay shows the miss.
-      console.warn(
-        "generateClip: swap failed, playing the unswapped clip",
-        error,
-      );
+      if (job.kind === "greeting") {
+        // The greeting gates the join, so a missed budget here is the join looking different from the rest of the session; recipe and reason pin down whether it's the longlive budget still too tight or a genuine service error.
+        console.warn(
+          `generateClip: greeting swap fell back to unswapped, reason=${swapFailureReason(error)} recipe=${recipe ?? "legacy"}`,
+          error,
+        );
+      } else {
+        console.warn(
+          "generateClip: swap failed, playing the unswapped clip",
+          error,
+        );
+      }
       swapReport = failedSwapReport(Date.now() - swapStarted, error);
     }
     console.log(

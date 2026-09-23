@@ -97,8 +97,8 @@ export const SetupScreen = ({
   const [displayName, setDisplayName] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [voiceExperimental, setVoiceExperimental] = useState(false);
-  // LongLive is the default while the realtime model and its LoRA are under test.
-  const [backend, setBackend] = useState<RenderBackend>("longlive");
+  // Swap mode is the default: testers rated it the best quality once chain clips seeded from the swapped tail.
+  const [backend, setBackend] = useState<RenderBackend>("swap");
   const [swapProfile, setSwapProfile] = useState<SwapProfile>("default");
   const [swapFaceLock, setSwapFaceLock] = useState(false);
   const [intentParser, setIntentParser] = useState<IntentParser>("regex");
