@@ -236,6 +236,15 @@ describe("planLongLiveRequest", () => {
     expectCaption(prompt);
   });
 
+  it("drops glow wording from the room and the style line", async () => {
+    const current = state({
+      surroundings: "A bedroom with a bedside lamp glowing behind her.",
+    });
+    const { prompt } = await planLongLiveRequest(creator, current, "wave");
+    expect(prompt).toContain("a bedside lamp behind her");
+    expect(prompt).not.toMatch(/glow|warm lamp light/i);
+  });
+
   it("lists the garments a request changes, for the vision check", async () => {
     const { wardrobeCheck } = await planLongLiveRequest(
       creator,

@@ -21,8 +21,10 @@ const MAX_PROMPT_CHARS = 2000;
 const MAX_ROOM_CHARS = 240;
 
 // "webcam" drew floating tip stickers and app panels over the stream (A/B, same seed, only that word changed).
-const STYLE_LINE = "Static shot at eye level, warm lamp light, realistic.";
+// Lamp and glow wording washed the frame out from 15-30 s on 2 of 6 seeds (peak glow 44% -> 0% without it).
+const STYLE_LINE = "Static shot at eye level, soft even light, realistic.";
 const STREAM_WORD_RE = /\b(web ?cam|live ?stream)(s?)\b/gi;
+const GLOW_WORD_RE = /\s*\b(glowing|glows|glow)\b/gi;
 
 const GARMENTS: GarmentId[] = ["top", "bottom", "bra", "panties"];
 
@@ -45,7 +47,10 @@ const subjectSentence = (lookLock: string): string => {
 // Cut at a sentence end so an overlong room never pushes the action out.
 const roomSentence = (surroundings: string): string => {
   // The reference capture describes any webcam framing it sees; the room keeps the camera, not the word.
-  const room = surroundings.trim().replace(STREAM_WORD_RE, "camera$2");
+  const room = surroundings
+    .trim()
+    .replace(STREAM_WORD_RE, "camera$2")
+    .replace(GLOW_WORD_RE, "");
   if (room.length <= MAX_ROOM_CHARS) return room;
   const cut = room.slice(0, MAX_ROOM_CHARS);
   const end = cut.lastIndexOf(". ");
