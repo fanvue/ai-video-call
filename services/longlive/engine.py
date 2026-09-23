@@ -31,7 +31,8 @@ class EngineOptions:
     # Recent blocks re-encoded under the new prompt on a switch (LongLive's KV-recache); the sink block is never recached.
     # Two, because with a 32-frame window, 8 sink frames and 8-frame blocks only the last two survive the next roll.
     recache_blocks: int = 2
-    jpeg_quality: int = 82
+    # 90 removes the cheek/nose blocking seen at 82 for +40% bytes (57 KB/frame) and no fps cost.
+    jpeg_quality: int = 90
 
 
 @dataclass
