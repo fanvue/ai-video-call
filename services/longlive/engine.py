@@ -1,7 +1,6 @@
 # Block-by-block LongLive-2.0-5B streaming generator: the reference image is the clean first latent and permanent attention sink, prompts switch at block boundaries with a KV-recache, and each block is VAE-decoded with the causal cache kept.
 from __future__ import annotations
 
-import io
 import os
 import sys
 import time
@@ -151,7 +150,6 @@ class LongLiveEngine:
         self.decode_stream = torch.cuda.Stream(device=self.device)
         self._configured_seq_length: int | None = None
         self._state: _SessionState | None = None
-        self._warned_cpu_jpeg = False
         self.load_ms = (time.perf_counter() - started) * 1000
 
     def encode_prompt(self, prompt: str) -> dict:
@@ -307,10 +305,12 @@ class LongLiveEngine:
             decoded = _cached_decode(self.pipe.vae.model, block.latents.permute(0, 2, 1, 3, 4).contiguous(), self.vae_scale)
             pixels = decoded[0].float().clamp_(-1, 1).add_(1).mul_(127.5).to(torch.uint8).permute(1, 0, 2, 3).contiguous()
             finished.record(stream)
-            encode_started = time.perf_counter()
-            jpegs = self._encode_jpegs(pixels)
-            encode_ms = (time.perf_counter() - encode_started) * 1000
+            # Blocking copy: it waits for this stream only, so the diffusion thread keeps running.
+            pixels_cpu = pixels.cpu()
         finished.synchronize()
+        encode_started = time.perf_counter()
+        jpegs = self._encode_jpegs(pixels_cpu)
+        encode_ms = (time.perf_counter() - encode_started) * 1000
         if len(jpegs) != block.frame_count:
             raise RuntimeError(f"decoded {len(jpegs)} frames, expected {block.frame_count}")
         return BlockResult(
@@ -326,24 +326,15 @@ class LongLiveEngine:
         return self.decode_block(self.diffuse_block())
 
     def _encode_jpegs(self, pixels: torch.Tensor) -> list[bytes]:
-        quality = self.options.jpeg_quality
-        try:
-            from torchvision.io import encode_jpeg
+        from torchvision.io import encode_jpeg
 
-            encoded = encode_jpeg(list(pixels.unbind(0)), quality=quality)
-            return [bytes(item.cpu().numpy().tobytes()) for item in encoded]
-        except (RuntimeError, TypeError) as error:
-            # CPU fallback if nvjpeg is unavailable in this torchvision build.
-            if not self._warned_cpu_jpeg:
-                print(f"[longlive] GPU JPEG encode unavailable, using PIL: {error!r}", flush=True)
-                self._warned_cpu_jpeg = True
-            frames = pixels.permute(0, 2, 3, 1).cpu().numpy()
-            out = []
-            for frame in frames:
-                buffer = io.BytesIO()
-                Image.fromarray(frame).save(buffer, format="JPEG", quality=quality)
-                out.append(buffer.getvalue())
-            return out
+        # CPU libjpeg, not nvjpeg: GPU encode on the side stream returned corrupt JPEGs for 310 of 381 frames once decode overlapped diffusion.
+        encoded = [bytes(item.numpy().tobytes()) for item in encode_jpeg(list(pixels.unbind(0)), quality=self.options.jpeg_quality)]
+        # Fail loud: a truncated JPEG would reach the browser as a frame it cannot draw.
+        for jpeg in encoded:
+            if not (jpeg.startswith(b"\xff\xd8") and jpeg.endswith(b"\xff\xd9")):
+                raise RuntimeError("JPEG encode produced an invalid frame")
+        return encoded
 
     def warmup(self, width: int = 480, height: int = 832, blocks: int = 3) -> float:
         """Runs a throwaway session so the first real one skips CUDA/Triton first-call costs; returns ms."""

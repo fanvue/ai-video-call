@@ -31,7 +31,7 @@ describe("mintLongLiveTicket", () => {
     const { ticket } = mintLongLiveTicket(SECRET, now, "sid-1");
     expect(verify(ticket, SECRET, now)).toEqual({
       sid: "sid-1",
-      exp: now / 1000 + 120,
+      exp: now / 1000 + 300,
     });
   });
 
@@ -40,11 +40,11 @@ describe("mintLongLiveTicket", () => {
     expect(ticket).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
   });
 
-  it("expires 120 s after minting, in unix seconds, and reports expiresAt in ms", () => {
+  it("expires 300 s after minting, in unix seconds, and reports expiresAt in ms", () => {
     const { ticket, expiresAt } = mintLongLiveTicket(SECRET, now);
-    expect(expiresAt).toBe(now + 120_000);
-    expect(verify(ticket, SECRET, now + 119_000)).not.toBeNull();
-    expect(verify(ticket, SECRET, now + 120_000)).toBeNull();
+    expect(expiresAt).toBe(now + 300_000);
+    expect(verify(ticket, SECRET, now + 299_000)).not.toBeNull();
+    expect(verify(ticket, SECRET, now + 300_000)).toBeNull();
   });
 
   it("fails verification under a different secret", () => {

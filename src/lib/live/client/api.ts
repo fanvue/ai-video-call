@@ -150,6 +150,11 @@ export const composeLongLivePrompt = async (
 ): Promise<LongLiveComposed> =>
   postJson<LongLiveComposed>("/api/live/longlivePrompt", input);
 
+// Fire-and-forget from the setup screen when LongLive is picked; the model load is the whole cold start.
+export const warmLongLive = async (): Promise<void> => {
+  await postJson<{ warm: boolean }>("/api/live/longliveWarm", {});
+};
+
 // Fire-and-forget at session start in swap mode so the GPU container is loading while the first clip renders.
 export const warmSwap = async (): Promise<void> => {
   await postJson<{ warm: boolean }>("/api/live/swapWarm", {});

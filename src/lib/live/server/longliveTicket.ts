@@ -1,7 +1,7 @@
 import { createHmac, randomUUID } from "node:crypto";
 
-// Only the WebSocket handshake needs it; the Modal service checks exp once, at connect.
-const TICKET_TTL_SEC = 120;
+// The Modal service checks exp once, at connect, and a cold container holds the handshake about 140 s while the model loads.
+const TICKET_TTL_SEC = 300;
 
 // base64url(JSON {sid, exp}) + "." + base64url(HMAC-SHA256(secret, payloadPart)); exp is unix seconds, verified by services/longlive.
 export const mintLongLiveTicket = (

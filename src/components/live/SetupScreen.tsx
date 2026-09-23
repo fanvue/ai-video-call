@@ -33,6 +33,7 @@ type SetupScreenProps = {
   busy: boolean;
   error: string | null;
   onPrepare?: (file: File, sceneId: SceneId, stage: boolean) => void;
+  onWarmLongLive?: () => void;
   preparation?: { status: PrepareStatus; seedUrl: string | null };
   onSubmit: (values: SetupSubmit) => void;
 };
@@ -53,6 +54,7 @@ export const SetupScreen = ({
   busy,
   error,
   onPrepare,
+  onWarmLongLive,
   preparation,
   onSubmit,
 }: SetupScreenProps) => {
@@ -88,6 +90,12 @@ export const SetupScreen = ({
     );
     return () => clearTimeout(timeoutId);
   }, [file, sceneId, backend, onPrepare]);
+
+  useEffect(() => {
+    if (backend === "longlive") {
+      onWarmLongLive?.();
+    }
+  }, [backend, onWarmLongLive]);
 
   return (
     <div className="mx-auto flex min-h-dvh w-full max-w-sm flex-col justify-center gap-6 px-4 py-8">

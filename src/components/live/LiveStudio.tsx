@@ -11,6 +11,7 @@ import {
   swapRenderedClip,
   uploadReference,
   upscaleSeed,
+  warmLongLive,
   warmSwap,
 } from "@/lib/live/client/api";
 import {
@@ -167,6 +168,16 @@ export const LiveStudio = () => {
     voice.start();
   }, [voice]);
 
+  // One wake per page load: the container stays warm for its scaledown window, and re-picking the mode must not stack probes.
+  const longLiveWarmedRef = useRef(false);
+  const warmLongLiveOnce = useCallback(() => {
+    if (longLiveWarmedRef.current) {
+      return;
+    }
+    longLiveWarmedRef.current = true;
+    warmLongLive().catch(() => undefined);
+  }, []);
+
   const handleSubmitSetup = useCallback(
     (values: SetupSubmit) => {
       setStarting(true);
@@ -302,6 +313,7 @@ export const LiveStudio = () => {
         busy={starting}
         error={startError}
         onPrepare={session.prepare}
+        onWarmLongLive={warmLongLiveOnce}
         preparation={{
           status: session.prepareStatus,
           seedUrl: session.preparedSeedUrl,
