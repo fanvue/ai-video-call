@@ -21,7 +21,7 @@ export const tipMenuItemSchema = z.object({
 });
 export type TipMenuItem = z.infer<typeof tipMenuItemSchema>;
 
-export const creatorProfileSchema = z.object({
+const creatorProfileSchema = z.object({
   id: z.string().min(1),
   displayName: z.string().min(1).max(40),
   // Free-text look lock captured from the reference photo (hair, skin, build). Never a real
@@ -85,7 +85,7 @@ export const bodySchema = z.object({
 });
 export type Body = z.infer<typeof bodySchema>;
 
-export const liveStateSchema = z.object({
+const liveStateSchema = z.object({
   wardrobe: wardrobeSchema,
   body: bodySchema,
   // Baseline she settles back to after a request is satisfied (pose only; wardrobe is separate).
@@ -119,10 +119,10 @@ export const stateFrameKey = (
 
 // Transcript
 
-export const inputChannelSchema = z.enum(["chat", "voice"]);
+const inputChannelSchema = z.enum(["chat", "voice"]);
 export type InputChannel = z.infer<typeof inputChannelSchema>;
 
-export const transcriptEntrySchema = z.object({
+const transcriptEntrySchema = z.object({
   id: z.string().min(1),
   // "viewer" is another member of the room; the server treats their requests like a fan's.
   role: z.enum(["fan", "viewer", "creator"]),
@@ -227,30 +227,17 @@ export const clipJobSchema = z.discriminatedUnion("kind", [
 export type ClipJob = z.infer<typeof clipJobSchema>;
 export type ClipJobKind = ClipJob["kind"];
 
-// "director" and "lucy" are live WebRTC streams, not clip-render backends; see directorStream.ts / lucyStream.ts.
 // "swap" is our self-hosted per-clip identity swap over the turbo pipeline's output; see server/swapClip.ts.
-// "longlive" is one uncut stream generated live on our own Modal GPU; see longliveStream.ts.
-export const renderBackendSchema = z.enum([
-  "turbo",
-  "reference",
-  "director",
-  "lucy",
-  "swap",
-  "longlive",
-]);
+// Setup only offers swap; "turbo" and "reference" remain because the planner and pipeline still branch on them.
+export const renderBackendSchema = z.enum(["turbo", "reference", "swap"]);
 export type RenderBackend = z.infer<typeof renderBackendSchema>;
 
-export const speechModeSchema = z.enum(["text", "native"]);
+const speechModeSchema = z.enum(["text", "native"]);
 export type SpeechMode = z.infer<typeof speechModeSchema>;
 
 // How a reply's text becomes actions: the regex catalogue, an LLM only when the catalogue found no action, or an LLM for every request.
-export const intentParserSchema = z.enum(["regex", "hybrid", "llm"]);
+const intentParserSchema = z.enum(["regex", "hybrid", "llm"]);
 export type IntentParser = z.infer<typeof intentParserSchema>;
-export const INTENT_PARSER_LABELS: Record<IntentParser, string> = {
-  regex: "Regex catalogue (fastest)",
-  hybrid: "Hybrid (LLM when the catalogue finds no action)",
-  llm: "LLM reads every request",
-};
 
 // LongLive persona face lock: the id names an allowlisted synthetic persona in the server's manifest, never an image.
 export const personaIdSchema = z.string().regex(/^[a-z0-9-]{1,64}$/);
@@ -264,27 +251,7 @@ export const personaOptionSchema = z.object({
 });
 export type PersonaOption = z.infer<typeof personaOptionSchema>;
 
-// Swap-mode test profiles picked under Advanced, so a trial config sits beside the default instead of replacing it. swapModel is the Modal service's model name.
-export const swapProfileSchema = z.enum(["default", "hyperswap_1c", "ghost_1"]);
-export type SwapProfile = z.infer<typeof swapProfileSchema>;
-export const SWAP_PROFILES: Record<
-  SwapProfile,
-  { label: string; swapModel: string }
-> = {
-  default: { label: "Default (inswapper fp16)", swapModel: "inswapper_fp16" },
-  hyperswap_1c: {
-    label: "HyperSwap 1c (sharper, weaker likeness)",
-    swapModel: "hyperswap_1c",
-  },
-  ghost_1: { label: "GHOST 1 (Apache-2.0 licence)", swapModel: "ghost_1" },
-};
-// Undefined for the default profile so the service's own default model governs.
-export const swapModelFor = (profile?: SwapProfile): string | undefined =>
-  profile && profile !== "default"
-    ? SWAP_PROFILES[profile].swapModel
-    : undefined;
-
-// Face lock under Advanced: on, swap requests carry LongLive's persona recipe (kept eyes/mouth, GFPGAN 1.4 restore) instead of the default legacy pass, at about 3x the swap GPU time.
+// Face lock under Advanced: on, swap requests carry LongLive's persona recipe (kept eyes/mouth, GFPGAN 1.4 restore) instead of the default legacy pass, at about 2.3x the swap GPU time.
 export const swapRecipeSchema = z.enum(["legacy", "longlive"]);
 export type SwapRecipe = z.infer<typeof swapRecipeSchema>;
 // Undefined when off so the service's own default recipe (legacy) governs.
@@ -321,7 +288,6 @@ export const clipRequestSchema = z.object({
   job: clipJobSchema,
   backend: renderBackendSchema.default("turbo"),
   speechMode: speechModeSchema.default("text"),
-  swapProfile: swapProfileSchema.optional(),
   // Face lock toggle under Advanced; see swapRecipeFor. Absent is the same as off.
   swapFaceLock: z.boolean().optional(),
   // Hand mask toggle under Advanced: keeps a hand in front of the face on top of the swap. Absent is the same as off.
@@ -451,8 +417,6 @@ export const LIVE_TUNABLES = {
   SWAP_CHAIN_FROM_REFERENCE: false,
   // h3-max render resolution for every clip backend. 768P rendered in 19 s against 9 s at 480P for a raw ArcFace gain of 0.02, and costs $0.04/s against $0.025/s.
   RENDER_RESOLUTION: "480P" as "480P" | "768P" | "1080P",
-  // Pose bank (see stateFrames): off falls back to chaining every clip from its own last frame.
-  SWAP_STATE_FRAMES: true,
   // Bounds the snapshot; states past this chain as before.
   STATE_FRAMES_MAX: 24,
   // Next idle length = measured idle production time + this headroom, clamped to the clip bounds.
@@ -475,12 +439,6 @@ export const LIVE_TUNABLES = {
   SWAP_MAX_CONCURRENT: 3,
   // Chain clips still play in order (pickNext waits on the head's swap), so two may swap at once; one at a time left a beat 11 to 23 s in the queue behind its reply's 13 s swap and held playback 3.2 s (prod, Face lock on).
   SWAP_CHAIN_MAX_CONCURRENT: 2,
-  // A queued filler whose anchor no longer matches the cursor, the anchor, the chain tail or a queued chain clip can never play; skipping its swap frees the slot for one that can. Prod swapped several such fillers 30 to 50 s after they rendered.
-  SWAP_SKIP_STALE_IDLE_SWAPS: true,
-  // Download each swapped clip as soon as it lands instead of when the player pulls it, so a clip that lands after a boundary plays about a second sooner (prod: 1.3 to 2.3 s from swap landed to on screen).
-  SWAP_PREFETCH_READY_CLIPS: true,
-  // Start a reply's (and the greeting's) full swap from the clip route's render stream instead of after its seed swap, taking that 2 to 4 s off the wait; at most one such early swap runs, outside the pipeline's swap slots.
-  SWAP_EARLY_REPLY_SWAP: true,
   // Swap a reply's (or the greeting's) head and the rest on two containers at once, so it plays once the head lands instead of the whole clip; skipped when no second container is free.
   SWAP_SPLIT_REPLY: true,
   // About 4.2 s at 24 fps: the rest (about 140 frames at 45 ms) lands while the head plays.
@@ -493,8 +451,6 @@ export const LIVE_TUNABLES = {
   SWAP_SPLIT_REST_LEAD_MS: 1000,
   // Timeupdate fires about four times a second, so a deferred cut-in on a looping element needs a wider boundary window than SWAP_LEAD_SEC or the wrap slips past it.
   CUT_IN_LEAD_SEC: 0.35,
-  // Stage an in-scene still (selected room, canon lingerie) from the upload before the greeting; the raw photo's clothes and room otherwise contradict the prompt and the first clip visibly morphs.
-  STAGE_SEED: true,
   STAGE_SEED_BUDGET_MS: 30_000,
   // The greeting's one vision read of its rendered room. Reads that land took about 1 to 1.5 s; in the two latest prod sessions every read ran into the old 6 s budget and the join waited the full 6 s for the preset ROOM text it kept anyway.
   ROOM_CAPTURE_BUDGET_MS: 2_500,
@@ -514,15 +470,6 @@ export const LIVE_TUNABLES = {
   MAX_SESSION_MS: 300_000,
   // Cumulative render spend cap: the pipeline stops dispatching new jobs once reached.
   SESSION_COST_CAP_USD: 10,
-  // Director (minimax/h3-max/director) bills per second of live stream, promo rate; list price is
-  // $0.08/sec. There is also a $1.20 session minimum charge regardless of duration.
-  DIRECTOR_COST_PER_SEC_USD: 0.02,
-  // Lucy (decart/lucy-2-5/realtime) bills per second live; no documented session minimum, unlike director.
-  LUCY_COST_PER_SEC_USD: 0.02,
   // Swap runs on our own Modal L40S at $1.95/hr; charged per clip on the service's reported swap time.
   SWAP_COST_PER_SEC_USD: 1.95 / 3600,
-  // LongLive holds one Modal H100 (about $4/hr) for as long as its socket is open.
-  LONGLIVE_COST_PER_SEC_USD: 4 / 3600,
-  // Face restore holds a second Modal L40S ($1.95/hr) beside it while on.
-  LONGLIVE_FACE_RESTORE_COST_PER_SEC_USD: 1.95 / 3600,
 } as const;

@@ -5,23 +5,11 @@ import {
   clipSwapReportSchema,
   type ClipRequest,
   type ClipResult,
-  type CreatorProfile,
-  type InputChannel,
   personaOptionSchema,
   type PersonaOption,
   type SceneId,
-  type SpeechMode,
-  type SwapProfile,
-  type TranscriptEntry,
 } from "@/lib/live/contract";
 import type { ReferenceUploadResult } from "@/lib/live/client/useLiveSession";
-import type {
-  LongLiveComposeInput,
-  LongLiveComposed,
-  LongLiveObservation,
-  LongLiveObserveInput,
-  LongLiveTicket,
-} from "@/lib/live/client/longliveStream";
 import { z } from "zod";
 
 const readFileAsBase64 = (file: Blob): Promise<string> =>
@@ -159,7 +147,6 @@ export type SwapFrameRange = { startFrame?: number; endFrame?: number };
 export const swapRenderedClip = async (
   result: Pick<ClipResult, "videoUrl" | "jobKind">,
   personaId: string | undefined,
-  swapProfile?: SwapProfile,
   swapFaceLock?: boolean,
   swapHandMask?: boolean,
   range?: SwapFrameRange,
@@ -168,7 +155,6 @@ export const swapRenderedClip = async (
     videoUrl: result.videoUrl,
     personaId,
     jobKind: result.jobKind,
-    swapProfile,
     swapFaceLock,
     swapHandMask,
     ...range,
@@ -188,7 +174,6 @@ export const uploadReference = async (
   file: File,
   sceneId: SceneId,
   stage = true,
-  faceCrop = true,
 ): Promise<ReferenceUploadResult> => {
   // The server only accepts jpeg/png; HEIC and webp are rejected upfront rather than as a 400.
   if (file.type && file.type !== "image/jpeg" && file.type !== "image/png") {
@@ -202,41 +187,7 @@ export const uploadReference = async (
     contentType,
     sceneId,
     stage,
-    faceCrop,
   });
-};
-
-// Mints a short-lived, lucy-app-scoped fal token for the browser's lucy WebRTC session.
-export const fetchLucyToken = async (): Promise<string> => {
-  const { token } = await postJson<{ token: string }>(
-    "/api/live/lucyToken",
-    {},
-  );
-  return token;
-};
-
-// Mints a two-minute ticket for the LongLive socket; the signing secret stays on the server.
-export const fetchLongLiveTicket = async (): Promise<LongLiveTicket> =>
-  postJson<LongLiveTicket>("/api/live/longliveTicket", {});
-
-export const composeLongLivePrompt = async (
-  input: LongLiveComposeInput,
-): Promise<LongLiveComposed> =>
-  postJson<LongLiveComposed>("/api/live/longlivePrompt", input);
-
-// The frame goes up inline, like a reference photo, and is never stored.
-export const observeLongLiveWardrobe = async ({
-  frame,
-  ...input
-}: LongLiveObserveInput): Promise<LongLiveObservation> =>
-  postJson<LongLiveObservation>("/api/live/longliveObserve", {
-    ...input,
-    frameBase64: await readFileAsBase64(frame),
-  });
-
-// Fire-and-forget from the setup screen when LongLive is picked; the model load is the whole cold start.
-export const warmLongLive = async (): Promise<void> => {
-  await postJson<{ warm: boolean }>("/api/live/longliveWarm", {});
 };
 
 const personaListingSchema = z.object({
@@ -246,9 +197,9 @@ const personaListingSchema = z.object({
 
 export type PersonaListing = z.infer<typeof personaListingSchema>;
 
-// LongLive and swap mode keep separate lists: swap mode's comes from the swap app's CPU persona store.
-const listPersonasAt = async (path: string): Promise<PersonaListing> => {
-  const res = await fetch(path);
+// Swap mode's list comes from the swap app's CPU persona store.
+export const fetchSwapPersonas = async (): Promise<PersonaListing> => {
+  const res = await fetch("/api/live/swapPersonas");
   const parsed = personaListingSchema.safeParse(
     await res.json().catch(() => null),
   );
@@ -258,13 +209,8 @@ const listPersonasAt = async (path: string): Promise<PersonaListing> => {
   return parsed.data;
 };
 
-export const fetchPersonas = () => listPersonasAt("/api/live/personas");
-
-export const fetchSwapPersonas = () => listPersonasAt("/api/live/swapPersonas");
-
 // The attestation is required server side; the checkbox only gates the button.
-const registerPersonaAt = async (
-  path: string,
+export const registerSwapPersona = async (
   file: File,
   name: string,
 ): Promise<{ id: PersonaOption["id"]; created: boolean }> => {
@@ -272,19 +218,16 @@ const registerPersonaAt = async (
     throw new Error("Please use a JPEG or PNG photo.");
   }
   const upload = await shrinkForUpload(file);
-  return postJson<{ id: string; created: boolean }>(path, {
-    imageBase64: await readFileAsBase64(upload),
-    contentType: upload.type === "image/png" ? "image/png" : "image/jpeg",
-    name,
-    attested: true,
-  });
+  return postJson<{ id: string; created: boolean }>(
+    "/api/live/swapPersonaRegister",
+    {
+      imageBase64: await readFileAsBase64(upload),
+      contentType: upload.type === "image/png" ? "image/png" : "image/jpeg",
+      name,
+      attested: true,
+    },
+  );
 };
-
-export const registerPersona = (file: File, name: string) =>
-  registerPersonaAt("/api/live/personaRegister", file, name);
-
-export const registerSwapPersona = (file: File, name: string) =>
-  registerPersonaAt("/api/live/swapPersonaRegister", file, name);
 
 // Fire-and-forget at session start in swap mode so the GPU container is loading while the first clip renders.
 export const warmSwap = async (): Promise<void> => {
@@ -302,16 +245,3 @@ export const reportTelemetry = (
     () => undefined,
   );
 };
-
-export const composeDirectorPrompt = async (input: {
-  creator: CreatorProfile;
-  transcript: TranscriptEntry[];
-  world: string;
-  requestText: string;
-  channel: InputChannel;
-  speechMode: SpeechMode;
-}): Promise<{ prompt: string; reply: string }> =>
-  postJson<{ prompt: string; reply: string }>(
-    "/api/live/directorPrompt",
-    input,
-  );

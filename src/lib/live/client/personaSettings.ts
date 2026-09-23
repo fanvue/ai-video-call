@@ -1,13 +1,7 @@
-import {
-  DEFAULT_PERSONA_ID,
-  type PersonaOption,
-  type RenderBackend,
-} from "@/lib/live/contract";
+import { DEFAULT_PERSONA_ID, type PersonaOption } from "@/lib/live/contract";
 
-// LongLive's face lock and swap mode's swap source are separate settings, each with its own list and register state.
-type PersonaMode = "longlive" | "swap";
-
-type PersonaModeState = {
+// Swap mode's swap source: the picked persona, its list and register state.
+type PersonaSettings = {
   // "" is the Off option.
   personaId: string;
   personas: PersonaOption[];
@@ -18,9 +12,7 @@ type PersonaModeState = {
   registerStatus: string | null;
 };
 
-type PersonaSettings = Record<PersonaMode, PersonaModeState>;
-
-const initialModeState = (): PersonaModeState => ({
+export const initialPersonaSettings = (): PersonaSettings => ({
   personaId: DEFAULT_PERSONA_ID,
   personas: [],
   canRegister: false,
@@ -29,31 +21,14 @@ const initialModeState = (): PersonaModeState => ({
   registerStatus: null,
 });
 
-export const initialPersonaSettings = (): PersonaSettings => ({
-  longlive: initialModeState(),
-  swap: initialModeState(),
-});
-
-export const personaModeFor = (backend: RenderBackend): PersonaMode | null =>
-  backend === "longlive" || backend === "swap" ? backend : null;
-
-export const updatePersonaMode = (
-  settings: PersonaSettings,
-  mode: PersonaMode,
-  patch: Partial<PersonaModeState>,
-): PersonaSettings => ({
-  ...settings,
-  [mode]: { ...settings[mode], ...patch },
-});
-
 export const withRegisteredPersona = (
   settings: PersonaSettings,
-  mode: PersonaMode,
   id: string,
   name: string,
 ): PersonaSettings => {
-  const { personas } = settings[mode];
-  return updatePersonaMode(settings, mode, {
+  const { personas } = settings;
+  return {
+    ...settings,
     personas: personas.some((persona) => persona.id === id)
       ? personas
       : [
@@ -69,11 +44,11 @@ export const withRegisteredPersona = (
     // The name field is per-registration; clear it now that this upload is done.
     name: "",
     registerStatus: `Registered as ${name || id}`,
-  });
+  };
 };
 
 // The seed persona stays selectable while a cold listing is still loading.
-export const personaOptionsFor = (state: PersonaModeState): PersonaOption[] =>
+export const personaOptionsFor = (state: PersonaSettings): PersonaOption[] =>
   state.personas.some(({ id }) => id === DEFAULT_PERSONA_ID)
     ? state.personas
     : [
@@ -104,16 +79,8 @@ export const personaOptionLabel = ({
   return stamp ? `${name} · ${stamp}` : name;
 };
 
-// Only the active mode's selection is submitted, under that mode's own key.
+// Off (an empty id) submits no swap source, so clips play unswapped.
 export const submittedPersona = (
   settings: PersonaSettings,
-  backend: RenderBackend,
-): { personaId?: string; swapPersonaId?: string } => {
-  if (backend === "longlive" && settings.longlive.personaId) {
-    return { personaId: settings.longlive.personaId };
-  }
-  if (backend === "swap" && settings.swap.personaId) {
-    return { swapPersonaId: settings.swap.personaId };
-  }
-  return {};
-};
+): { swapPersonaId?: string } =>
+  settings.personaId ? { swapPersonaId: settings.personaId } : {};

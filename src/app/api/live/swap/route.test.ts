@@ -111,7 +111,6 @@ describe("POST /api/live/swap", () => {
         "jobKind",
         "personaId",
         "recipe",
-        "swapModel",
         "videoUrl",
       ].sort(),
     );
@@ -141,16 +140,6 @@ describe("POST /api/live/swap", () => {
     expect(data.videoUrl).toBe(body.videoUrl);
     expect(data.report).toMatchObject({ status: "failed" });
     expect(data.report.reason).toMatch(/No persona selected/);
-  });
-
-  it("maps the session's swap profile to its model and rejects unknown profiles", async () => {
-    vi.mocked(swapClip).mockRejectedValue(new Error("stop"));
-    await POST(jsonBody({ ...body, swapProfile: "ghost_1" }));
-    expect(swapClip).toHaveBeenCalledWith(
-      expect.objectContaining({ swapModel: "ghost_1" }),
-    );
-    const rejected = await POST(jsonBody({ ...body, swapProfile: "simswap" }));
-    expect(rejected.status).toBe(400);
   });
 
   it("maps the Face lock toggle to the longlive recipe, and leaves it unset by default", async () => {

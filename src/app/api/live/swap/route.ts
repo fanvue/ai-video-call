@@ -1,12 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getCurrentUser } from "@/lib/fanvue";
-import {
-  personaIdSchema,
-  swapModelFor,
-  swapProfileSchema,
-  swapRecipeFor,
-} from "@/lib/live/contract";
+import { personaIdSchema, swapRecipeFor } from "@/lib/live/contract";
 import {
   failedSwapReport,
   SWAP_BUDGET_MS,
@@ -33,7 +28,6 @@ const bodySchema = z.object({
   // The swap source; absent, the clip plays unswapped. The upload is never a swap source.
   personaId: personaIdSchema.optional(),
   jobKind: z.enum(["greeting", "idle", "checkIn", "reply", "beat"]),
-  swapProfile: swapProfileSchema.optional(),
   swapFaceLock: z.boolean().optional().default(false),
   swapHandMask: z.boolean().optional().default(false),
   // A split reply's segment, frames [startFrame, endFrame); absent, the whole clip.
@@ -58,7 +52,6 @@ export async function POST(request: Request) {
     videoUrl,
     personaId,
     jobKind,
-    swapProfile,
     swapFaceLock,
     swapHandMask,
     startFrame,
@@ -75,7 +68,6 @@ export async function POST(request: Request) {
           ? swapGreetingBudgetMsFor(recipe, swapHandMask)
           : SWAP_BUDGET_MS,
       jobKind,
-      swapModel: swapModelFor(swapProfile),
       recipe,
       handMask: swapHandMask,
       ...(startFrame !== undefined ? { startFrame } : {}),

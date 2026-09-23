@@ -107,11 +107,7 @@ describe("turboBackend.render", () => {
 });
 
 describe("renderBackendFor", () => {
-  it("routes lucy to the turbo clip backend — lucy only restyles turbo's own output", () => {
-    expect(renderBackendFor("lucy")).toBe(turboBackend);
-  });
-
-  it("routes swap to the turbo clip backend for the same reason", () => {
+  it("routes swap to the turbo clip backend, since swap only post-processes turbo's own output", () => {
     expect(renderBackendFor("swap")).toBe(turboBackend);
     expect(renderBackendFor("swap", { greetingFromReference: false })).toBe(
       turboBackend,
@@ -144,13 +140,5 @@ describe("renderBackendFor", () => {
   it("only the reference backend takes a second identity reference", () => {
     expect(turboBackend.supportsIdentityReference).toBe(false);
     expect(referenceBackend.supportsIdentityReference).toBe(true);
-  });
-
-  it("throws for director — it never reaches the clip pipeline", () => {
-    expect(() => renderBackendFor("director")).toThrow(/live-stream backend/);
-  });
-
-  it("throws for longlive, which streams from its own GPU and renders no clips", () => {
-    expect(() => renderBackendFor("longlive")).toThrow(/live-stream backend/);
   });
 });

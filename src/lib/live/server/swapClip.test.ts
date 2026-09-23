@@ -96,24 +96,6 @@ describe("swapClip", () => {
     expect(outcome.costUsd).toBeCloseTo((12 * 1.95) / 3600, 6);
   });
 
-  it("sends a test profile's swap model to the service", async () => {
-    fetchMock.mockResolvedValueOnce(swapped());
-    uploadToFal
-      .mockResolvedValueOnce("https://fal.test/swap.mp4")
-      .mockResolvedValueOnce("https://fal.test/last.jpg");
-
-    await swapClip({
-      videoUrl: "https://fal.test/turbo.mp4",
-      personaId: "synth-persona-01",
-      swapModel: "hyperswap_1c",
-    });
-
-    const [, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
-    expect(JSON.parse(init.body as string)).toMatchObject({
-      model: "hyperswap_1c",
-    });
-  });
-
   it("sends the Face lock recipe to the service", async () => {
     fetchMock.mockResolvedValueOnce(swapped());
     uploadToFal

@@ -7,34 +7,6 @@ import { defaultCreatorProfile } from "@/lib/live/client/defaultCreatorProfile";
 import { defaultLiveState } from "@/lib/live/client/defaultLiveState";
 import { LiveDirector, type RequestStatus } from "@/lib/live/client/director";
 import {
-  DirectorSession,
-  openRealtimeWithFal,
-  type DirectorMetrics,
-  type DirectorRealtimeState,
-} from "@/lib/live/client/directorStream";
-import {
-  buildLucyPrompt,
-  fetchAsDataUri,
-  LUCY_INPUT,
-  LUCY_MAX_REOPENS,
-  LucySession,
-  openRealtimeWithFalLucy,
-  shouldReopenLucy,
-  type LucyMetrics,
-  type LucyRealtimeState,
-} from "@/lib/live/client/lucyStream";
-import {
-  LongLiveSession,
-  type LongLiveComposeInput,
-  type LongLiveComposed,
-  type LongLiveMetrics,
-  type LongLiveObservation,
-  type LongLiveObserveInput,
-  type LongLiveStreamState,
-  type LongLiveTicket,
-  type WebSocketLike,
-} from "@/lib/live/client/longliveStream";
-import {
   fetchClipSource,
   releaseClipSource,
 } from "@/lib/live/client/clipSource";
@@ -66,14 +38,11 @@ import {
   type ClipRequest,
   type ClipResult,
   type ClipSwapReport,
-  type CreatorProfile,
   type InputChannel,
   type LiveState,
   type RenderBackend,
   type SceneId,
-  type IntentParser,
   type SpeechMode,
-  type SwapProfile,
   type TranscriptEntry,
   type Wardrobe,
 } from "@/lib/live/contract";
@@ -113,17 +82,11 @@ export type StartOptions = {
   displayName: string;
   backend?: RenderBackend;
   speechMode?: SpeechMode;
-  swapProfile?: SwapProfile;
   // Swap mode only: Advanced's Face lock toggle, off by default; see swapRecipeFor.
   swapFaceLock?: boolean;
   // Swap mode only: Advanced's Hand mask toggle, off by default.
   swapHandMask?: boolean;
-  intentParser?: IntentParser;
-  // LongLive only: the server's second-GPU face restore, on unless turned off.
-  faceRestore?: boolean;
-  // LongLive only: a manifest persona id for the face lock.
-  personaId?: string;
-  // Swap mode only: the manifest persona id the swap uses as its source, never an image; set separately from LongLive's.
+  // Swap mode only: the manifest persona id the swap uses as its source, never an image.
   swapPersonaId?: string;
 };
 
@@ -136,37 +99,16 @@ export type UseLiveSessionDeps = {
     file: File,
     sceneId: SceneId,
     stage?: boolean,
-    faceCrop?: boolean,
   ) => Promise<ReferenceUploadResult>;
   upscaleSeed?: (
     frameUrl: string,
   ) => Promise<{ url: string | null; costUsd: number }>;
-  composeDirectorPrompt: (input: {
-    creator: CreatorProfile;
-    transcript: TranscriptEntry[];
-    world: string;
-    requestText: string;
-    channel: InputChannel;
-    speechMode: SpeechMode;
-  }) => Promise<{ prompt: string; reply: string }>;
-  // Lucy mode only (backend === "lucy"); unused otherwise.
-  fetchLucyToken: () => Promise<string>;
-  // LongLive mode only (backend === "longlive"); unused otherwise.
-  fetchLongLiveTicket: () => Promise<LongLiveTicket>;
-  composeLongLivePrompt: (
-    input: LongLiveComposeInput,
-  ) => Promise<LongLiveComposed>;
-  // LongLive mode only; confirms a wardrobe change on a stream frame. Absent, changes are never re-anchored.
-  observeLongLiveWardrobe?: (
-    input: LongLiveObserveInput,
-  ) => Promise<LongLiveObservation>;
   // Swap mode only; starts the GPU container before the first clip needs it.
   warmSwap: () => Promise<void>;
   // Swap mode only: second phase of a clip that came back with swap.status "pending".
   swapRenderedClip?: (
     result: Pick<ClipResult, "videoUrl" | "jobKind">,
     personaId: string | undefined,
-    swapProfile?: SwapProfile,
     swapFaceLock?: boolean,
     swapHandMask?: boolean,
     range?: SwapFrameRange,
@@ -230,12 +172,7 @@ export type QueueStripEntry = {
 
 export type TypingDevice = "laptop" | "phone" | null;
 
-export type SessionEndReason =
-  | "maxDuration"
-  | "costCap"
-  // Director-only: the fal stream ended itself (stream_exhausted / a fatal error message).
-  | "streamEnded"
-  | null;
+export type SessionEndReason = "maxDuration" | "costCap" | null;
 
 const EMPTY_QUEUE_STRIP: {
   current: QueueStripEntry | null;
@@ -287,7 +224,6 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     file: File;
     sceneId: SceneId;
     stage: boolean;
-    faceCrop: boolean;
     promise: Promise<ReferenceUploadResult>;
   } | null>(null);
   const [prepareStatus, setPrepareStatus] = useState<PrepareStatus>("idle");
@@ -342,52 +278,18 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   // viewer requests) without touching the director/pipeline/render engine underneath it.
   const [privateMode, setPrivateModeState] = useState(false);
   const privateModeRef = useRef(false);
-  // Director-only readout for StudioOverlay; null in turbo/reference mode.
-  const [directorMetrics, setDirectorMetrics] =
-    useState<DirectorMetrics | null>(null);
-  const [directorStreamState, setDirectorStreamState] =
-    useState<DirectorRealtimeState | null>(null);
-  // Lucy-only readout for StudioOverlay; null outside lucy mode.
-  const [lucyMetrics, setLucyMetrics] = useState<LucyMetrics | null>(null);
-  const [lucyStreamState, setLucyStreamState] =
-    useState<LucyRealtimeState | null>(null);
-  // LongLive-only readout for StudioOverlay; null outside longlive mode.
-  const [longliveMetrics, setLongliveMetrics] =
-    useState<LongLiveMetrics | null>(null);
-  const [longliveStreamState, setLongliveStreamState] =
-    useState<LongLiveStreamState | null>(null);
 
   const directorRef = useRef<LiveDirector | null>(null);
   const pipelineRef = useRef<ClipPipeline | null>(null);
   const roomRef = useRef<RoomSim | null>(null);
-  // Which engine `send`/`end`/mute-toggle route to for the active session.
-  const modeRef = useRef<"clip" | "director" | "lucy" | "longlive">("clip");
-  const directorSessionRef = useRef<DirectorSession | null>(null);
-  const directorMediaStreamRef = useRef<MediaStream | null>(null);
-  // Desired sound state for the director video element; mirrors `soundOn` in LiveStudio.
-  const directorSoundOnRef = useRef(true);
   const videoARef = useRef<HTMLVideoElement | null>(null);
   const videoBRef = useRef<HTMLVideoElement | null>(null);
-  const lucySessionRef = useRef<LucySession | null>(null);
-  const lucyMediaStreamRef = useRef<MediaStream | null>(null);
-  // Video-only in lucy mode (no audio track on the canvas capture), so nothing to mute per se —
-  // kept for parity with directorSoundOnRef and a possible future audio pass-through.
-  const lucySoundOnRef = useRef(true);
-  // The turbo pipeline's hidden output driving Lucy's restyle; created programmatically (not via JSX) because it must exist and be playing before lucySession.open() runs, which is before "live" mounts LiveStudio's video elements.
-  const lucyHiddenARef = useRef<HTMLVideoElement | null>(null);
-  const lucyHiddenBRef = useRef<HTMLVideoElement | null>(null);
-  const lucyCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const lucyRafRef = useRef<number | null>(null);
-  const lucyStreamCostBaseRef = useRef(0);
-  const longliveSessionRef = useRef<LongLiveSession | null>(null);
-  // Held separately from the session so a canvas that mounts before or after open() is attached either way.
-  const longliveCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const speechModeRef = useRef<SpeechMode>("text");
   const tickIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const greetingPlayedRef = useRef(false);
   // Clip ids whose canon already advanced on clipRendered (two-phase swap), so clipReady does not advance it twice.
   const canonAdvancedRef = useRef(new Set<string>());
-  // Swap mode: downloads started when a clip's swap landed, taken by the player's next preload of that URL (SWAP_PREFETCH_READY_CLIPS). A stable Map, not a ref, because the player's lazy init closes over it.
+  // Swap mode: downloads started when a clip's swap landed, taken by the player's next preload of that URL. A stable Map, not a ref, because the player's lazy init closes over it.
   const [prefetchedSources] = useState(
     () => new Map<string, Promise<string>>(),
   );
@@ -491,11 +393,6 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       return null;
     }
     const result = pipeline.nextClip();
-    if (modeRef.current === "lucy") {
-      console.info(
-        `lucy pipeline: nextClip -> ${result ? `${result.jobKind} ${result.clipId}` : "none"}`,
-      );
-    }
     if (!result) {
       return null;
     }
@@ -908,8 +805,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
 
       const result = event.result;
       clipMetaRef.current.set(result.clipId, result);
+      // Download each swapped clip as soon as it lands instead of when the player pulls it, so a clip that lands after a boundary plays about a second sooner (prod: 1.3 to 2.3 s from swap landed to on screen).
       if (
-        LIVE_TUNABLES.SWAP_PREFETCH_READY_CLIPS &&
         result.swap !== undefined &&
         !prefetchedSources.has(result.videoUrl)
       ) {
@@ -1000,11 +897,6 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         );
       }
       pipelineRef.current?.pollChain();
-      if (modeRef.current === "lucy") {
-        console.info(
-          `lucy pipeline: clipReady ${result.jobKind} lane=${event.lane} playerStatus=${player.getStatus()} hiddenA=${Boolean(lucyHiddenARef.current)}`,
-        );
-      }
       player.checkForClip();
       refreshBufferDepth();
       refreshQueueStrip();
@@ -1023,185 +915,25 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     ],
   );
 
-  // Director mode has no gapless pair to swap: the fal stream's single MediaStream is attached
-  // directly to videoA and left playing; videoB stays unused (hidden by the same CSS as ever).
-  const attachDirectorStream = useCallback(() => {
-    const el = videoARef.current;
-    const stream = directorMediaStreamRef.current;
-    if (!el || !stream) return;
-    if (el.srcObject !== stream) {
-      el.srcObject = stream;
-    }
-    el.muted = !directorSoundOnRef.current;
-    el.play().catch(() => {
-      // Autoplay-with-sound blocked; fall back to muted and ask for the existing tap-to-unmute UI.
-      el.muted = true;
-      setNeedsTap(true);
-      el.play().catch(() => {});
-    });
-  }, []);
-
-  // Lucy mode's visible video shows the restyled stream, same reuse-videoA pattern as director's.
-  const attachLucyStream = useCallback(() => {
-    const el = videoARef.current;
-    const stream = lucyMediaStreamRef.current;
-    if (!el || !stream) {
-      console.info(
-        `lucy attach: skipped (element=${Boolean(el)} stream=${Boolean(stream)})`,
-      );
-      return;
-    }
-    // The player is not driving the visible pair here, so nothing else guarantees A is the one on top.
-    el.style.opacity = "1";
-    if (videoBRef.current) {
-      videoBRef.current.style.opacity = "0";
-    }
-    if (el.srcObject !== stream) {
-      el.srcObject = stream;
-      el.addEventListener(
-        "loadedmetadata",
-        () =>
-          console.info(
-            `lucy attach: metadata ${el.videoWidth}x${el.videoHeight}`,
-          ),
-        { once: true },
-      );
-    }
-    el.muted = !lucySoundOnRef.current;
-    el.play()
-      .then(() => console.info("lucy attach: playing"))
-      .catch((error) => {
-        console.info(`lucy attach: play blocked (${String(error)})`);
-        el.muted = true;
-        setNeedsTap(true);
-        el.play().catch(() => {});
-      });
-  }, []);
-
   const attachVideoElements = useCallback(() => {
-    if (modeRef.current === "director") {
-      attachDirectorStream();
-      return;
-    }
-    if (modeRef.current === "lucy") {
-      // The hidden pipeline pair is attached separately in start(); the visible pair only ever
-      // shows Lucy's own restyled stream here.
-      attachLucyStream();
-      return;
-    }
     const a = videoARef.current;
     const b = videoBRef.current;
     if (a && b) {
       player.attach(a, b);
       player.start();
     }
-  }, [player, attachDirectorStream, attachLucyStream]);
-
-  // Off-DOM hidden video element for the lucy driving pipeline; see lucyHiddenARef.
-  const createHiddenVideoElement = (): HTMLVideoElement => {
-    const el = document.createElement("video");
-    // Clips come from fal.media (CORS *); without this the canvas is tainted and captureStream() sends black frames.
-    el.crossOrigin = "anonymous";
-    el.playsInline = true;
-    el.muted = true;
-    el.setAttribute("aria-hidden", "true");
-    el.style.position = "fixed";
-    el.style.width = "2px";
-    el.style.height = "2px";
-    el.style.opacity = "0";
-    el.style.pointerEvents = "none";
-    document.body.appendChild(el);
-    return el;
-  };
-
-  const teardownLucyPipelineSurface = useCallback(() => {
-    if (lucyRafRef.current !== null) {
-      cancelAnimationFrame(lucyRafRef.current);
-      lucyRafRef.current = null;
-    }
-    lucyHiddenARef.current?.remove();
-    lucyHiddenBRef.current?.remove();
-    lucyHiddenARef.current = null;
-    lucyHiddenBRef.current = null;
-    lucyCanvasRef.current = null;
-  }, []);
-
-  // Draws whichever hidden element the gapless player currently has active into the capture
-  // canvas every frame, so canvas.captureStream() sees a continuous feed across A/B swaps.
-  const startLucyCanvasDrawLoop = useCallback(() => {
-    const canvas = lucyCanvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    let drawnFrames = 0;
-    const startedAt = Date.now();
-    let warnedNoFrames = false;
-    const draw = () => {
-      const active =
-        player.getActiveSlot() === "a"
-          ? lucyHiddenARef.current
-          : lucyHiddenBRef.current;
-      if (active && active.videoWidth > 0 && active.videoHeight > 0) {
-        // Cover-fit into the fixed model-sized canvas; the canvas itself never resizes.
-        const scale = Math.max(
-          canvas.width / active.videoWidth,
-          canvas.height / active.videoHeight,
-        );
-        const drawWidth = active.videoWidth * scale;
-        const drawHeight = active.videoHeight * scale;
-        ctx.drawImage(
-          active,
-          (canvas.width - drawWidth) / 2,
-          (canvas.height - drawHeight) / 2,
-          drawWidth,
-          drawHeight,
-        );
-        drawnFrames += 1;
-        if (drawnFrames === 1) {
-          console.info(
-            `lucy driving: first frame clip ${active.videoWidth}x${active.videoHeight} -> canvas ${canvas.width}x${canvas.height} paused=${active.paused} readyState=${active.readyState}`,
-          );
-        }
-      } else if (
-        !warnedNoFrames &&
-        Date.now() - startedAt > 15_000 &&
-        drawnFrames === 0
-      ) {
-        warnedNoFrames = true;
-        console.warn(
-          `lucy driving: no frames after 15s (slot=${player.getActiveSlot()} src=${Boolean(active?.currentSrc)} readyState=${active?.readyState ?? "none"} error=${active?.error?.message ?? "none"})`,
-        );
-      }
-      lucyRafRef.current = requestAnimationFrame(draw);
-    };
-    lucyRafRef.current = requestAnimationFrame(draw);
   }, [player]);
 
   useEffect(
     () => () => {
       player.dispose();
       pipelineRef.current?.dispose();
-      directorSessionRef.current?.close();
-      lucySessionRef.current?.close();
-      longliveSessionRef.current?.close();
-      teardownLucyPipelineSurface();
       if (tickIntervalRef.current) {
         clearInterval(tickIntervalRef.current);
       }
     },
-    [player, teardownLucyPipelineSurface],
+    [player],
   );
-
-  useEffect(() => {
-    const handleUnload = () => {
-      directorSessionRef.current?.close();
-      lucySessionRef.current?.close();
-      // Closing the socket is what frees the H100; a tab closed mid-stream must not leave it running.
-      longliveSessionRef.current?.close();
-    };
-    window.addEventListener("pagehide", handleUnload);
-    return () => window.removeEventListener("pagehide", handleUnload);
-  }, []);
 
   const bindVideoA = useCallback(
     (el: HTMLVideoElement | null) => {
@@ -1219,11 +951,6 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     [attachVideoElements],
   );
 
-  const bindLongLiveCanvas = useCallback((el: HTMLCanvasElement | null) => {
-    longliveCanvasRef.current = el;
-    longliveSessionRef.current?.attachCanvas(el);
-  }, []);
-
   const snapshotSource = useCallback(() => {
     const director = directorRef.current;
     if (!director) {
@@ -1236,14 +963,13 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   const uploadReference = deps.uploadReference;
   const warmSwap = deps.warmSwap;
   const prepare = useCallback(
-    (file: File, sceneId: SceneId, stage = true, faceCrop = true) => {
+    (file: File, sceneId: SceneId, stage = true) => {
       const current = preparedReferenceRef.current;
       if (
         current &&
         current.file === file &&
         current.sceneId === sceneId &&
-        current.stage === stage &&
-        current.faceCrop === faceCrop
+        current.stage === stage
       ) {
         return;
       }
@@ -1251,8 +977,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       if (!stage) {
         warmSwap().catch(() => undefined);
       }
-      const promise = uploadReference(file, sceneId, stage, faceCrop);
-      const entry = { file, sceneId, stage, faceCrop, promise };
+      const promise = uploadReference(file, sceneId, stage);
+      const entry = { file, sceneId, stage, promise };
       preparedReferenceRef.current = entry;
       setPrepareStatus("staging");
       setPreparedSeedUrl(null);
@@ -1323,16 +1049,14 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       player.reset();
       // Swap mode sets the scene inside its reference-to-video greeting, so it skips the 17 to 35 s still.
       const stage = options.backend !== "swap";
-      const faceCrop = options.backend !== "longlive";
       const prepared = preparedReferenceRef.current;
       const reference =
         prepared &&
         prepared.file === file &&
         prepared.sceneId === sceneId &&
-        prepared.stage === stage &&
-        prepared.faceCrop === faceCrop
+        prepared.stage === stage
           ? await prepared.promise
-          : await deps.uploadReference(file, sceneId, stage, faceCrop);
+          : await deps.uploadReference(file, sceneId, stage);
       preparedReferenceRef.current = null;
       setPrepareStatus("idle");
       setPreparedSeedUrl(null);
@@ -1352,200 +1076,6 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         reference.surroundings,
         reference.framing,
       );
-
-      modeRef.current =
-        options.backend === "director"
-          ? "director"
-          : options.backend === "lucy"
-            ? "lucy"
-            : options.backend === "longlive"
-              ? "longlive"
-              : "clip";
-      if (modeRef.current === "longlive") {
-        applyLiveState(initialLiveState);
-        setTranscript([]);
-        setCostTotal(reference.stageCostUsd);
-        setAnchorChangedAtMs(Date.now());
-        speechModeRef.current = options.speechMode ?? "text";
-        setBackendState("longlive");
-        setSpeechModeState(options.speechMode ?? "text");
-        setQueueStrip(EMPTY_QUEUE_STRIP);
-        setLongliveMetrics(null);
-        setLongliveStreamState("opening");
-        const startedAtMs = Date.now();
-        setSessionStartedAtMs(startedAtMs);
-        setConnectStage("renderingFirstClip");
-
-        const longliveSession = new LongLiveSession({
-          fetchTicket: deps.fetchLongLiveTicket,
-          createWebSocket: (url) => new WebSocket(url) as WebSocketLike,
-          decodeFrame: (jpeg) => createImageBitmap(jpeg),
-          now: () => Date.now(),
-          requestFrame: (callback) => requestAnimationFrame(callback),
-          cancelFrame: (handle) => cancelAnimationFrame(handle),
-          composePrompt: deps.composeLongLivePrompt,
-          captureFrame: (canvas) =>
-            new Promise((resolve) =>
-              canvas.toBlob(resolve, "image/jpeg", 0.85),
-            ),
-          observeWardrobe: deps.observeLongLiveWardrobe,
-          onTranscriptEntry: (entry) =>
-            setTranscript((prev) => [...prev, entry]),
-          onRequestStatus: (requestId, requestStatus) =>
-            setRequestStatusesState((prev) => ({
-              ...prev,
-              [requestId]: requestStatus,
-            })),
-          onLiveState: applyLiveState,
-          onStreamState: (state) => {
-            setLongliveStreamState(state);
-            if (state === "live") {
-              setConnectStage("primingBuffer");
-            }
-          },
-          onFirstFrame: () => {
-            reportTelemetry?.("longliveFirstFrame", {
-              ms: Date.now() - connectStartedAtMsRef.current,
-            });
-            setStatus((current) =>
-              current === "connecting" ? "live" : current,
-            );
-          },
-          onMetrics: (metrics) => {
-            setLongliveMetrics(metrics);
-            setCostTotal(reference.stageCostUsd + metrics.costUsd);
-          },
-          onError: (message) => {
-            setError(message);
-            if (errorTimeoutRef.current) {
-              clearTimeout(errorTimeoutRef.current);
-            }
-            errorTimeoutRef.current = setTimeout(() => setError(null), 6000);
-          },
-          onEnded: (reason) => {
-            // "stopped" is the user's own end(); it already owns the status and needs no banner.
-            if (reason === "stopped") return;
-            setEndReason(
-              reason === "maxDuration" ? "maxDuration" : "streamEnded",
-            );
-            setStatus("ended");
-          },
-          onDiagnostic: (line) => console.info(`longlive transport: ${line}`),
-        });
-        longliveSessionRef.current = longliveSession;
-        longliveSession.attachCanvas(longliveCanvasRef.current);
-        setAcceptingRequests(true);
-
-        // The staged still is already in her scene and wardrobe, so the stream's first frame matches the opening prompt.
-        await longliveSession.open({
-          creator,
-          state: initialLiveState,
-          referenceImageUrl: reference.seedFrameUrl,
-          speechMode: options.speechMode ?? "text",
-          startedAtMs,
-          intentParser: options.intentParser,
-          faceRestore: options.faceRestore,
-          personaId: options.personaId,
-        });
-
-        if (tickIntervalRef.current) {
-          clearInterval(tickIntervalRef.current);
-        }
-        tickIntervalRef.current = setInterval(() => {
-          const metrics = longliveSessionRef.current?.getMetricsWithCost();
-          if (metrics) {
-            setLongliveMetrics(metrics);
-            setCostTotal(reference.stageCostUsd + metrics.costUsd);
-          }
-        }, 1000);
-        return;
-      }
-      if (modeRef.current === "director") {
-        applyLiveState(initialLiveState);
-        setTranscript([]);
-        setCostTotal(0);
-        setAnchorChangedAtMs(Date.now());
-        speechModeRef.current = options.speechMode ?? "text";
-        setBackendState("director");
-        setSpeechModeState(options.speechMode ?? "text");
-        setQueueStrip(EMPTY_QUEUE_STRIP);
-        setDirectorMetrics(null);
-        setDirectorStreamState("opening");
-        directorMediaStreamRef.current = null;
-        directorSoundOnRef.current = true;
-        const startedAtMs = Date.now();
-        setSessionStartedAtMs(startedAtMs);
-        setConnectStage("renderingFirstClip");
-
-        const directorSession = new DirectorSession({
-          openRealtime: () => openRealtimeWithFal(),
-          now: () => Date.now(),
-          composePrompt: deps.composeDirectorPrompt,
-          onTranscriptEntry: (entry) =>
-            setTranscript((prev) => [...prev, entry]),
-          onRequestStatus: (requestId, requestStatus) =>
-            setRequestStatusesState((prev) => ({
-              ...prev,
-              [requestId]: requestStatus,
-            })),
-          onStreamState: (state) => {
-            setDirectorStreamState(state);
-            if (state === "live") {
-              setConnectStage("primingBuffer");
-              setStatus((current) =>
-                current === "connecting" ? "live" : current,
-              );
-            }
-          },
-          onMedia: (stream) => {
-            directorMediaStreamRef.current = stream;
-            attachDirectorStream();
-          },
-          onMetrics: (metrics) => {
-            setDirectorMetrics(metrics);
-            setCostTotal(metrics.costUsd);
-          },
-          onError: (message) => {
-            setError(message);
-            if (errorTimeoutRef.current) {
-              clearTimeout(errorTimeoutRef.current);
-            }
-            errorTimeoutRef.current = setTimeout(() => setError(null), 6000);
-          },
-          onEnded: (reason) => {
-            // "stopped" is the user's own end(); it already owns the status and needs no banner.
-            if (reason === "stopped") return;
-            setEndReason(
-              reason === "maxDuration" ? "maxDuration" : "streamEnded",
-            );
-            setStatus("ended");
-          },
-          onDiagnostic: (line) => console.info(`director transport: ${line}`),
-        });
-        directorSessionRef.current = directorSession;
-
-        await directorSession.open({
-          creator,
-          world: initialLiveState.world,
-          surroundings: initialLiveState.surroundings,
-          wardrobe: initialLiveState.wardrobe,
-          anchorFrameUrl: reference.anchorFrameUrl,
-          speechMode: options.speechMode ?? "text",
-          startedAtMs,
-        });
-
-        if (tickIntervalRef.current) {
-          clearInterval(tickIntervalRef.current);
-        }
-        tickIntervalRef.current = setInterval(() => {
-          const metrics = directorSessionRef.current?.getMetricsWithCost();
-          if (metrics) {
-            setDirectorMetrics(metrics);
-            setCostTotal(metrics.costUsd);
-          }
-        }, 1000);
-        return;
-      }
 
       const director = new LiveDirector({
         creator,
@@ -1581,7 +1111,6 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
             swapRenderedClip(
               clip,
               options.swapPersonaId,
-              options.swapProfile,
               options.swapFaceLock,
               options.swapHandMask,
               range,
@@ -1608,11 +1137,11 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
               : undefined,
           )
         : null;
+      // Start a reply's (and the greeting's) full swap from the clip route's render stream instead of after its seed swap, taking that 2 to 4 s off the wait; at most one such early swap runs, outside the pipeline's swap slots.
       const earlyReplySwaps =
         options.backend === "swap" &&
         earlySwaps !== null &&
-        LIVE_TUNABLES.SWAP_DEFER_CLIP &&
-        LIVE_TUNABLES.SWAP_EARLY_REPLY_SWAP;
+        LIVE_TUNABLES.SWAP_DEFER_CLIP;
       const pipeline = new ClipPipeline({
         render: earlyReplySwaps
           ? (req) => {
@@ -1629,11 +1158,9 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         onEvent: handlePipelineEvent,
         backend: options.backend ?? "turbo",
         speechMode: options.speechMode ?? "text",
-        swapProfile: options.swapProfile,
         swapFaceLock: options.swapFaceLock,
         swapHandMask: options.swapHandMask,
         personaId: options.swapPersonaId,
-        intentParser: options.intentParser,
         abandonDependents: (job) => {
           directorRef.current?.abandonRequest(requestIdForJob(job));
         },
@@ -1653,125 +1180,11 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
             : undefined,
       });
       pipelineRef.current = pipeline;
-      const startPipeline = () => {
-        setConnectStage("renderingFirstClip");
-        pipeline.start(director.nextJob(), snapshotSource, () =>
-          director.nextJob(),
-        );
-        setAcceptingRequests(true);
-      };
-
-      if (modeRef.current === "lucy") {
-        teardownLucyPipelineSurface();
-        lucyHiddenARef.current = createHiddenVideoElement();
-        lucyHiddenBRef.current = createHiddenVideoElement();
-        player.attach(lucyHiddenARef.current, lucyHiddenBRef.current);
-        player.start();
-        const canvas = document.createElement("canvas");
-        canvas.width = LUCY_INPUT.width;
-        canvas.height = LUCY_INPUT.height;
-        lucyCanvasRef.current = canvas;
-        startLucyCanvasDrawLoop();
-        const captureCanvas = canvas as HTMLCanvasElement & {
-          webkitCaptureStream?: (frameRate?: number) => MediaStream;
-        };
-        const drivingStream =
-          captureCanvas.captureStream?.(LUCY_INPUT.fps) ??
-          captureCanvas.webkitCaptureStream?.(LUCY_INPUT.fps) ??
-          new MediaStream();
-
-        setLucyMetrics(null);
-        setLucyStreamState("opening");
-        lucyMediaStreamRef.current = null;
-        lucySoundOnRef.current = true;
-        lucyStreamCostBaseRef.current = 0;
-
-        const lucyInput = {
-          referenceImageUrl: await fetchAsDataUri(reference.anchorFrameUrl),
-          prompt: buildLucyPrompt(creator.lookLock),
-          drivingStream,
-        };
-        let lucyReopens = 0;
-
-        // fal's gateway closes the idle signalling socket cleanly about a minute in (we send no controls after negotiation) and the SDK ends the WebRTC session with it. Reopen the same way Decart's own SDK reconnects; the cost readout keeps counting across sessions via lucyStreamCostBaseRef.
-        const openLucy = (): LucySession => {
-          const lucySession = new LucySession({
-            fetchToken: deps.fetchLucyToken,
-            openRealtime: openRealtimeWithFalLucy,
-            now: () => Date.now(),
-            onStreamState: (state) => {
-              setLucyStreamState(state);
-              if (state === "live") {
-                setConnectStage("primingBuffer");
-                setStatus((current) =>
-                  current === "connecting" ? "live" : current,
-                );
-              }
-            },
-            onMedia: (stream) => {
-              for (const track of stream.getTracks()) {
-                // A remote track that stays muted means Lucy connected but is not sending frames.
-                console.info(
-                  `lucy media: ${track.kind} readyState=${track.readyState} muted=${track.muted}`,
-                );
-                track.addEventListener("unmute", () =>
-                  console.info(
-                    `lucy media: ${track.kind} unmuted, frames flowing`,
-                  ),
-                );
-                track.addEventListener("mute", () =>
-                  console.info(
-                    `lucy media: ${track.kind} muted, frames stopped`,
-                  ),
-                );
-              }
-              lucyMediaStreamRef.current = stream;
-              attachLucyStream();
-            },
-            onDiagnostic: (line) => console.info(`lucy transport: ${line}`),
-            onError: (message) => {
-              setError(message);
-              if (errorTimeoutRef.current) {
-                clearTimeout(errorTimeoutRef.current);
-              }
-              errorTimeoutRef.current = setTimeout(() => setError(null), 6000);
-            },
-            onEnded: (reason) => {
-              if (reason === "stopped") return;
-              if (
-                lucySessionRef.current === lucySession &&
-                shouldReopenLucy(reason, lucyReopens)
-              ) {
-                lucyReopens += 1;
-                console.info(
-                  `lucy reopen: attempt ${lucyReopens}/${LUCY_MAX_REOPENS} after ${reason}`,
-                );
-                lucyStreamCostBaseRef.current = 0;
-                setLucyStreamState("opening");
-                const next = openLucy();
-                lucySessionRef.current = next;
-                // Failures inside open() already flow through this session's onError/onEnded.
-                next.open(lucyInput).catch(() => undefined);
-                return;
-              }
-              setEndReason(
-                reason === "maxDuration" ? "maxDuration" : "streamEnded",
-              );
-              setStatus("ended");
-            },
-          });
-          return lucySession;
-        };
-
-        const lucySession = openLucy();
-        lucySessionRef.current = lucySession;
-
-        // Driving frames must already be flowing when Lucy negotiates, so the turbo pipeline starts first.
-        startPipeline();
-        await lucySession.open(lucyInput);
-      } else {
-        startPipeline();
-      }
+      setConnectStage("renderingFirstClip");
+      pipeline.start(director.nextJob(), snapshotSource, () =>
+        director.nextJob(),
+      );
+      setAcceptingRequests(true);
 
       if (tickIntervalRef.current) {
         clearInterval(tickIntervalRef.current);
@@ -1790,17 +1203,6 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         currentDirector?.tick(Date.now(), { busy: isBusy() });
         pipelineRef.current?.pollChain();
         tickRoom();
-        if (modeRef.current === "lucy") {
-          const metrics = lucySessionRef.current?.getMetricsWithCost();
-          if (metrics) {
-            const delta = metrics.costUsd - lucyStreamCostBaseRef.current;
-            lucyStreamCostBaseRef.current = metrics.costUsd;
-            if (delta > 0) {
-              setCostTotal((total) => total + delta);
-            }
-            setLucyMetrics(metrics);
-          }
-        }
       }, 1000);
     },
     [
@@ -1813,25 +1215,11 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       applyLiveState,
       isBusy,
       tickRoom,
-      attachDirectorStream,
-      attachLucyStream,
-      teardownLucyPipelineSurface,
-      startLucyCanvasDrawLoop,
     ],
   );
 
   const send = useCallback(
     (text: string, channel: InputChannel, paid?: boolean) => {
-      if (modeRef.current === "longlive") {
-        // As in clip mode, paid only marks the fan's line; the ask is understood like any other.
-        longliveSessionRef.current?.request(text, channel, paid);
-        return;
-      }
-      if (modeRef.current === "director") {
-        // Director has no per-request tip/paid handling; the stream is steered by prompt text only.
-        directorSessionRef.current?.request(text, channel);
-        return;
-      }
       const director = directorRef.current;
       const pipeline = pipelineRef.current;
       const trimmed = text.trim();
@@ -1892,21 +1280,9 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     directorRef.current = null;
     pipelineRef.current = null;
     roomRef.current = null;
-    directorSessionRef.current?.close();
-    directorSessionRef.current = null;
-    directorMediaStreamRef.current = null;
-    lucySessionRef.current?.close();
-    lucySessionRef.current = null;
-    lucyMediaStreamRef.current = null;
-    longliveSessionRef.current?.close();
-    longliveSessionRef.current = null;
-    teardownLucyPipelineSurface();
-    if (videoARef.current) {
-      videoARef.current.srcObject = null;
-    }
     setAcceptingRequests(false);
     setStatus("ended");
-  }, [clearPendingReveal, player, teardownLucyPipelineSurface]);
+  }, [clearPendingReveal, player]);
 
   useEffect(() => {
     endRef.current = end;
@@ -1924,41 +1300,11 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   }, []);
 
   const resumeAfterTap = useCallback(() => {
-    if (modeRef.current === "longlive") {
-      // A painted canvas needs no autoplay permission; there is nothing to resume.
-      setNeedsTap(false);
-      return;
-    }
-    if (modeRef.current === "director" || modeRef.current === "lucy") {
-      // The visible element shows a live-stream MediaStream, not a GaplessPlayer clip; tap it directly.
-      const el = videoARef.current;
-      setNeedsTap(false);
-      el?.play().catch(() => {});
-      return;
-    }
     player.resumeAfterTap();
   }, [player]);
 
   const setMuted = useCallback(
     (muted: boolean) => {
-      // LongLive streams video frames only, so there is no sound to mute.
-      if (modeRef.current === "longlive") return;
-      if (modeRef.current === "director") {
-        directorSoundOnRef.current = !muted;
-        if (videoARef.current) {
-          videoARef.current.muted = muted;
-        }
-        return;
-      }
-      if (modeRef.current === "lucy") {
-        // Lucy's output is video-only (canvas.captureStream carries no audio track); tracked for
-        // parity with director and a possible future audio pass-through.
-        lucySoundOnRef.current = !muted;
-        if (videoARef.current) {
-          videoARef.current.muted = muted;
-        }
-        return;
-      }
       player.setMuted(muted);
     },
     [player],
@@ -2011,12 +1357,6 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       offline,
       sessionStartedAtMs,
       privateMode,
-      directorMetrics,
-      directorStreamState,
-      lucyMetrics,
-      lucyStreamState,
-      longliveMetrics,
-      longliveStreamState,
       prepareStatus,
       preparedSeedUrl,
       prepare,
@@ -2056,12 +1396,6 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       offline,
       sessionStartedAtMs,
       privateMode,
-      directorMetrics,
-      directorStreamState,
-      lucyMetrics,
-      lucyStreamState,
-      longliveMetrics,
-      longliveStreamState,
       prepareStatus,
       preparedSeedUrl,
       prepare,
@@ -2079,8 +1413,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
 
   // Separate object: mixing a ref-shaped callback into `session` taints every read of it under react-hooks/refs.
   const videoRefs = useMemo(
-    () => ({ bindVideoA, bindVideoB, bindLongLiveCanvas }),
-    [bindVideoA, bindVideoB, bindLongLiveCanvas],
+    () => ({ bindVideoA, bindVideoB }),
+    [bindVideoA, bindVideoB],
   );
 
   return [session, videoRefs] as const;

@@ -2,22 +2,15 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  INTENT_PARSER_LABELS,
-  SWAP_PROFILES,
-  type IntentParser,
   type PersonaOption,
-  type RenderBackend,
   type SceneId,
   type SpeechMode,
-  type SwapProfile,
 } from "@/lib/live/contract";
 import {
   initialPersonaSettings,
-  personaModeFor,
   personaOptionLabel,
   personaOptionsFor,
   submittedPersona,
-  updatePersonaMode,
   withRegisteredPersona,
 } from "@/lib/live/client/personaSettings";
 import type { PrepareStatus } from "@/lib/live/client/useLiveSession";
@@ -33,14 +26,9 @@ export type SetupSubmit = {
   file: File;
   sceneId: SceneId;
   displayName: string;
-  backend: RenderBackend;
   speechMode: SpeechMode;
-  swapProfile: SwapProfile;
   swapFaceLock: boolean;
   swapHandMask: boolean;
-  intentParser: IntentParser;
-  faceRestore: boolean;
-  personaId?: string;
   swapPersonaId?: string;
 };
 
@@ -52,15 +40,7 @@ type PersonaLoader = () => Promise<{
 type SetupScreenProps = {
   busy: boolean;
   error: string | null;
-  onPrepare?: (
-    file: File,
-    sceneId: SceneId,
-    stage: boolean,
-    faceCrop: boolean,
-  ) => void;
-  onWarmLongLive?: () => void;
-  loadPersonas?: PersonaLoader;
-  onRegisterPersona?: (file: File, name: string) => Promise<{ id: string }>;
+  onPrepare?: (file: File, sceneId: SceneId, stage: boolean) => void;
   // Swap mode's own list and registration, served without a GPU.
   loadSwapPersonas?: PersonaLoader;
   onRegisterSwapPersona?: (file: File, name: string) => Promise<{ id: string }>;
@@ -84,9 +64,6 @@ export const SetupScreen = ({
   busy,
   error,
   onPrepare,
-  onWarmLongLive,
-  loadPersonas,
-  onRegisterPersona,
   loadSwapPersonas,
   onRegisterSwapPersona,
   preparation,
@@ -98,13 +75,9 @@ export const SetupScreen = ({
   const [displayName, setDisplayName] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [voiceExperimental, setVoiceExperimental] = useState(false);
-  // Swap mode is the default: testers rated it the best quality once chain clips seeded from the swapped tail.
-  const [backend, setBackend] = useState<RenderBackend>("swap");
-  const [swapProfile, setSwapProfile] = useState<SwapProfile>("default");
-  const [swapFaceLock, setSwapFaceLock] = useState(false);
+  // On by default: the persona recipe held identity best in testing, for about 2.3x the swap GPU time.
+  const [swapFaceLock, setSwapFaceLock] = useState(true);
   const [swapHandMask, setSwapHandMask] = useState(false);
-  const [intentParser, setIntentParser] = useState<IntentParser>("regex");
-  const [faceRestore, setFaceRestore] = useState(true);
   const [personaSettings, setPersonaSettings] = useState(
     initialPersonaSettings,
   );
@@ -123,65 +96,51 @@ export const SetupScreen = ({
     if (!file || !onPrepare) {
       return;
     }
+    // Swap mode sets the scene inside its greeting, so the reference step skips the staged still.
     const timeoutId = setTimeout(
-      () =>
-        onPrepare(file, sceneId, backend !== "swap", backend !== "longlive"),
+      () => onPrepare(file, sceneId, false),
       PREPARE_DEBOUNCE_MS,
     );
     return () => clearTimeout(timeoutId);
-  }, [file, sceneId, backend, onPrepare]);
+  }, [file, sceneId, onPrepare]);
 
   useEffect(() => {
-    if (backend === "longlive") {
-      onWarmLongLive?.();
-    }
-  }, [backend, onWarmLongLive]);
-
-  const personaMode = personaModeFor(backend);
-  const loadModePersonas =
-    personaMode === "swap" ? loadSwapPersonas : loadPersonas;
-  const registerModePersona =
-    personaMode === "swap" ? onRegisterSwapPersona : onRegisterPersona;
-  const modeSettings = personaMode ? personaSettings[personaMode] : null;
-
-  useEffect(() => {
-    if (!personaMode || !loadModePersonas) {
+    if (!loadSwapPersonas) {
       return;
     }
     let cancelled = false;
-    loadModePersonas()
+    loadSwapPersonas()
       .then(({ personas, canRegister }) => {
         if (cancelled) return;
-        setPersonaSettings((current) =>
-          updatePersonaMode(current, personaMode, { personas, canRegister }),
-        );
+        setPersonaSettings((current) => ({
+          ...current,
+          personas,
+          canRegister,
+        }));
       })
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [personaMode, loadModePersonas]);
+  }, [loadSwapPersonas]);
 
-  const registeredName = modeSettings?.name.trim() ?? "";
+  const registeredName = personaSettings.name.trim();
   const registerUpload = () => {
     if (
       !file ||
-      !personaMode ||
-      !modeSettings?.attested ||
+      !personaSettings.attested ||
       !registeredName ||
-      !registerModePersona
+      !onRegisterSwapPersona
     ) {
       return;
     }
     const setStatus = (registerStatus: string) =>
-      setPersonaSettings((current) =>
-        updatePersonaMode(current, personaMode, { registerStatus }),
-      );
+      setPersonaSettings((current) => ({ ...current, registerStatus }));
     setStatus("Registering…");
-    registerModePersona(file, registeredName)
+    onRegisterSwapPersona(file, registeredName)
       .then(({ id }) =>
         setPersonaSettings((current) =>
-          withRegisteredPersona(current, personaMode, id, registeredName),
+          withRegisteredPersona(current, id, registeredName),
         ),
       )
       .catch((e: unknown) =>
@@ -296,185 +255,73 @@ export const SetupScreen = ({
               />
               Voice (experimental)
             </label>
-            <div
-              role="radiogroup"
-              aria-label="Render model"
-              className="flex flex-col gap-2"
-            >
-              {(
-                [
-                  { value: "turbo", label: "Turbo" },
-                  { value: "reference", label: "Reference" },
-                  {
-                    value: "director",
-                    label: "Director (SFW only, live stream, alpha)",
-                  },
-                  {
-                    value: "lucy",
-                    label: "Lucy (SFW only, identity lock over Turbo, alpha)",
-                  },
-                  {
-                    value: "swap",
-                    label:
-                      "Swap (recommended: identity lock per clip over Turbo)",
-                  },
-                  {
-                    value: "longlive",
-                    label: "LongLive (realtime, open model)",
-                  },
-                ] as const
-              ).map((option) => (
-                <label
-                  key={option.value}
-                  className="flex items-center gap-2 text-xs text-[var(--muted)]"
-                >
-                  <input
-                    type="radio"
-                    name="renderBackend"
-                    value={option.value}
-                    checked={backend === option.value}
-                    onChange={() => setBackend(option.value)}
-                  />
-                  {option.label}
-                </label>
-              ))}
-            </div>
-            {backend === "lucy" ? (
-              <p className="text-xs text-[var(--muted)]">
-                Turbo clips restyled live onto the reference photo; strongest
-                face consistency, adds $0.02/s. Decart closes the stream on
-                explicit content.
-              </p>
-            ) : null}
-            {backend === "swap" ? (
-              <p className="text-xs text-[var(--muted)]">
-                Each Turbo clip gets the reference face swapped in and restored
-                on our own GPU before it plays (about $1.95/hr of GPU time, a
-                cent or two per clip). Adds about 5s per clip; the swapped last
-                frame seeds the next clip so identity re-locks every clip.
-              </p>
-            ) : null}
-            <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
-              Request understanding
-              <select
-                value={intentParser}
-                onChange={(event) =>
-                  setIntentParser(event.target.value as IntentParser)
-                }
-                className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] p-2 text-[var(--foreground)]"
-              >
-                {(Object.keys(INTENT_PARSER_LABELS) as IntentParser[]).map(
-                  (id) => (
-                    <option key={id} value={id}>
-                      {INTENT_PARSER_LABELS[id]}
-                    </option>
-                  ),
-                )}
-              </select>
-            </label>
-            {backend === "swap" ? (
-              <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
-                Swap profile (test configs)
-                <select
-                  value={swapProfile}
-                  onChange={(event) =>
-                    setSwapProfile(event.target.value as SwapProfile)
-                  }
-                  className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] p-2 text-[var(--foreground)]"
-                >
-                  {(Object.keys(SWAP_PROFILES) as SwapProfile[]).map((id) => (
-                    <option key={id} value={id}>
-                      {SWAP_PROFILES[id].label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-            {backend === "swap" ? (
-              <div className="flex flex-col gap-1">
-                <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
-                  <input
-                    type="checkbox"
-                    checked={swapFaceLock}
-                    onChange={(event) => setSwapFaceLock(event.target.checked)}
-                  />
-                  Face lock
-                </label>
-                <p className="text-xs text-[var(--muted)]">
-                  Persona swap plus GFPGAN face restore, as in LongLive; about
-                  2.3x the swap GPU time
-                </p>
-              </div>
-            ) : null}
-            {backend === "swap" ? (
-              <div className="flex flex-col gap-1">
-                <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
-                  <input
-                    type="checkbox"
-                    checked={swapHandMask}
-                    onChange={(event) => setSwapHandMask(event.target.checked)}
-                  />
-                  Hand mask
-                </label>
-                <p className="text-xs text-[var(--muted)]">
-                  Keeps hands in front of the face crisp, but swaps run slower
-                </p>
-              </div>
-            ) : null}
-            {backend === "director" ? (
-              <p className="text-xs text-[var(--muted)]">
-                fal&apos;s content policy rejects explicit requests; they show
-                as failed asks.
-              </p>
-            ) : null}
-            {backend === "longlive" ? (
+            <p className="text-xs text-[var(--muted)]">
+              Each Turbo clip gets the persona face swapped in on our own GPU
+              before it plays, under a cent a clip. A 10 s reply&apos;s first 4
+              s shows about 3.5 s after it renders (4.5 s with Face lock) while
+              the rest swaps alongside; the swapped last frame seeds the next
+              clip so identity re-locks every clip.
+            </p>
+            <div className="flex flex-col gap-1">
               <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
                 <input
                   type="checkbox"
-                  checked={faceRestore}
-                  onChange={(event) => setFaceRestore(event.target.checked)}
+                  checked={swapFaceLock}
+                  onChange={(event) => setSwapFaceLock(event.target.checked)}
                 />
-                Face restore (LongLive)
+                Face lock
               </label>
-            ) : null}
-            {personaMode && modeSettings ? (
-              <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
-                {personaMode === "swap"
-                  ? "Persona face lock (swap mode)"
-                  : "Persona face lock"}
-                <select
-                  value={modeSettings.personaId}
-                  onChange={(event) =>
-                    setPersonaSettings((current) =>
-                      updatePersonaMode(current, personaMode, {
-                        personaId: event.target.value,
-                      }),
-                    )
-                  }
-                  className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] p-2 text-[var(--foreground)]"
-                >
-                  <option value="">Off</option>
-                  {personaOptionsFor(modeSettings).map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {personaOptionLabel(option)}
-                    </option>
-                  ))}
-                </select>
+              <p className="text-xs text-[var(--muted)]">
+                Persona swap plus GFPGAN face restore, as in LongLive; about
+                2.3x the swap GPU time
+              </p>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
+                <input
+                  type="checkbox"
+                  checked={swapHandMask}
+                  onChange={(event) => setSwapHandMask(event.target.checked)}
+                />
+                Hand mask
               </label>
-            ) : null}
-            {personaMode && modeSettings?.canRegister && registerModePersona ? (
+              <p className="text-xs text-[var(--muted)]">
+                Keeps hands in front of the face crisp, but swaps run slower
+              </p>
+            </div>
+            <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
+              Persona
+              <select
+                value={personaSettings.personaId}
+                onChange={(event) =>
+                  setPersonaSettings((current) => ({
+                    ...current,
+                    personaId: event.target.value,
+                  }))
+                }
+                className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] p-2 text-[var(--foreground)]"
+              >
+                <option value="">Off</option>
+                {personaOptionsFor(personaSettings).map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {personaOptionLabel(option)}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {personaSettings.canRegister && onRegisterSwapPersona ? (
               <div className="flex flex-col gap-2 text-xs text-[var(--muted)]">
                 <label className="flex flex-col gap-1">
                   Name
                   <input
                     type="text"
-                    value={modeSettings.name}
+                    value={personaSettings.name}
                     onChange={(event) =>
-                      setPersonaSettings((current) =>
-                        updatePersonaMode(current, personaMode, {
-                          name: event.target.value,
-                        }),
-                      )
+                      setPersonaSettings((current) => ({
+                        ...current,
+                        name: event.target.value,
+                      }))
                     }
                     maxLength={40}
                     placeholder="So testers can tell faces apart"
@@ -484,36 +331,30 @@ export const SetupScreen = ({
                 <label className="flex items-center gap-2">
                   <input
                     type="checkbox"
-                    checked={modeSettings.attested}
+                    checked={personaSettings.attested}
                     onChange={(event) =>
-                      setPersonaSettings((current) =>
-                        updatePersonaMode(current, personaMode, {
-                          attested: event.target.checked,
-                        }),
-                      )
+                      setPersonaSettings((current) => ({
+                        ...current,
+                        attested: event.target.checked,
+                      }))
                     }
                   />
                   This is a Fanvue-owned AI creator likeness, not a real person
                 </label>
                 <button
                   type="button"
-                  disabled={!file || !modeSettings.attested || !registeredName}
+                  disabled={
+                    !file || !personaSettings.attested || !registeredName
+                  }
                   onClick={registerUpload}
                   className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] p-2 text-[var(--foreground)] disabled:text-[var(--muted)]"
                 >
                   Register this photo as a persona
                 </button>
-                {modeSettings.registerStatus ? (
-                  <p>{modeSettings.registerStatus}</p>
+                {personaSettings.registerStatus ? (
+                  <p>{personaSettings.registerStatus}</p>
                 ) : null}
               </div>
-            ) : null}
-            {backend === "longlive" ? (
-              <p className="text-xs text-[var(--muted)]">
-                One uncut stream from our own H100, about $4/hr, plus about
-                $2/hr for face restore or the persona face lock on a second GPU;
-                first frame about 10 s after a cold start.
-              </p>
             ) : null}
           </div>
         ) : null}
@@ -530,14 +371,10 @@ export const SetupScreen = ({
             file,
             sceneId,
             displayName: displayName.trim(),
-            backend,
             speechMode: voiceExperimental ? "native" : "text",
-            swapProfile,
             swapFaceLock,
             swapHandMask,
-            intentParser,
-            faceRestore,
-            ...submittedPersona(personaSettings, backend),
+            ...submittedPersona(personaSettings),
           });
         }}
         className={

@@ -10,9 +10,7 @@ import {
   type LiveSessionSnapshot,
   type LiveState,
   type RenderBackend,
-  type IntentParser,
   type SpeechMode,
-  type SwapProfile,
 } from "@/lib/live/contract";
 
 export type PipelineEvent =
@@ -38,11 +36,9 @@ export type ClipPipelineOptions = {
   onEvent: (event: PipelineEvent) => void;
   backend?: RenderBackend;
   speechMode?: SpeechMode;
-  swapProfile?: SwapProfile;
   swapFaceLock?: boolean;
   swapHandMask?: boolean;
   personaId?: string;
-  intentParser?: IntentParser;
   // Called with a chain job that failed past retry, so the caller (director) can drop only that
   // request's own queued follow-ups instead of the whole queue.
   abandonDependents?: (job: ClipJob) => void;
@@ -120,11 +116,9 @@ export class ClipPipeline {
   private readonly finalizeSwap?: ClipPipelineOptions["finalizeSwap"];
   private backend: RenderBackend;
   private speechMode: SpeechMode;
-  private readonly swapProfile?: SwapProfile;
   private readonly swapFaceLock?: boolean;
   private readonly swapHandMask?: boolean;
   private readonly personaId?: string;
-  private readonly intentParser?: IntentParser;
 
   private getSnapshot: SnapshotSource | null = null;
   private getNextJob: (() => ClipJob) | null = null;
@@ -200,11 +194,9 @@ export class ClipPipeline {
     this.finalizeSwap = options.finalizeSwap;
     this.backend = options.backend ?? "turbo";
     this.speechMode = options.speechMode ?? "text";
-    this.swapProfile = options.swapProfile;
     this.swapFaceLock = options.swapFaceLock;
     this.swapHandMask = options.swapHandMask;
     this.personaId = options.personaId;
-    this.intentParser = options.intentParser;
   }
 
   setBackend(backend: RenderBackend): void {
@@ -327,9 +319,8 @@ export class ClipPipeline {
   // Swaps run at most SWAP_MAX_CONCURRENT at a time (one per GPU; a third request queued inside Modal and stretched a reply's swap to 12 s). One slot is always kept for the chain so a reply never waits behind fillers; chain clips play in order, so chain swaps also run one at a time.
   private dispatchSwaps(): void {
     const max = LIVE_TUNABLES.SWAP_MAX_CONCURRENT;
-    if (LIVE_TUNABLES.SWAP_SKIP_STALE_IDLE_SWAPS) {
-      this.skipStaleIdleSwaps();
-    }
+    // A queued filler whose anchor no longer matches the cursor, the anchor, the chain tail or a queued chain clip can never play; skipping its swap frees the slot for one that can. Prod swapped several such fillers 30 to 50 s after they rendered.
+    this.skipStaleIdleSwaps();
     for (;;) {
       const chainIndex = this.queuedSwaps.findIndex(
         (q) => q.lane === "chained",
@@ -872,11 +863,9 @@ export class ClipPipeline {
       job,
       backend: this.backend,
       speechMode: this.speechMode,
-      swapProfile: this.swapProfile,
       swapFaceLock: this.swapFaceLock,
       swapHandMask: this.swapHandMask,
       personaId: this.personaId,
-      intentParser: this.intentParser,
       useIdentityReference,
     };
     this.chainInflight = { job };
@@ -1075,7 +1064,6 @@ export class ClipPipeline {
       // Idle is never committed as canon or reused as a seed, so use the faster turbo backend; swap mode keeps swap, or the filler (most of what plays) would show the unswapped face.
       backend: this.backend === "swap" ? "swap" : "turbo",
       speechMode: this.speechMode,
-      swapProfile: this.swapProfile,
       swapFaceLock: this.swapFaceLock,
       swapHandMask: this.swapHandMask,
       personaId: this.personaId,

@@ -6,7 +6,6 @@ import {
 import {
   LIVE_TUNABLES,
   stateFrameKey,
-  swapModelFor,
   swapRecipeFor,
   type ClipRequest,
   type ClipResult,
@@ -311,7 +310,6 @@ export const generateClip = async (
   // Pose bank: a chain clip landing in a state seen before ends on that state's first clean frame and seeds from it, so the session seed stops accumulating one generation of drift per act.
   const bankedEndFrameUrl =
     backend === "swap" &&
-    LIVE_TUNABLES.SWAP_STATE_FRAMES &&
     !LIVE_TUNABLES.VERIFY_FRAMES &&
     !keepsSessionSeed &&
     videoBackend.supportsEndFrame
@@ -397,7 +395,6 @@ export const generateClip = async (
             ? swapGreetingBudgetMsFor(recipe, request.swapHandMask)
             : SWAP_BUDGET_MS,
         jobKind: job.kind,
-        swapModel: swapModelFor(request.swapProfile),
         recipe,
         handMask: request.swapHandMask,
       });

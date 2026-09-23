@@ -4,11 +4,7 @@ import { uploadReferenceImageToFal } from "@/lib/fal/uploadImage";
 import { getCurrentUser } from "@/lib/fanvue";
 import { createGroqVisionCompletion, stripThinkBlock } from "@/lib/groq";
 import { SURROUNDINGS_BY_SCENE } from "@/lib/live/client/defaultLiveState";
-import {
-  LIVE_TUNABLES,
-  sceneIdSchema,
-  type Wardrobe,
-} from "@/lib/live/contract";
+import { sceneIdSchema, type Wardrobe } from "@/lib/live/contract";
 import { STAGE_ROOM_BY_SCENE } from "@/lib/live/server/sceneRooms";
 import { stageSeed } from "@/lib/live/server/stageSeed";
 import { swapServiceFaceCrop } from "@/lib/live/server/swapClip";
@@ -122,8 +118,9 @@ export async function POST(request: Request) {
   ]);
   const lookLock =
     capture?.lookLock?.slice(0, 600) || "an adult woman with a natural build";
+  // Stage an in-scene still (selected room, canon lingerie) from the upload before the greeting; the raw photo's clothes and room otherwise contradict the prompt and the first clip visibly morphs.
   const staged =
-    LIVE_TUNABLES.STAGE_SEED && sceneId && parsed.data.stage !== false
+    sceneId && parsed.data.stage !== false
       ? await stageSeed({
           referenceUrl: anchorFrameUrl,
           sceneId,

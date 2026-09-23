@@ -92,7 +92,6 @@ export const swapClip = async ({
   personaId,
   budgetMs = SWAP_BUDGET_MS,
   jobKind = "unknown",
-  swapModel,
   recipe,
   handMask,
   startFrame,
@@ -103,7 +102,6 @@ export const swapClip = async ({
   personaId: string | undefined;
   budgetMs?: number;
   jobKind?: string;
-  swapModel?: string;
   recipe?: SwapRecipe;
   // Hand mask under Advanced; off leaves the service's own OCCLUSION_MASK default.
   handMask?: boolean;
@@ -121,7 +119,6 @@ export const swapClip = async ({
   const body = JSON.stringify({
     video_url: videoUrl,
     persona_id: personaId,
-    ...(swapModel ? { model: swapModel } : {}),
     ...(recipe ? { recipe } : {}),
     ...(handMask ? { occlusion_mask: true } : {}),
     ...(startFrame !== undefined ? { start_frame: startFrame } : {}),

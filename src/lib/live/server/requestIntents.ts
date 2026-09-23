@@ -1,4 +1,4 @@
-// The one request-understanding step both clip mode and LongLive run, so the Advanced "Request understanding" setting means the same in each.
+// The one request-understanding step for clip mode. Setup no longer picks a parser, so requests use the "regex" default.
 import type { BeatIntent, IntentParser, LiveState } from "../contract";
 import { parseIntentsWithLlm } from "./parseIntents";
 import {

@@ -2,21 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  composeDirectorPrompt,
-  composeLongLivePrompt,
-  fetchLongLiveTicket,
-  fetchPersonas,
   fetchSwapPersonas,
-  fetchLucyToken,
-  observeLongLiveWardrobe,
-  registerPersona,
   registerSwapPersona,
   renderClip,
   reportTelemetry,
   swapRenderedClip,
   uploadReference,
   upscaleSeed,
-  warmLongLive,
   warmSwap,
 } from "@/lib/live/client/api";
 import {
@@ -83,16 +75,11 @@ export const LiveStudio = () => {
     renderClip,
     uploadReference,
     upscaleSeed,
-    composeDirectorPrompt,
-    fetchLucyToken,
-    fetchLongLiveTicket,
-    composeLongLivePrompt,
-    observeLongLiveWardrobe,
     warmSwap,
     swapRenderedClip,
     reportTelemetry,
   });
-  const { bindVideoA, bindVideoB, bindLongLiveCanvas } = videoRefs;
+  const { bindVideoA, bindVideoB } = videoRefs;
 
   const processedTipEventIdsRef = useRef<Set<string>>(new Set());
   const privateMeterIntervalRef = useRef<ReturnType<typeof setInterval> | null>(
@@ -174,16 +161,6 @@ export const LiveStudio = () => {
     voice.start();
   }, [voice]);
 
-  // One wake per page load: the container stays warm for its scaledown window, and re-picking the mode must not stack probes.
-  const longLiveWarmedRef = useRef(false);
-  const warmLongLiveOnce = useCallback(() => {
-    if (longLiveWarmedRef.current) {
-      return;
-    }
-    longLiveWarmedRef.current = true;
-    warmLongLive().catch(() => undefined);
-  }, []);
-
   const handleSubmitSetup = useCallback(
     (values: SetupSubmit) => {
       setStarting(true);
@@ -192,14 +169,10 @@ export const LiveStudio = () => {
       session
         .start(values.file, values.sceneId, {
           displayName: values.displayName || "Her",
-          backend: values.backend,
+          backend: "swap",
           speechMode: values.speechMode,
-          swapProfile: values.swapProfile,
           swapFaceLock: values.swapFaceLock,
           swapHandMask: values.swapHandMask,
-          intentParser: values.intentParser,
-          faceRestore: values.faceRestore,
-          personaId: values.personaId,
           swapPersonaId: values.swapPersonaId,
         })
         .then(() => {
@@ -250,8 +223,6 @@ export const LiveStudio = () => {
       setStartError("Session ended: spending cap reached ($8.00).");
     } else if (session.endReason === "maxDuration") {
       setStartError("Session ended: max session length reached.");
-    } else if (session.endReason === "streamEnded") {
-      setStartError("Session ended: the live stream ended.");
     }
   }, [voice, stopPrivateMeter, session.endReason]);
 
@@ -324,9 +295,6 @@ export const LiveStudio = () => {
         busy={starting}
         error={startError}
         onPrepare={session.prepare}
-        onWarmLongLive={warmLongLiveOnce}
-        loadPersonas={fetchPersonas}
-        onRegisterPersona={registerPersona}
         loadSwapPersonas={fetchSwapPersonas}
         onRegisterSwapPersona={registerSwapPersona}
         preparation={{
@@ -373,15 +341,6 @@ export const LiveStudio = () => {
           disablePictureInPicture
           className="absolute inset-0 h-full w-full object-cover transition-[opacity,filter] duration-150"
         />
-        {session.backend === "longlive" ? (
-          // Paints the LongLive stream frame by frame over the unused video pair.
-          <canvas
-            ref={bindLongLiveCanvas}
-            aria-hidden="true"
-            className="absolute inset-0 h-full w-full bg-black object-cover"
-          />
-        ) : null}
-
         <div className="absolute inset-x-0 top-0 bg-gradient-to-b from-black/70 to-transparent">
           <TopBar
             displayName={displayName}
@@ -446,12 +405,6 @@ export const LiveStudio = () => {
               lastTimings={session.lastTimings}
               renderStats={session.renderStats}
               nowMs={now}
-              directorMetrics={session.directorMetrics}
-              directorStreamState={session.directorStreamState}
-              lucyMetrics={session.lucyMetrics}
-              lucyStreamState={session.lucyStreamState}
-              longliveMetrics={session.longliveMetrics}
-              longliveStreamState={session.longliveStreamState}
             />
           </div>
         ) : null}
@@ -462,11 +415,6 @@ export const LiveStudio = () => {
             stage={session.connectStage}
             viewerCount={session.viewerCount}
             posterUrl={session.posterUrl}
-            renderingLabel={
-              session.backend === "longlive"
-                ? "Starting the GPU, up to 4 minutes when cold"
-                : undefined
-            }
           />
         ) : null}
 
