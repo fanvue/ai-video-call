@@ -39,13 +39,18 @@ class FakeEngine:
         self.occluder = occluder
         self.occlusion_calls = []
         self.gfpgan_calls = []
+        self.spread_calls = []
 
     def occlusion_mask(self, frame, matrix, size):
         self.occlusion_calls.append(size)
         return np.zeros((size, size), np.float32)
 
-    def gfpgan_face(self, frame, face, visible=None, visible_matrix=None):
+    def gfpgan_face(self, frame, face, visible=None, visible_matrix=None, blend=None):
         self.gfpgan_calls.append(visible)
+        return frame
+
+    def spread_lock(self, frame, face, ref_spread, visible=None, visible_matrix=None):
+        self.spread_calls.append(visible)
         return frame
 
 
@@ -133,6 +138,12 @@ class SwapFrameOcclusionTest(unittest.TestCase):
         engine, _, _ = self.run_swap(True, occluder=object(), recipe="longlive")
         self.assertEqual(len(engine.gfpgan_calls), 1)
         self.assertEqual(engine.gfpgan_calls[0].shape, (128, 128))
+
+    # Face lock now runs "real": its spread lock gets the same mask, so a hand keeps its own tone.
+    def test_real_hands_the_same_mask_to_the_spread_lock(self):
+        engine, _, _ = self.run_swap(True, occluder=object(), recipe="real")
+        self.assertEqual(len(engine.spread_calls), 1)
+        self.assertEqual(engine.spread_calls[0].shape, (128, 128))
 
     # The Hand mask toggle: a request's flag wins over the module default in both directions.
     def test_request_flag_overrides_the_default(self):

@@ -66,7 +66,8 @@ RESTORE_FRAMES = False
 # Off: it forced the upload's lighting onto every scene, so the face read as a lighter pasted mask against the neck. The drift it was added for came from seeding the chain with swapped frames, fixed at the source in generateClip.
 COLOR_LOCK_BLEND = 0.0
 # "longlive" is LongLive's persona recipe: part of the generated eyes and mouth kept through the swap, no colour match, GFPGAN 1.4 over the face. "legacy" is the Reinhard-matched swap with no per-frame restore.
-FACE_RECIPES = ("legacy", "longlive")
+# "real" is longlive with GFPGAN at REAL_GFPGAN_BLEND and the face's LAB spread pulled toward the reference photo's (spread_lock).
+FACE_RECIPES = ("legacy", "longlive", "real")
 # Legacy stays default: on 3 turbo clips (A10G, synth-persona-01) longlive lost ArcFace 0.910 -> 0.878 and frame stability 0.985 -> 0.982, left neck tone flat, and cost 45 vs 14 ms/frame.
 FACE_RECIPE = "legacy"
 # Same public facefusion-assets export LongLive's face GPU runs.
@@ -74,6 +75,12 @@ GFPGAN_URL = "https://github.com/facefusion/facefusion-assets/releases/download/
 GFPGAN_SIZE = 512
 # LongLive's SWAP_RESTORE_BLEND: full strength reads waxy.
 GFPGAN_BLEND = 0.6
+# fix-swapreal bake-off (6-clip synth-persona-01 turbo chain, A10G): 0.35 + spread lock vs longlive's 0.6 took ArcFace 0.849 -> 0.860, skin high-pass vs the reference 2.50x -> 1.70x, depth-6 face contrast 1.18x -> 1.08x, +0.3 ms/frame. Face Laplacian 58 -> 37, so it reads softer.
+REAL_GFPGAN_BLEND = 0.35
+# Share of the spread-matched face kept; the face's own LAB mean stays, so lighting still matches the neck (COLOR_LOCK's full match read as a pasted mask).
+SPREAD_LOCK_BLEND = 0.6
+# Face lock ("longlive" from the client) runs the "real" recipe; False puts Face lock back on LongLive's recipe.
+FACE_LOCK_REAL = True
 # LongLive's MOTION_KEEP: the full swap damped blinks and speech in its face A/B.
 MOTION_KEEP = 0.35
 # FaceFusion's xseg_1 occluder (DeepFaceLab XSeg, GPL-3.0, research-only like inswapper): a visible-face mask, so a hand or hair in front of the face stays on top of the swap.
@@ -276,7 +283,7 @@ class SwapEngine:
         return self.occluder is not None
 
     def has_recipe(self, recipe: str) -> bool:
-        return recipe == "legacy" or (recipe == "longlive" and self.gfpgan is not None)
+        return recipe == "legacy" or (recipe in ("longlive", "real") and self.gfpgan is not None)
 
     def onnx_swapper(self, model: str) -> dict[str, Any]:
         import numpy as np
@@ -410,6 +417,7 @@ class SwapEngine:
 
     def source_face_from_image(self, image):
         faces = self.identity.get(image)
+        detected = image
         if not faces:
             # The detector misses a face that fills the whole photo; give it some border to work with.
             import cv2
@@ -419,11 +427,61 @@ class SwapEngine:
                 image, height // 2, height // 2, width // 2, width // 2, cv2.BORDER_REPLICATE
             )
             faces = self.identity.get(padded)
+            detected = padded
         if len(faces) != 1:
             raise ValueError(f"reference must contain exactly one face, found {len(faces)}")
         face = faces[0]
         face.ref_lab = self.face_lab_stats(image, face)
+        # The landmarks may be on the padded copy, so the spread comes from the image they belong to.
+        face.ref_spread = self.face_core_stats(detected, face)
         return face
+
+    # LAB mean/std of the brows-to-chin core of the aligned 256 crop; the full face ellipse reaches hair and background on that crop.
+    def face_core_stats(self, frame, face):
+        import cv2
+        import numpy as np
+
+        matrix, _ = cv2.estimateAffinePartial2D(face.kps.astype(np.float32), self.template, method=cv2.LMEDS)
+        if matrix is None:
+            return None
+        crop = cv2.warpAffine(frame, matrix, (RESTORE_SIZE, RESTORE_SIZE), borderMode=cv2.BORDER_REPLICATE)
+        mean, std = cv2.meanStdDev(cv2.cvtColor(crop, cv2.COLOR_BGR2LAB), mask=face_core_mask(RESTORE_SIZE))
+        return mean.reshape(3).astype(np.float32), std.reshape(3).astype(np.float32)
+
+    # The chain's makeup drift is contrast and saturation the render adds; scale the face's LAB spread toward the reference's around its own mean, SPREAD_LOCK_BLEND of it under the face ellipse.
+    def spread_lock(self, frame, face, ref_spread, visible=None, visible_matrix=None):
+        import cv2
+        import numpy as np
+
+        if ref_spread is None:
+            return frame
+        stats = self.face_core_stats(frame, face)
+        if stats is None:
+            return frame
+        mean, std = stats
+        scale = np.where(std < 1e-3, 1.0, ref_spread[1] / np.maximum(std, 1e-3)).astype(np.float32)
+        matrix, _ = cv2.estimateAffinePartial2D(face.kps.astype(np.float32), self.template, method=cv2.LMEDS)
+        mask = face_ellipse_mask(RESTORE_SIZE)
+        # Same as gfpgan_face: a hand the occluder cut out keeps its own tone.
+        if visible is not None:
+            mask = mask * cv2.warpAffine(visible, chain_affine(matrix, visible_matrix), (RESTORE_SIZE, RESTORE_SIZE), borderValue=1.0)
+        # Per pixel on the frame's face box, not a pasted crop: face_tone_lock found the warp round trip softens the face.
+        inverse = cv2.invertAffineTransform(matrix)
+        height, width = frame.shape[:2]
+        corners = np.array([[0, 0, 1], [RESTORE_SIZE, 0, 1], [0, RESTORE_SIZE, 1], [RESTORE_SIZE, RESTORE_SIZE, 1]], np.float32) @ inverse.T
+        x0, y0 = max(0, int(np.floor(corners[:, 0].min()))), max(0, int(np.floor(corners[:, 1].min())))
+        x1, y1 = min(width, int(np.ceil(corners[:, 0].max())) + 1), min(height, int(np.ceil(corners[:, 1].max())) + 1)
+        if x1 <= x0 or y1 <= y0:
+            return frame
+        shifted = inverse.copy()
+        shifted[:, 2] -= (x0, y0)
+        alpha = (cv2.warpAffine(mask, shifted, (x1 - x0, y1 - y0)) * SPREAD_LOCK_BLEND)[:, :, None]
+        region = frame[y0:y1, x0:x1]
+        lab = cv2.cvtColor(region, cv2.COLOR_BGR2LAB).astype(np.float32)
+        locked = cv2.cvtColor(np.clip((lab - mean) * scale + mean, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR)
+        out = frame.copy()
+        out[y0:y1, x0:x1] = (locked.astype(np.float32) * alpha + region.astype(np.float32) * (1.0 - alpha)).astype(np.uint8)
+        return out
 
     # LAB mean/std of the reference photo's own aligned face crop, so every later frame can be pulled back toward it.
     def face_lab_stats(self, frame, face):
@@ -523,7 +581,7 @@ class SwapEngine:
         return paste_patch(frame, blended, matrix)
 
     # LongLive's face GPU pass: GFPGAN 1.4 on the aligned 512 FFHQ crop, GFPGAN_BLEND of it over the swapped face, pasted under the feathered ellipse.
-    def gfpgan_face(self, frame, face, visible=None, visible_matrix=None):
+    def gfpgan_face(self, frame, face, visible=None, visible_matrix=None, blend: float = GFPGAN_BLEND):
         import cv2
         import numpy as np
 
@@ -534,7 +592,7 @@ class SwapEngine:
         tensor = (crop[:, :, ::-1].astype(np.float32) / 127.5 - 1.0).transpose(2, 0, 1)[None]
         output = self.gfpgan.run(None, {self.gfpgan_input: np.ascontiguousarray(tensor)})[0][0]
         restored = np.clip((output.transpose(1, 2, 0) + 1.0) * 127.5, 0, 255)[:, :, ::-1].astype(np.uint8)
-        blended = cv2.addWeighted(restored, GFPGAN_BLEND, crop, 1.0 - GFPGAN_BLEND, 0)
+        blended = cv2.addWeighted(restored, blend, crop, 1.0 - blend, 0)
         # The occluder ran on the swap crop; carry its mask into this crop so GFPGAN does not repaint the hand the swap left alone.
         if visible is not None:
             visible = cv2.warpAffine(visible, chain_affine(matrix, visible_matrix), (GFPGAN_SIZE, GFPGAN_SIZE), borderValue=1.0)
@@ -684,6 +742,7 @@ class SwapEngine:
         import cv2
 
         masked = occlusion_on(occlusion) and self.occluder is not None
+        recipe = effective_recipe(recipe)
         out = frame
         for face in faces:
             started = time.perf_counter()
@@ -697,7 +756,7 @@ class SwapEngine:
                 patch, matrix = swapper.get(out, face, source_face, paste_back=False)
             size = patch.shape[0]
             original = cv2.warpAffine(frame, matrix, (size, size), borderMode=cv2.BORDER_REPLICATE)
-            if recipe == "longlive":
+            if recipe in ("longlive", "real"):
                 # The motion mask sits on ArcFace-128 eye and mouth positions; GHOST's 112 template puts them a few pixels off, still inside the soft ellipses.
                 patch = keep_motion(patch, original, MOTION_KEEP)
             else:
@@ -707,6 +766,9 @@ class SwapEngine:
             swapped_at = time.perf_counter()
             if recipe == "longlive":
                 out = self.gfpgan_face(out, face, visible, matrix)
+            elif recipe == "real":
+                out = self.gfpgan_face(out, face, visible, matrix, blend=REAL_GFPGAN_BLEND)
+                out = self.spread_lock(out, face, getattr(source_face, "ref_spread", None), visible, matrix)
             elif restore and self.restorer is not None:
                 out = self.restore_face(out, face, source_face)
             if timings is not None:
@@ -862,7 +924,7 @@ class SwapEngine:
             ms_per_frame=round(swap_ms / frames, 1),
             similarity_before=self.similarity(last_frame, source_face),
             similarity_after=self.similarity(last_swapped, source_face),
-            restored=recipe == "longlive" or (restore and self.restorer is not None),
+            restored=effective_recipe(recipe) in ("longlive", "real") or (restore and self.restorer is not None),
             detect_ms=int(timings["detect"] * 1000),
             swap_stage_ms=int(timings["swap"] * 1000),
             restore_ms=int(timings["restore"] * 1000),
@@ -870,7 +932,7 @@ class SwapEngine:
             enhance_ms=enhance_ms,
             sharpness_before=sharpness_before,
             sharpness_after=sharpness_after,
-            recipe=recipe,
+            recipe=effective_recipe(recipe),
             occlusion_mask=occlusion_on(occlusion_mask) and self.occluder is not None,
         )
         return stats, self.encode_png(seed_frame)
@@ -966,6 +1028,22 @@ def face_ellipse_mask(size: int):
     mask[:, :inset] = 0.0
     mask[:, -inset:] = 0.0
     mask = cv2.GaussianBlur(mask, (0, 0), feather / 3)
+    mask.setflags(write=False)
+    return mask
+
+
+def effective_recipe(recipe: str) -> str:
+    return "real" if recipe == "longlive" and FACE_LOCK_REAL else recipe
+
+
+# Brows-to-chin ellipse of an FFHQ-aligned crop, as a uint8 mask for cv2.meanStdDev.
+@lru_cache(maxsize=4)
+def face_core_mask(size: int):
+    import cv2
+    import numpy as np
+
+    mask = np.zeros((size, size), np.uint8)
+    cv2.ellipse(mask, (int(0.5 * size), int(0.56 * size)), (int(0.30 * size), int(0.36 * size)), 0, 0, 360, 1, -1)
     mask.setflags(write=False)
     return mask
 

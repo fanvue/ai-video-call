@@ -32,6 +32,15 @@ Swap mode's persona list and registration are served by `PersonaStore` in `modal
 
 Legacy stays the default. The longlive recipe's LongLive gains came from a stream with no colour match and a weaker raw face; on turbo clips it gives up identity, leaves neck tone unchanged and triples the per-frame cost (GFPGAN is ~21 of ~45 ms). The crop sheets show slightly smoother skin and no visible seam difference.
 
+`real` (2026-09-24) is `longlive` with GFPGAN at 0.35 and a spread lock: the face's LAB std is pulled 60% toward the persona photo's around the face's own mean, so contrast and saturation stop compounding while lighting still matches the neck. With `FACE_LOCK_REAL` on (the default) a Face lock request (`recipe: "longlive"`) runs it; stats report `recipe: "real"`. Same 6-clip synth-persona-01 turbo chain, each clip swapped independently, A10G:
+
+| recipe | ArcFace mean / min | skin high-pass vs reference | face contrast vs reference, depth 6 | face Laplacian | ms/frame |
+| ------ | ------------------ | --------------------------- | ----------------------------------- | -------------- | -------- |
+| longlive | 0.849 / 0.679    | 2.50x                       | 1.18x                               | 58             | 35.1     |
+| real   | **0.860 / 0.695**  | **1.70x**                   | **1.08x**                           | 37             | 34.4     |
+
+CodeFormer (w 0.7, fp16, +21 ms), GPEN-BFR-512 (+77 ms), texture re-injection, a multi-still identity and HyperSwap 1a/1b/1c all lost on ArcFace, the texture score or speed. `real` reads softer; set `FACE_LOCK_REAL = False` to put Face lock back on LongLive's recipe.
+
 ## fal (target host)
 
 ### Deploy (a human runs this, no login automation)
