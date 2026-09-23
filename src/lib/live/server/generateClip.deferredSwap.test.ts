@@ -447,8 +447,13 @@ describe("intent parser", () => {
 
   beforeEach(() => parseIntentsWithLlm.mockReset());
 
-  it("never calls the LLM on the default regex parser", async () => {
+  it("defaults to hybrid, so an ask the catalogue cannot place reaches the LLM", async () => {
     await reply("brush ur hair");
+    expect(parseIntentsWithLlm).toHaveBeenCalledTimes(1);
+  });
+
+  it("never calls the LLM on the regex parser", async () => {
+    await reply("brush ur hair", "regex");
     expect(parseIntentsWithLlm).not.toHaveBeenCalled();
   });
 

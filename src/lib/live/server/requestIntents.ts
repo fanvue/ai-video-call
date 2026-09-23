@@ -1,4 +1,4 @@
-// The one request-understanding step for clip mode. Setup no longer picks a parser, so requests use the "regex" default.
+// The one request-understanding step for clip mode. Setup no longer picks a parser, so requests use the "hybrid" default: the LLM only reads what the regex catalogue could not place.
 import type { BeatIntent, IntentParser, LiveState } from "../contract";
 import { parseIntentsWithLlm } from "./parseIntents";
 import {
@@ -27,7 +27,7 @@ const withinBudget = <T>(promise: Promise<T>): Promise<T | null> => {
 export const llmIntentsFor = async (
   text: string,
   state: LiveState,
-  parser: IntentParser = "regex",
+  parser: IntentParser = "hybrid",
 ): Promise<BeatIntent[] | undefined> => {
   if (parser === "regex") return undefined;
   if (
@@ -50,7 +50,7 @@ export const llmIntentsFor = async (
 export const requestIntentsFor = async (
   text: string,
   state: LiveState,
-  parser: IntentParser = "regex",
+  parser: IntentParser = "hybrid",
 ): Promise<BeatIntent[]> => {
   const parsed = await llmIntentsFor(text, state, parser);
   return parsed && parsed.length > 0
