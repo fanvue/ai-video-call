@@ -26,6 +26,7 @@ from protocol import (
     parse_client_message,
     verify_ticket,
 )
+from restore_stage import MAX_INFLIGHT, RestoreStage, RestoreTicket
 
 app = modal.App("ai-video-longlive")
 weights = modal.Volume.from_name("longlive-weights")
@@ -36,6 +37,8 @@ START_TIMEOUT_S = 20
 MAX_CLIENT_LAG_S = 10
 # Generation runs at most this far ahead of the client's playhead, so a prompt shows within about one block plus this.
 LEAD_S = 1.0
+# Cheapest measured GPU with margin: a 32-frame block restores in about 0.6 s on L40S against 1.33 s at 24 fps (A10G 1.1 s, L4 1.6 s).
+RESTORE_GPU = "L40S"
 # Smoke-test only: data: URIs skip the host allowlist, so it stays off unless set at deploy time.
 ALLOW_DATA_URI = os.environ.get("LONGLIVE_ALLOW_DATA_URI") == "1"
 
@@ -69,7 +72,23 @@ image = (
             "LONGLIVE_LORA_ALPHA": os.environ.get("LONGLIVE_LORA_ALPHA", ""),
         }
     )
-    .add_local_python_source("engine", "protocol")
+    .add_local_python_source("engine", "protocol", "restore_stage")
+)
+
+# Same first layers as the LongLive image so they come from cache; torch is only there for the CUDA/cuDNN libs onnxruntime-gpu loads.
+restore_image = (
+    modal.Image.debian_slim(python_version="3.10")
+    .apt_install("git", "ffmpeg", "libgl1", "libglib2.0-0")
+    .pip_install("torch==2.8.0", "torchvision==0.23.0", index_url="https://download.pytorch.org/whl/cu128")
+    .apt_install("build-essential", "wget")
+    .pip_install("Cython", "insightface==0.7.3", "onnxruntime-gpu==1.22.0", "opencv-python-headless", "numpy<2.3")
+    # Public facefusion-assets GFPGAN 1.4 export and insightface's SCRFD detector, baked in so a cold start downloads nothing.
+    .run_commands(
+        "mkdir -p /models",
+        "wget -q -O /models/gfpgan_1.4.onnx https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/gfpgan_1.4.onnx",
+        "python -c \"from insightface.utils.storage import ensure_available; ensure_available('models', 'buffalo_l', root='/models/insightface')\"",
+    )
+    .add_local_python_source("face_restore", "protocol", "restore_stage")
 )
 
 
@@ -94,8 +113,16 @@ async def fetch_reference_image(url: str) -> bytes:
 class StreamRun:
     """One session: a GPU thread generates blocks, the event loop sends frames and reads client messages."""
 
-    def __init__(self, engine, websocket, start: StartMessage, loop: asyncio.AbstractEventLoop):
+    def __init__(
+        self,
+        engine,
+        websocket,
+        start: StartMessage,
+        loop: asyncio.AbstractEventLoop,
+        restore: RestoreStage | None = None,
+    ):
         self.engine = engine
+        self.restore = restore
         self.websocket = websocket
         self.start = start
         self.loop = loop
@@ -109,6 +136,8 @@ class StreamRun:
         self.stop_reason: tuple[int, str] | None = None
         self.first_frame_at: float | None = None
         self.period_s = 0.0
+        # Time a block spends in the restore round trip after decode; generation leads by it too, so the client buffer keeps its depth.
+        self.restore_lag_s = 0.0
 
     def _emit(self, item) -> None:
         self.loop.call_soon_threadsafe(self.outbox.put_nowait, item)
@@ -145,7 +174,7 @@ class StreamRun:
                     break
                 if self.first_frame_at is not None:
                     # A block takes up to two pipeline periods to reach the client (diffuse, then decode), so start it that early plus LEAD_S.
-                    lead_frames = (LEAD_S + 2 * self.period_s) * start.fps
+                    lead_frames = (LEAD_S + 2 * self.period_s + self.restore_lag_s) * start.fps
                     played = (time.monotonic() - self.first_frame_at) * start.fps
                     ahead = scheduled - played
                     if ahead > lead_frames:
@@ -177,11 +206,18 @@ class StreamRun:
             self.stop_event.set()
             if decoder is not None:
                 decoder.join()
+            if self.restore is not None:
+                self.restore.close()
             engine.stop()
             self._finish(1000, "stopped")
 
     def _decode_loop(self, handoff: queue.Queue) -> None:
-        fps = self.start.fps
+        # Restore runs as its own ordered stage, so a block's round trip overlaps the next block's decode.
+        ordered: queue.Queue = queue.Queue(maxsize=MAX_INFLIGHT)
+        emitter = None
+        if self.restore is not None:
+            emitter = threading.Thread(target=self._emit_loop, args=(ordered,), daemon=True)
+            emitter.start()
         try:
             while not self.stop_event.is_set():
                 try:
@@ -189,36 +225,82 @@ class StreamRun:
                 except queue.Empty:
                     continue
                 result = self.engine.decode_block(block)
-                with self.queued_lock:
-                    self.queued_frames += len(result.jpegs)
-                    queued = self.queued_frames
-                if queued > MAX_CLIENT_LAG_S * fps:
-                    self._emit_text({"type": "error", "message": "client fell too far behind"})
-                    self._finish(1011, "client lag")
-                    return
-                for offset, jpeg in enumerate(result.jpegs):
-                    self._emit(("frame", pack_frame(result.first_frame_index + offset, jpeg)))
-                if self.first_frame_at is None:
-                    self.first_frame_at = time.monotonic()
-                # Diffusion and decode overlap, so the slower stage sets the sustainable rate.
-                period_ms = max(result.recache_ms + result.diffusion_ms, result.decode_ms + result.encode_ms)
-                self.period_s = period_ms / 1000
-                self._emit_text(
-                    {
-                        "type": "stats",
-                        "genFps": round(len(result.jpegs) / self.period_s, 2),
-                        "blockMs": round(period_ms),
-                        "decodeMs": round(result.decode_ms),
-                        "queueFrames": queued,
-                        "diffusionMs": round(result.diffusion_ms),
-                        "recacheMs": round(result.recache_ms),
-                        "encodeMs": round(result.encode_ms),
-                    }
-                )
+                if self.restore is None:
+                    if not self._publish(result, result.jpegs):
+                        return
+                    continue
+                ticket = self.restore.submit(result.jpegs)
+                while not self.stop_event.is_set():
+                    try:
+                        ordered.put((result, ticket), timeout=0.5)
+                        break
+                    except queue.Full:
+                        continue
         except Exception as error:  # noqa: BLE001 - same contract as the diffusion thread: report, then close.
             print(f"[longlive] decode failed: {error!r}", flush=True)
             self._emit_text({"type": "error", "message": "generation failed"})
             self._finish(1011, "decode failed")
+        finally:
+            if emitter is not None:
+                emitter.join()
+
+    def _emit_loop(self, ordered: queue.Queue) -> None:
+        try:
+            while not self.stop_event.is_set():
+                try:
+                    result, ticket = ordered.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                if not self._publish(result, None, ticket):
+                    return
+        except Exception as error:  # noqa: BLE001 - same contract as the diffusion thread: report, then close.
+            print(f"[longlive] emit failed: {error!r}", flush=True)
+            self._emit_text({"type": "error", "message": "generation failed"})
+            self._finish(1011, "emit failed")
+
+    def _publish(self, result, jpegs: list[bytes] | None, ticket: RestoreTicket | None = None) -> bool:
+        """Sends one block's frames and stats in order; False once the session has to close."""
+        fps = self.start.fps
+        restore_stats: dict = {}
+        if ticket is not None:
+            outcome = self.restore.collect(ticket)
+            jpegs = outcome.jpegs
+            self.restore_lag_s = time.monotonic() - ticket.submitted_at
+            restore_stats = {
+                "restored": outcome.restored,
+                "restoreMs": None if outcome.round_trip_ms is None else round(outcome.round_trip_ms),
+                "restoreLagMs": round(self.restore_lag_s * 1000),
+                "restoreFailOpen": self.restore.fail_open,
+                "restoreOff": self.restore.tripped,
+            }
+        with self.queued_lock:
+            self.queued_frames += len(jpegs)
+            queued = self.queued_frames
+        if queued > MAX_CLIENT_LAG_S * fps:
+            self._emit_text({"type": "error", "message": "client fell too far behind"})
+            self._finish(1011, "client lag")
+            return False
+        for offset, jpeg in enumerate(jpegs):
+            self._emit(("frame", pack_frame(result.first_frame_index + offset, jpeg)))
+        if self.first_frame_at is None:
+            self.first_frame_at = time.monotonic()
+        # Diffusion and decode overlap, so the slower stage sets the sustainable rate.
+        period_ms = max(result.recache_ms + result.diffusion_ms, result.decode_ms + result.encode_ms)
+        self.period_s = period_ms / 1000
+        self._emit_text(
+            {
+                "type": "stats",
+                "genFps": round(len(jpegs) / self.period_s, 2),
+                "blockMs": round(period_ms),
+                "decodeMs": round(result.decode_ms),
+                "queueFrames": queued,
+                "diffusionMs": round(result.diffusion_ms),
+                "recacheMs": round(result.recache_ms),
+                "encodeMs": round(result.encode_ms),
+                **restore_stats,
+            }
+        )
+        return True
 
     async def send_loop(self) -> None:
         while True:
@@ -257,7 +339,17 @@ class StreamRun:
             self._finish(error.code, error.message)
 
 
-def build_api(engine, session_lock: asyncio.Lock):
+def _warm_in_background(restorer) -> None:
+    def run() -> None:
+        try:
+            restorer.warm()
+        except Exception as error:  # noqa: BLE001 - a failed early warm only means the session warms it again.
+            print(f"[longlive] face restore early warm failed: {error!r}", flush=True)
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def build_api(engine, session_lock: asyncio.Lock, restorer=None):
     from fastapi import FastAPI, WebSocket
     from starlette.websockets import WebSocketDisconnect
 
@@ -265,6 +357,9 @@ def build_api(engine, session_lock: asyncio.Lock):
 
     @api.get("/health")
     async def health() -> dict:
+        # The setup screen probes this when LongLive is picked, so the restore GPU boots while the viewer is still choosing.
+        if restorer is not None and not session_lock.locked():
+            _warm_in_background(restorer)
         return {"status": "ok", "busy": session_lock.locked(), "loadMs": round(engine.load_ms)}
 
     @api.websocket("/ws")
@@ -303,7 +398,9 @@ def build_api(engine, session_lock: asyncio.Lock):
                 await websocket.close(code=CLOSE_BAD_REQUEST)
                 return
 
-            run = StreamRun(engine, websocket, first, asyncio.get_running_loop())
+            # Warm-up starts here so the restore GPU boots in parallel with the model's first block; frames go out unrestored until it answers.
+            restore = RestoreStage(restorer.restore_block, restorer.warm) if restorer is not None and first.face_restore else None
+            run = StreamRun(engine, websocket, first, asyncio.get_running_loop(), restore)
             receiver = asyncio.create_task(run.receive_loop())
             generator = asyncio.create_task(asyncio.to_thread(run.generate, reference))
             try:
@@ -322,6 +419,63 @@ def build_api(engine, session_lock: asyncio.Lock):
                     pass
 
     return api
+
+
+@app.cls(
+    image=restore_image,
+    gpu=RESTORE_GPU,
+    cpu=4,
+    memory=8192,
+    # Follows the session to zero: nothing stays up between calls, and a short idle window stops a second GPU billing on its own.
+    max_containers=1,
+    min_containers=0,
+    scaledown_window=120,
+    timeout=120,
+)
+# Two blocks in flight plus warm-up pings; ORT sessions are thread-safe, so concurrent inputs share one loaded model.
+@modal.concurrent(max_inputs=MAX_INFLIGHT + 2)
+class FaceRestore:
+    @modal.enter()
+    def load(self) -> None:
+        import torch  # noqa: F401 - loads the CUDA/cuDNN libs onnxruntime-gpu links against
+
+        import onnxruntime as ort
+
+        ort.preload_dlls()
+        from face_restore import FaceRestorer
+
+        started = time.perf_counter()
+        self.restorer = FaceRestorer()
+        # One GFPGAN and one detector pass, so first-call cuDNN costs never land on a live block.
+        import numpy as np
+
+        self.restorer.gfp.run(None, {self.restorer.gfp_input: np.zeros((1, 3, 512, 512), np.float32)})
+        self.restorer.det.get(np.full((832, 480, 3), 128, np.uint8))
+        print(f"[restore] loaded in {time.perf_counter() - started:.1f}s", flush=True)
+
+    @modal.method()
+    def warm(self) -> bool:
+        return True
+
+    @modal.method()
+    def restore(self, jpegs: list[bytes]) -> list[bytes | None]:
+        started = time.perf_counter()
+        out = self.restorer.restore_block(jpegs)
+        print(f"[restore] {len(jpegs)} frames in {(time.perf_counter() - started) * 1000:.0f} ms, {sum(o is None for o in out)} without a face", flush=True)
+        return out
+
+
+class RemoteRestorer:
+    """The LongLive container's handle on FaceRestore; blocking calls, made from the restore stage's threads."""
+
+    def __init__(self):
+        self.service = FaceRestore()
+
+    def warm(self) -> bool:
+        return self.service.warm.remote()
+
+    def restore_block(self, jpegs: list[bytes]) -> list[bytes | None]:
+        return self.service.restore.remote(jpegs)
 
 
 @app.cls(
@@ -353,4 +507,4 @@ class LongLiveService:
 
     @modal.asgi_app()
     def serve(self):
-        return build_api(self.engine, self.session_lock)
+        return build_api(self.engine, self.session_lock, RemoteRestorer())

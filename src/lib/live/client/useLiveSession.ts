@@ -105,6 +105,8 @@ export type StartOptions = {
   speechMode?: SpeechMode;
   swapProfile?: SwapProfile;
   intentParser?: IntentParser;
+  // LongLive only: the server's second-GPU face restore, on unless turned off.
+  faceRestore?: boolean;
 };
 
 export type UseLiveSessionDeps = {
@@ -1320,6 +1322,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
           speechMode: options.speechMode ?? "text",
           startedAtMs,
           intentParser: options.intentParser,
+          faceRestore: options.faceRestore,
         });
 
         if (tickIntervalRef.current) {

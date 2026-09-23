@@ -43,6 +43,8 @@ class StartMessage:
     width: int
     height: int
     fps: int
+    # Cosmetic second-GPU GFPGAN pass; on unless the client opts out.
+    face_restore: bool = True
 
 
 @dataclass(frozen=True)
@@ -179,8 +181,16 @@ def parse_client_message(
         fps = message.get("fps", 16)
         if isinstance(fps, bool) or not isinstance(fps, int) or not MIN_FPS <= fps <= MAX_FPS:
             raise ProtocolError(CLOSE_BAD_REQUEST, f"fps must be an integer in {MIN_FPS}..{MAX_FPS}")
+        face_restore = message.get("faceRestore", True)
+        if not isinstance(face_restore, bool):
+            raise ProtocolError(CLOSE_BAD_REQUEST, "faceRestore must be a boolean")
         return StartMessage(
-            reference_image_url=url, prompt=_prompt_text(message.get("prompt")), width=width, height=height, fps=fps
+            reference_image_url=url,
+            prompt=_prompt_text(message.get("prompt")),
+            width=width,
+            height=height,
+            fps=fps,
+            face_restore=face_restore,
         )
     raise ProtocolError(CLOSE_BAD_REQUEST, "unknown message type")
 

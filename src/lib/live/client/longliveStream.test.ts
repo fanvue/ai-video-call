@@ -323,9 +323,28 @@ describe("LongLiveSession", () => {
         width: 480,
         height: 832,
         fps: 24,
+        faceRestore: true,
       },
     ]);
     expect(t.deps.onStreamState).toHaveBeenCalledWith("live");
+  });
+
+  it("carries a face restore opt-out in the start message", async () => {
+    const t = setup();
+    const opened = t.session.open({
+      creator,
+      state: liveState,
+      referenceImageUrl: "https://v3.fal.media/files/ref.jpg",
+      speechMode: "text",
+      startedAtMs: 0,
+      faceRestore: false,
+    });
+    await flush();
+    const socket = t.sockets[0] as FakeSocket;
+    socket.serverOpen();
+    socket.serverText({ type: "ready", width: 480, height: 832, fps: 16 });
+    await opened;
+    expect(socket.sent[0]).toMatchObject({ type: "start", faceRestore: false });
   });
 
   it("decodes binary frames and paints them onto the canvas at the stream fps", async () => {
@@ -550,9 +569,28 @@ describe("LongLiveSession", () => {
     expect(t.sockets).toHaveLength(1);
   });
 
-  it("bills live time at the H100 rate", async () => {
+  it("bills live time at the H100 rate plus the face restore GPU", async () => {
     const t = setup();
     await t.openSession();
+    t.advance(3_600_000);
+    expect(t.session.getMetricsWithCost().costUsd).toBeCloseTo(5.95, 5);
+  });
+
+  it("bills only the H100 with face restore off", async () => {
+    const t = setup();
+    const opened = t.session.open({
+      creator,
+      state: liveState,
+      referenceImageUrl: "https://v3.fal.media/files/ref.jpg",
+      speechMode: "text",
+      startedAtMs: 0,
+      faceRestore: false,
+    });
+    await flush();
+    const socket = t.sockets[0] as FakeSocket;
+    socket.serverOpen();
+    socket.serverText({ type: "ready", width: 480, height: 832, fps: 16 });
+    await opened;
     t.advance(3_600_000);
     expect(t.session.getMetricsWithCost().costUsd).toBeCloseTo(4, 5);
   });

@@ -82,6 +82,23 @@ class FakeEngine:
         self.stopped.set()
 
 
+class FakeRestorer:
+    def __init__(self, fail: bool = False):
+        self.fail = fail
+        self.calls = 0
+        self.warms = 0
+
+    def warm(self):
+        self.warms += 1
+        return True
+
+    def restore_block(self, jpegs):
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("restore GPU down")
+        return [b"\xff\xd8restored" for _ in jpegs]
+
+
 def png_data_uri() -> str:
     import base64
 
@@ -189,6 +206,57 @@ class ServiceTest(unittest.TestCase):
             ws.receive_text()
             ws.send_text(json.dumps({"type": "reanchor"}))
             self.assertEqual(self.close_code(ws), 4400)
+
+    def stream_with_restorer(self, restorer, frame_target, **start):
+        client = TestClient(modal_app.build_api(self.engine, asyncio.Lock(), restorer))
+        self.engine.block_s = 0.1
+        frames, texts = [], []
+        with client.websocket_connect(f"/ws?ticket={self.ticket()}") as ws:
+            ws.send_text(self.start_message(**start))
+            ws.receive_text()
+            while len(frames) < frame_target:
+                message = ws.receive()
+                if message.get("bytes") is not None:
+                    frames.append((struct.unpack(">I", message["bytes"][:4])[0], message["bytes"][4:]))
+                elif message.get("text") is not None:
+                    texts.append(json.loads(message["text"]))
+            ws.send_text(json.dumps({"type": "stop"}))
+            self.assertEqual(self.close_code(ws), 1000)
+        return frames, [t for t in texts if t["type"] == "stats"]
+
+    def test_face_restore_replaces_frames_in_order(self):
+        restorer = FakeRestorer()
+        frames, stats = self.stream_with_restorer(restorer, 29 + 32 * 3)
+        self.assertEqual([index for index, _ in frames], list(range(len(frames))))
+        self.assertEqual(restorer.warms, 1)
+        self.assertTrue(all(jpeg == b"\xff\xd8restored" for _, jpeg in frames))
+        self.assertTrue(all(s["restored"] for s in stats))
+
+    def test_failing_restore_passes_frames_through_in_order_and_trips_the_breaker(self):
+        restorer = FakeRestorer(fail=True)
+        frames, stats = self.stream_with_restorer(restorer, 29 + 32 * 5)
+        self.assertEqual([index for index, _ in frames], list(range(len(frames))))
+        self.assertTrue(all(jpeg == b"\xff\xd8jpeg" for _, jpeg in frames))
+        self.assertEqual(restorer.calls, 3)
+        self.assertFalse(any(s["restored"] for s in stats))
+        self.assertTrue(stats[-1]["restoreOff"])
+        self.assertEqual(stats[-1]["restoreFailOpen"], 3)
+
+    def test_face_restore_false_never_calls_the_restore_gpu(self):
+        restorer = FakeRestorer()
+        frames, stats = self.stream_with_restorer(restorer, 29 + 32, faceRestore=False)
+        self.assertEqual((restorer.warms, restorer.calls), (0, 0))
+        self.assertTrue(all(jpeg == b"\xff\xd8jpeg" for _, jpeg in frames))
+        self.assertNotIn("restored", stats[0])
+
+    def test_health_warms_the_restore_gpu(self):
+        restorer = FakeRestorer()
+        client = TestClient(modal_app.build_api(self.engine, asyncio.Lock(), restorer))
+        self.assertEqual(client.get("/health").json()["status"], "ok")
+        deadline = time.monotonic() + 2
+        while restorer.warms == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(restorer.warms, 1)
 
     def test_client_disconnect_stops_generation(self):
         with self.client.websocket_connect(f"/ws?ticket={self.ticket()}") as ws:

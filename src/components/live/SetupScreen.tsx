@@ -27,6 +27,7 @@ export type SetupSubmit = {
   speechMode: SpeechMode;
   swapProfile: SwapProfile;
   intentParser: IntentParser;
+  faceRestore: boolean;
 };
 
 type SetupScreenProps = {
@@ -73,6 +74,7 @@ export const SetupScreen = ({
   const [backend, setBackend] = useState<RenderBackend>("longlive");
   const [swapProfile, setSwapProfile] = useState<SwapProfile>("default");
   const [intentParser, setIntentParser] = useState<IntentParser>("regex");
+  const [faceRestore, setFaceRestore] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Staging is the slow part of the join (20 to 35 s), so it runs here and the call starts only once it has settled.
@@ -310,9 +312,20 @@ export const SetupScreen = ({
               </p>
             ) : null}
             {backend === "longlive" ? (
+              <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
+                <input
+                  type="checkbox"
+                  checked={faceRestore}
+                  onChange={(event) => setFaceRestore(event.target.checked)}
+                />
+                Face restore (LongLive)
+              </label>
+            ) : null}
+            {backend === "longlive" ? (
               <p className="text-xs text-[var(--muted)]">
-                One uncut stream from our own H100, about $4/hr; first frame
-                about 10 s after a cold start.
+                One uncut stream from our own H100, about $4/hr, plus about
+                $2/hr for face restore on a second GPU; first frame about 10 s
+                after a cold start.
               </p>
             ) : null}
           </div>
@@ -334,6 +347,7 @@ export const SetupScreen = ({
             speechMode: voiceExperimental ? "native" : "text",
             swapProfile,
             intentParser,
+            faceRestore,
           });
         }}
         className={

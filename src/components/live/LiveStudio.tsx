@@ -192,6 +192,7 @@ export const LiveStudio = () => {
           speechMode: values.speechMode,
           swapProfile: values.swapProfile,
           intentParser: values.intentParser,
+          faceRestore: values.faceRestore,
         })
         .then(() => {
           setStartedAtMs(Date.now());

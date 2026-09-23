@@ -465,4 +465,6 @@ export const LIVE_TUNABLES = {
   SWAP_COST_PER_SEC_USD: 1.95 / 3600,
   // LongLive holds one Modal H100 (about $4/hr) for as long as its socket is open.
   LONGLIVE_COST_PER_SEC_USD: 4 / 3600,
+  // Face restore holds a second Modal L40S ($1.95/hr) beside it while on.
+  LONGLIVE_FACE_RESTORE_COST_PER_SEC_USD: 1.95 / 3600,
 } as const;

@@ -143,6 +143,13 @@ class MessageTest(unittest.TestCase):
         self.assert_bad(self.start(prompt=""))
         self.assert_bad(self.start(prompt="x" * 2001))
 
+    def test_face_restore_defaults_on_and_must_be_boolean(self):
+        self.assertTrue(parse_client_message(self.start()).face_restore)
+        self.assertTrue(parse_client_message(self.start(faceRestore=True)).face_restore)
+        self.assertFalse(parse_client_message(self.start(faceRestore=False)).face_restore)
+        for value in [0, 1, "false", None, [], {}]:
+            self.assert_bad(self.start(faceRestore=value))
+
     def test_data_uri_needs_explicit_opt_in(self):
         text = self.start(referenceImageUrl="data:image/png;base64,iVBORw0KGgo=")
         self.assert_bad(text)

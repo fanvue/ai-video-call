@@ -298,6 +298,8 @@ export type LongLiveOpenInput = {
   speechMode: SpeechMode;
   startedAtMs: number;
   intentParser?: IntentParser;
+  // The server's second-GPU face pass; absent means on.
+  faceRestore?: boolean;
 };
 
 type WardrobeCheck = {
@@ -328,6 +330,7 @@ export class LongLiveSession {
   private referenceImageUrl = "";
   private speechMode: SpeechMode = "text";
   private intentParser: IntentParser | undefined;
+  private faceRestore = true;
   private startedAtMs = 0;
   // The greeting's clothing is the reference's; a change is unseen until vision confirms it on the stream.
   private wardrobeObserved = true;
@@ -433,6 +436,7 @@ export class LongLiveSession {
     this.speechMode = input.speechMode;
     this.startedAtMs = input.startedAtMs;
     this.intentParser = input.intentParser;
+    this.faceRestore = input.faceRestore ?? true;
 
     const opening = await this.deps.composePrompt({
       creator: input.creator,
@@ -514,6 +518,7 @@ export class LongLiveSession {
           width: LONGLIVE_STREAM.width,
           height: LONGLIVE_STREAM.height,
           fps: LONGLIVE_STREAM.fps,
+          faceRestore: this.faceRestore,
         }),
       );
     };
@@ -1012,7 +1017,12 @@ export class LongLiveSession {
       framesPainted: this.framesPainted,
       reconnects: this.reconnects,
       firstFrameMs: this.firstFrameMs,
-      costUsd: liveSec * LIVE_TUNABLES.LONGLIVE_COST_PER_SEC_USD,
+      costUsd:
+        liveSec *
+        (LIVE_TUNABLES.LONGLIVE_COST_PER_SEC_USD +
+          (this.faceRestore
+            ? LIVE_TUNABLES.LONGLIVE_FACE_RESTORE_COST_PER_SEC_USD
+            : 0)),
     };
   }
 
