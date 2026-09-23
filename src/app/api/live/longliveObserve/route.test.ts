@@ -52,6 +52,7 @@ describe("POST /api/live/longliveObserve", () => {
     vi.mocked(getCurrentUser).mockResolvedValue({ id: "user-1" } as never);
     vi.mocked(observeLongLiveWardrobe).mockResolvedValue({
       confirmed: true,
+      seen: true,
       state,
       settlePrompt: "settle",
     });
@@ -59,6 +60,7 @@ describe("POST /api/live/longliveObserve", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
       confirmed: true,
+      seen: true,
       state,
       settlePrompt: "settle",
     });

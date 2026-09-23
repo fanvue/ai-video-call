@@ -22,6 +22,8 @@ export const LONGLIVE_STREAM = { width: 480, height: 832, fps: 24 } as const;
 const OPEN_TIMEOUT_MS = 290_000;
 // Long enough for the asked action to play out before the scene settles back to an idle pose.
 export const LONGLIVE_SETTLE_AFTER_MS = 12_000;
+// A removal plays 4 to 6 s in, so a newer ask waits this long rather than cut the playing action off mid-move.
+export const LONGLIVE_MIN_ACTION_MS = 7_000;
 // Measured on Modal: a bra comes off 4 to 6 s after the prompt applies and is back on by about 7 s, so vision reads from 4 s in.
 export const LONGLIVE_WARDROBE_CHECK_AFTER_MS = 4_000;
 export const LONGLIVE_WARDROBE_CHECK_EVERY_MS = 1_500;
@@ -238,6 +240,7 @@ export type LongLiveObserveInput = {
 
 export type LongLiveObservation = {
   confirmed: boolean;
+  seen: boolean;
   state: LiveState;
   settlePrompt: string | null;
 };
@@ -346,6 +349,7 @@ export class LongLiveSession {
     check: WardrobeCheck | null;
   }[] = [];
   private playingRequestId: string | null = null;
+  private playingSinceMs: number | null = null;
   // The request whose prompt the latest start message carried, confirmed by that socket's ready.
   private startedWithRequestId: string | undefined;
   private settleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -644,6 +648,7 @@ export class LongLiveSession {
     }
     this.pending = this.pending.slice(index + 1);
     this.playingRequestId = requestId;
+    this.playingSinceMs = this.deps.now();
     this.deps.onRequestStatus(requestId, "playing");
     this.scheduleSettle(requestId, entry.settlePrompt, entry.check);
   }
@@ -725,6 +730,8 @@ export class LongLiveSession {
     }
     // Mid-removal misses are expected; only the last read reconciles what she is wearing.
     if (observation) this.applyObservedState(observation.state);
+    // A clear read is ground truth, so prompts name her clothing again instead of leaving it to the model.
+    if (observation?.seen) this.wardrobeObserved = true;
   }
 
   private applyObservedState(state: LiveState): void {
@@ -856,6 +863,8 @@ export class LongLiveSession {
       return;
     }
     if (this.closed) return;
+    await this.holdPlayingAction();
+    if (this.closed) return;
     this.applyComposedState(composed.state);
     this.pushReply(composed.reply, channel);
     const garments = composed.wardrobeCheck ?? [];
@@ -881,6 +890,14 @@ export class LongLiveSession {
     ];
     this.deps.onRequestStatus(entry.id, "generating");
     this.sendPrompt(composed.prompt, entry.id);
+  }
+
+  private async holdPlayingAction(): Promise<void> {
+    if (!this.playingRequestId || this.playingSinceMs === null) return;
+    const remaining =
+      LONGLIVE_MIN_ACTION_MS - (this.deps.now() - this.playingSinceMs);
+    if (remaining <= 0) return;
+    await new Promise((resolve) => setTimeout(resolve, remaining));
   }
 
   private applyComposedState(state: LiveState): void {

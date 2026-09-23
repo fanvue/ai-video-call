@@ -9,6 +9,8 @@ const OBSERVE_BUDGET_MS = 8_000;
 
 export type LongLiveObservation = {
   confirmed: boolean;
+  // Every checked garment was read on or off, so `state` is what the frame shows rather than a guess.
+  seen: boolean;
   state: LiveState;
   // The settle scene naming what she now wears; only once the change is confirmed.
   settlePrompt: string | null;
@@ -31,7 +33,12 @@ export const observeLongLiveWardrobe = async (input: {
   referenceImageUrl: string;
 }): Promise<LongLiveObservation> => {
   const { creator, expected, garments } = input;
-  const unconfirmed = { confirmed: false, state: expected, settlePrompt: null };
+  const unconfirmed = {
+    confirmed: false,
+    seen: false,
+    state: expected,
+    settlePrompt: null,
+  };
   const check = await withinBudget(
     guardFrame({
       frameUrl: input.frameUrl,
@@ -52,6 +59,7 @@ export const observeLongLiveWardrobe = async (input: {
   const state = { ...expected, wardrobe };
   return {
     confirmed,
+    seen: garments.every((id) => typeof seen[id] === "boolean"),
     state,
     settlePrompt: confirmed ? planLongLiveSettle(creator, state, true) : null,
   };

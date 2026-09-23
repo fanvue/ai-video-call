@@ -4,6 +4,7 @@ import { defaultLiveState } from "@/lib/live/client/defaultLiveState";
 import {
   buildLongLiveSocketUrl,
   FramePacer,
+  LONGLIVE_MIN_ACTION_MS,
   LONGLIVE_SETTLE_AFTER_MS,
   LONGLIVE_WARDROBE_CHECK_AFTER_MS,
   LONGLIVE_WARDROBE_CHECK_ATTEMPTS,
@@ -388,6 +389,7 @@ describe("LongLiveSession", () => {
     socket.serverText({ type: "promptApplied", id: first });
     t.session.request("spin around", "chat");
     await flush();
+    await vi.advanceTimersByTimeAsync(LONGLIVE_MIN_ACTION_MS);
     const second = t.statuses.at(-1)?.[0] as string;
     socket.serverText({ type: "promptApplied", id: second });
     expect(t.statuses).toContainEqual([first, "done"]);
@@ -397,6 +399,26 @@ describe("LongLiveSession", () => {
     expect(socket.sent).toHaveLength(sentBefore + 1);
     expect((socket.sent.at(-1) as { prompt: string }).prompt).toBe(
       "settle after spin around",
+    );
+  });
+
+  it("holds a newer ask until the playing action has had its minimum time", async () => {
+    const t = setup();
+    const socket = await t.openSession();
+    t.session.request("wave at me", "chat");
+    await flush();
+    socket.serverText({
+      type: "promptApplied",
+      id: t.statuses[0]?.[0] as string,
+    });
+    t.session.request("spin around", "chat");
+    await flush();
+    const sentBefore = socket.sent.length;
+    await vi.advanceTimersByTimeAsync(LONGLIVE_MIN_ACTION_MS - 1);
+    expect(socket.sent).toHaveLength(sentBefore);
+    await vi.advanceTimersByTimeAsync(1);
+    expect((socket.sent.at(-1) as { prompt: string }).prompt).toBe(
+      "scene for spin around",
     );
   });
 
@@ -585,6 +607,7 @@ describe("LongLiveSession", () => {
       const { socket } = await playBraOff(t);
       t.observeWardrobe.mockResolvedValue({
         confirmed: true,
+        seen: true,
         state: braOff,
         settlePrompt: "settle, topless",
       });
@@ -619,6 +642,7 @@ describe("LongLiveSession", () => {
       const { socket } = await playBraOff(t);
       t.observeWardrobe.mockResolvedValue({
         confirmed: false,
+        seen: false,
         state: liveState,
         settlePrompt: null,
       });
@@ -654,9 +678,15 @@ describe("LongLiveSession", () => {
     it("keeps polling until the removal shows, then settles named", async () => {
       const t = setup();
       const { socket } = await playBraOff(t);
-      const notYet = { confirmed: false, state: liveState, settlePrompt: null };
+      const notYet = {
+        confirmed: false,
+        seen: false,
+        state: liveState,
+        settlePrompt: null,
+      };
       t.observeWardrobe.mockResolvedValueOnce(notYet).mockResolvedValueOnce({
         confirmed: true,
+        seen: true,
         state: braOff,
         settlePrompt: "settle, topless",
       });
@@ -686,10 +716,16 @@ describe("LongLiveSession", () => {
       await flush();
       t.session.request("spin around", "chat");
       await flush();
+      await vi.advanceTimersByTimeAsync(LONGLIVE_MIN_ACTION_MS);
       const second = t.statuses.at(-1)?.[0] as string;
       socket.serverText({ type: "promptApplied", id: second });
       const sentBefore = socket.sent.length;
-      resolve({ confirmed: true, state: braOff, settlePrompt: "settle" });
+      resolve({
+        confirmed: true,
+        seen: true,
+        state: braOff,
+        settlePrompt: "settle",
+      });
       await flush();
       expect(socket.sent).toHaveLength(sentBefore);
     });
