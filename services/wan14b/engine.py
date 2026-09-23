@@ -14,13 +14,16 @@ HEIGHT, WIDTH, FPS = 832, 480, 16
 STEPS = 4
 # Measured on one H100 (480x832, 81 frames): FA3 3.15 s/step vs 4.41 native SDPA and 3.54 cuDNN, output within 37.6 dB of SDPA.
 ATTENTION_BACKEND = "_flash_3_hub"
-# Off until the fp8 / compile / VAE rows of the Phase 1 bench land (the run stopped at the workspace spend limit).
+# fp8 (torchao per-row) + compile was the fastest row (2.24 vs 2.59 s/step) but drops the preview to 31.4 dB vs 38.5 for bf16
+# compile; off until an ArcFace check shows the identity survives it.
 FP8 = False
-COMPILE_MODE = None
-# Latent frames past this index of the [seed, zeros] conditioning equal an all-zero video's, so only 1 + 4 * keep frames
-# are encoded; None encodes all 81 frames until the bench confirms which keep is exact.
-CONDITION_KEEP = None
-DECODE_BF16_UNTILED = False
+# Inductor default mode: 3.14 -> 2.59 s/step, 25 s first call (cached on the weights volume for later cold starts).
+COMPILE_MODE = "default"
+# Latent frames past this index of the [seed, zeros] conditioning equal an all-zero video's, so only 1 + 4 * keep frames are
+# encoded: keep 5 in bf16 is 0.39 s vs 1.99 s for the full fp32 encode, rel L2 0.005 (the same error as a full bf16 encode).
+CONDITION_KEEP = 5
+# bf16 untiled decode: 2.73 s vs 6.22 s fp32 tiled, 51.4 dB vs fp32; fits once denoise's cached blocks are released.
+DECODE_BF16_UNTILED = True
 
 
 class FastConditionEncoder:
