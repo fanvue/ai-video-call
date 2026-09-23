@@ -23,6 +23,8 @@ export const env = createEnv({
     SWAP_TOKEN: z.string().min(16).optional(),
     // Test-only language and vision models; unset leaves every OpenRouter option unavailable.
     OPENROUTER_API_KEY: z.string().min(1).optional(),
+    // One-off token for running /api/live/orBench without a browser session; removed after each bench.
+    BENCH_TOKEN: z.string().min(32).optional(),
   },
   runtimeEnv: {
     OAUTH_CLIENT_ID: process.env.OAUTH_CLIENT_ID,
@@ -42,6 +44,7 @@ export const env = createEnv({
     SWAP_SERVICE_URL: process.env.SWAP_SERVICE_URL,
     SWAP_TOKEN: process.env.SWAP_TOKEN,
     OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
+    BENCH_TOKEN: process.env.BENCH_TOKEN,
   },
   emptyStringAsUndefined: true,
 });

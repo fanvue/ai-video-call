@@ -1,4 +1,6 @@
-import { NextResponse } from "next/server";
+import { timingSafeEqual } from "node:crypto";
+import { NextResponse, after } from "next/server";
+import { env } from "@/env";
 import { getCurrentUser } from "@/lib/fanvue";
 import { GROQ_TEXT_MODEL, createGroqChatCompletion } from "@/lib/groq";
 import { defaultLiveState } from "@/lib/live/client/defaultLiveState";
@@ -292,10 +294,40 @@ const summarise = (rows: Row[]) =>
     };
   });
 
-// Spends real money, so it only runs for a signed-in user with ?run=1; every OpenRouter call goes through the budget guard.
+const runSuite = async (suite: "parser" | "clip"): Promise<void> => {
+  const rowsByModel = await Promise.all(
+    suite === "parser"
+      ? PARSER_MODELS.map((model) =>
+          runInChunks(PARSER_CASES, 1, (c) => parserRow(model, c)),
+        )
+      : CLIP_MODELS.map((model) =>
+          runInChunks(CLIP_CASES, 5, (c) => clipRow(model, c)),
+        ),
+  );
+  const rows = rowsByModel.flat();
+  for (const row of rows) {
+    console.log(`live/orBench row suite=${suite} ${JSON.stringify(row)}`);
+  }
+  const totalCostUsd = Number(
+    rows.reduce((sum, r) => sum + r.costUsd, 0).toFixed(6),
+  );
+  console.log(
+    `live/orBench: suite=${suite} totalCostUsd=${totalCostUsd} summary=${JSON.stringify(summarise(rows))}`,
+  );
+};
+
+const hasBenchToken = (request: Request): boolean => {
+  const expected = env.BENCH_TOKEN;
+  const given = request.headers.get("x-bench-token");
+  if (!expected || !given) return false;
+  const a = Buffer.from(given);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+};
+
+// Spends real money, so it needs a signed-in user or the one-off bench token, plus ?run=1; every OpenRouter call goes through the budget guard. Runs after the response so a multi-minute suite never times the request out; results land in the logs.
 export async function GET(request: Request) {
-  const user = await getCurrentUser();
-  if (!user) {
+  if (!hasBenchToken(request) && !(await getCurrentUser())) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const url = new URL(request.url);
@@ -308,22 +340,10 @@ export async function GET(request: Request) {
       usage: "?suite=parser&run=1 or ?suite=clip&run=1",
     });
   }
-  const rowsByModel = await Promise.all(
-    suite === "parser"
-      ? PARSER_MODELS.map((model) =>
-          runInChunks(PARSER_CASES, 1, (c) => parserRow(model, c)),
-        )
-      : CLIP_MODELS.map((model) =>
-          runInChunks(CLIP_CASES, 5, (c) => clipRow(model, c)),
-        ),
+  after(() =>
+    runSuite(suite).catch((error: unknown) =>
+      console.warn(`live/orBench: suite=${suite} failed`, error),
+    ),
   );
-  const rows = rowsByModel.flat();
-  const summary = summarise(rows);
-  const totalCostUsd = Number(
-    rows.reduce((sum, r) => sum + r.costUsd, 0).toFixed(6),
-  );
-  console.log(
-    `live/orBench: suite=${suite} totalCostUsd=${totalCostUsd} summary=${JSON.stringify(summary)}`,
-  );
-  return NextResponse.json({ suite, totalCostUsd, summary, rows });
+  return NextResponse.json({ started: suite });
 }
