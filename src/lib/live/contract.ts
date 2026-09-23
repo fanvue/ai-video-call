@@ -451,6 +451,8 @@ export const LIVE_TUNABLES = {
   PRIME_CLIPS: 1,
   // Start the next clip playing, hidden, this far before the current one ends; it is revealed on the outgoing clip's last frame (gaplessPlayer.untilClipEnds), so this only has to cover play-start latency, which ran past a 0.12 s lead on phones and froze or wrapped the outgoing clip.
   SWAP_LEAD_SEC: 0.4,
+  // Boundary swaps hold the incoming clip on frame 0 until the outgoing one is on its last frame, then play and hard-cut. Measured in Chrome: the hidden early start revealed the next clip at frame 8 after skipping the outgoing's last 2, a 10-frame jump (face ~15 px on the swapseed chain) under a 320 ms ghosting dissolve, while the render's own seam is 0.6 px.
+  FRAME_EXACT_BOUNDARY: true,
   // A reply arriving while an idle loops waits for the loop boundary only when the idle wraps within this many seconds; otherwise it cuts in at once through a blur dissolve. Always waiting for the wrap cost about half an idle per request (prod: 16 to 21 s dispatch to visible, 5 to 7 s of it spent waiting on the loop).
   CUT_IN_WAIT_MAX_SEC: 0.6,
   // Just after a wrap the idle is still on the anchor pose the reply starts from, so a reply that lands moments after the boundary cuts in now instead of waiting the whole loop (prod: landed 1 s late, seen 10 s later).

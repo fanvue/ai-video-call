@@ -4,6 +4,21 @@ import {
   type ClipToPlay,
 } from "@/lib/live/client/gaplessPlayer";
 
+// Lets a test run the pre-frame-exact boundary (hidden early start, 320 ms dissolve).
+const tunables = vi.hoisted(() => ({ frameExact: true }));
+vi.mock("@/lib/live/contract", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/live/contract")>();
+  return {
+    ...actual,
+    LIVE_TUNABLES: {
+      ...actual.LIVE_TUNABLES,
+      get FRAME_EXACT_BOUNDARY() {
+        return tunables.frameExact;
+      },
+    },
+  };
+});
+
 type Listener = (event: { currentTarget: FakeVideo }) => void;
 
 // Minimal stand-in for HTMLVideoElement: enough surface for the player's load/play/swap path.
@@ -112,6 +127,7 @@ describe("GaplessPlayer", () => {
     vi.stubGlobal("requestAnimationFrame", () => 0);
     vi.stubGlobal("cancelAnimationFrame", () => {});
     vi.stubGlobal("performance", { now: () => 0 });
+    tunables.frameExact = true;
   });
 
   afterEach(() => {
@@ -288,6 +304,7 @@ describe("GaplessPlayer", () => {
   });
 
   it("defers a cut-in to the loop boundary when the idle is within CUT_IN_WAIT_MAX_SEC of wrapping, so the reply starts from the anchor pose", async () => {
+    tunables.frameExact = false;
     const queue: ClipToPlay[] = [clip("loop1", true), clip("idle2", true)];
     const { a, b, player } = setup(queue);
     player.setInterruptReadyHandler(() => queue.some((c) => c.interrupts));
@@ -359,6 +376,7 @@ describe("GaplessPlayer", () => {
   });
 
   it("does not reveal a boundary swap on a still first frame: a preloaded readyState alone is not a presented frame", async () => {
+    tunables.frameExact = false;
     const { a, b, player } = setup([clip("c1"), clip("c2")]);
     player.start();
     await flush();
@@ -378,6 +396,7 @@ describe("GaplessPlayer", () => {
   });
 
   it("reveals a boundary swap after REVEAL_TIMEOUT if the outgoing element never reports its end", async () => {
+    tunables.frameExact = false;
     const { a, b, player } = setup([clip("c1"), clip("c2")]);
     player.start();
     await flush();
@@ -390,6 +409,78 @@ describe("GaplessPlayer", () => {
     vi.advanceTimersByTime(1500);
     await flush();
     expect(player.getActiveSlot()).toBe("b");
+  });
+
+  it("frame-exact boundary: keeps the incoming clip on frame 0 until the outgoing one is on its last frame, then hard-cuts", async () => {
+    const { a, b, player } = setup([clip("c1"), clip("c2")]);
+    player.start();
+    await flush();
+    await flush(); // c2's preload settles so 9.7 s is a boundary swap, not a hold
+    const warmPlays = b.playCalls;
+    a.fireTimeUpdate(9.7);
+    await flush();
+    // Inside the lead but not on the last frame: nothing has started, so no head frames are skipped.
+    expect(b.playCalls).toBe(warmPlays);
+    expect(b.paused).toBe(true);
+    expect(a.loop).toBe(false);
+    a.fireTimeUpdate(9.92);
+    await flush();
+    expect(b.playCalls).toBe(warmPlays);
+    a.fireTimeUpdate(9.96);
+    await flush();
+    expect(b.playCalls).toBe(warmPlays + 1);
+    expect(player.getActiveSlot()).toBe("a");
+    b.fire("playing");
+    await flush();
+    expect(player.getActiveSlot()).toBe("b");
+    expect(b.style.opacity).toBe("1");
+    expect(b.style.transitionDuration).toBe("0ms");
+    vi.advanceTimersByTime(0);
+    expect(a.style.opacity).toBe("0");
+  });
+
+  it("frame-exact boundary: stops a looping idle on its last frame instead of wrapping, and hard-cuts a deferred cut-in", async () => {
+    const queue: ClipToPlay[] = [clip("loop1", true)];
+    const { a, b, player } = setup(queue);
+    player.setInterruptReadyHandler(() => queue.some((c) => c.interrupts));
+    player.start();
+    await flush();
+    expect(a.loop).toBe(true);
+    a.fireTimeUpdate(9.5);
+    await flush();
+    queue.unshift(clip("reply", false, true));
+    player.checkForClip();
+    await flush();
+    a.fireTimeUpdate(9.7);
+    await flush();
+    expect(a.loop).toBe(false);
+    expect(player.getActiveSlot()).toBe("a");
+    a.fire("ended");
+    await flush();
+    b.fire("playing");
+    await flush();
+    expect(player.getActiveSlot()).toBe("b");
+    expect(b.style.transitionDuration).toBe("0ms");
+    expect(b.style.filter).toBe("");
+  });
+
+  it("frame-exact boundary: a looping idle goes back to looping when the incoming clip never produces a frame", async () => {
+    const queue: ClipToPlay[] = [clip("loop1", true), clip("idle2", true)];
+    const { a, b, player } = setup(queue);
+    player.start();
+    await flush();
+    player.checkForClip();
+    await flush();
+    b.playImpl = () => Promise.reject(new Error("decode"));
+    a.fireTimeUpdate(9.7);
+    await flush();
+    a.fireTimeUpdate(9.96);
+    await flush();
+    await flush();
+    expect(player.getActiveSlot()).toBe("a");
+    expect(a.loop).toBe(true);
+    expect(a.paused).toBe(false);
+    expect(player.getStatus()).toBe("playing");
   });
 
   it("resumes an active element that was paused from under it", async () => {
@@ -561,6 +652,7 @@ describe("GaplessPlayer", () => {
   });
 
   it("does not pause an element whose boundary swap is already in flight when the warm-up resolves late", async () => {
+    tunables.frameExact = false;
     const queue: ClipToPlay[] = [clip("one", false), clip("two", false)];
     const { a, b, player } = setup(queue);
     player.start();

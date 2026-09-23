@@ -16,6 +16,8 @@ const Z_INCOMING = "-1";
 const Z_OUTGOING = "-2";
 // The outgoing clip counts as on its last frame this close to its end (about two frames at 24 fps); rAF polls at 60 Hz so the reveal lands within a frame of the boundary.
 const REVEAL_EPS_SEC = 0.1;
+// Frame-exact boundaries wait for the outgoing clip's actual last frame (about 1.2 frames at 24 fps); `ended` fired 80 to 110 ms late in Chrome.
+const LAST_FRAME_EPS_SEC = 0.05;
 // If the outgoing element never reports its end (a stalled decoder), reveal anyway rather than hold two playing clips.
 const REVEAL_TIMEOUT_MS = 1500;
 // Ported from the legacy call page: the model's rendered audio pops for ~1.1s at clip start, so
@@ -141,8 +143,11 @@ export class GaplessPlayer {
   private stallStartedAt: { el: HTMLVideoElement; atMs: number } | null = null;
   private deferredPreload: ClipToPlay | null = null;
   // A boundary swap whose incoming slot is playing hidden, waiting for the outgoing clip's last frame.
-  private revealWaiter: { el: HTMLVideoElement; done: () => void } | null =
-    null;
+  private revealWaiter: {
+    el: HTMLVideoElement;
+    done: () => void;
+    epsSec: number;
+  } | null = null;
   private cutInWaitingForBoundary = false;
   private preloadedSlot: "a" | "b" | null = null;
   private status: PlayerStatus = "empty";
@@ -595,13 +600,12 @@ export class GaplessPlayer {
   }
 
   // Resolves once the outgoing element is on its last frame (or ended, or gave up), so the already-playing incoming slot is revealed on the boundary instead of whenever play() happened to start.
-  private untilClipEnds(el: HTMLVideoElement): Promise<void> {
+  private untilClipEnds(
+    el: HTMLVideoElement,
+    epsSec = REVEAL_EPS_SEC,
+  ): Promise<void> {
     return new Promise((resolve) => {
-      if (
-        el.ended ||
-        el.paused ||
-        el.currentTime >= el.duration - REVEAL_EPS_SEC
-      ) {
+      if (el.ended || el.paused || el.currentTime >= el.duration - epsSec) {
         resolve();
         return;
       }
@@ -615,7 +619,7 @@ export class GaplessPlayer {
       };
       const timer = window.setTimeout(done, REVEAL_TIMEOUT_MS);
       el.addEventListener("ended", done);
-      this.revealWaiter = { el, done };
+      this.revealWaiter = { el, done, epsSec };
     });
   }
 
@@ -637,6 +641,23 @@ export class GaplessPlayer {
     this.applyAudioPolicy(incoming, clip);
     // Set while the slot is still hidden, so the reveal transitions it back to sharp.
     incoming.style.filter = atBoundary ? "" : CUT_IN_BLUR;
+    const frameExact =
+      LIVE_TUNABLES.FRAME_EXACT_BOUNDARY && atBoundary && outgoing !== null;
+    if (frameExact) {
+      // Stops on its last frame instead of wrapping while the incoming clip starts.
+      outgoing.loop = false;
+      await this.untilClipEnds(outgoing, LAST_FRAME_EPS_SEC);
+      if (this.disposed || generation !== this.swapGeneration) {
+        // Superseded while waiting: a looping clip that is still on screen keeps looping.
+        if (this.getActive() === outgoing && this.currentClipLoops) {
+          outgoing.loop = true;
+        }
+        if (this.swappingClip === clip) {
+          this.swappingClip = null;
+        }
+        return;
+      }
+    }
     let confirmed: boolean;
     try {
       await incoming.play();
@@ -648,6 +669,7 @@ export class GaplessPlayer {
     if (
       confirmed &&
       atBoundary &&
+      !frameExact &&
       outgoing &&
       !this.disposed &&
       generation === this.swapGeneration
@@ -662,6 +684,13 @@ export class GaplessPlayer {
       return;
     }
     if (!confirmed) {
+      // A looping outgoing clip was only stopped for this swap; it goes back to looping.
+      if (frameExact && this.currentClipLoops) {
+        outgoing.loop = true;
+        if (outgoing.paused || outgoing.ended) {
+          void outgoing.play().catch(() => {});
+        }
+      }
       this.failClip(clip, "swapNoFrame");
       // A non-looping outgoing element that already reached its end falls into the existing hold
       // behavior; a looping one just keeps looping untouched.
@@ -676,7 +705,12 @@ export class GaplessPlayer {
     this.currentDurationSec = clip.durationSec;
     this.currentTimeSec = 0;
     this.activeSlot = this.activeSlot === "a" ? "b" : "a";
-    const fadeMs = atBoundary ? CROSSFADE_MS : CUT_IN_CROSSFADE_MS;
+    // A frame-exact boundary hard-cuts: a dissolve over the frozen last frame ghosts the incoming clip's first motion.
+    const fadeMs = frameExact
+      ? 0
+      : atBoundary
+        ? CROSSFADE_MS
+        : CUT_IN_CROSSFADE_MS;
     this.showSlot(this.activeSlot, fadeMs);
     incoming.style.filter = "";
     if (outgoing && !atBoundary) {
@@ -734,7 +768,7 @@ export class GaplessPlayer {
     this.onProgress(el.currentTime, this.currentClipId ?? "");
     if (
       this.revealWaiter?.el === el &&
-      el.currentTime >= el.duration - REVEAL_EPS_SEC
+      el.currentTime >= el.duration - this.revealWaiter.epsSec
     ) {
       this.revealWaiter.done();
       return;
