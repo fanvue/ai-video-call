@@ -8,6 +8,7 @@ vi.mock("@/lib/groq", () => ({
 }));
 
 const {
+  needsClipHandoff,
   planLongLiveCheckIn,
   planLongLiveGreeting,
   planLongLiveRequest,
@@ -122,7 +123,11 @@ describe("planLongLiveRequest", () => {
   });
 
   it("describes a bra removal literally and advances the wardrobe", async () => {
-    const { prompt, settlePrompt, nextState } = await planLongLiveRequest(
+    const {
+      fallbackPrompt: prompt,
+      settlePrompt,
+      nextState,
+    } = await planLongLiveRequest(
       creator,
       state({
         wardrobe: wardrobe({
@@ -191,7 +196,7 @@ describe("planLongLiveRequest", () => {
         removedOrder: ["top"],
       }),
     });
-    const { prompt, nextState } = await planLongLiveRequest(
+    const { fallbackPrompt: prompt, nextState } = await planLongLiveRequest(
       creator,
       current,
       "put your top back on",
@@ -261,8 +266,135 @@ describe("planLongLiveRequest", () => {
         wardrobeObserved: true,
       },
     );
-    expect(strip.prompt).not.toContain("wearing");
+    expect(strip.fallbackPrompt).not.toContain("wearing");
     expect(strip.settlePrompt).not.toContain("wearing");
+  });
+
+  it("hands a removal to a clip and gives the stream a lead-in that leaves her clothes alone", async () => {
+    const step = await planLongLiveRequest(
+      creator,
+      state(),
+      "take your top off",
+      {
+        wardrobeObserved: true,
+      },
+    );
+    expect(step.handoff).toBe(true);
+    expectCaption(step.prompt);
+    expect(step.prompt).not.toMatch(UNDRESS_WORDS);
+    expect(step.prompt).toContain("wearing her black ribbed tank top");
+    expect(step.prompt).toContain("getting ready");
+    expect(step.fallbackPrompt).toContain("tank top up over her head");
+    expect(step.nextState.wardrobe.top.on).toBe(false);
+  });
+
+  it("keeps easy asks on the stream with the action as both prompts", async () => {
+    const step = await planLongLiveRequest(creator, state(), "wave at me");
+    expect(step.handoff).toBe(false);
+    expect(step.prompt).toBe(step.fallbackPrompt);
+  });
+
+  it("never hands a request with a minor cue to a clip", async () => {
+    const step = await planLongLiveRequest(
+      creator,
+      state(),
+      "take your top off like a schoolgirl",
+    );
+    expect(step.handoff).toBe(false);
+  });
+});
+
+describe("needsClipHandoff", () => {
+  const kneeling = state({ body: { ...state().body, pose: "kneeling" } });
+
+  it("sends wardrobe changes and prop use to a clip", () => {
+    expect(
+      needsClipHandoff([{ type: "removeGarment", garment: "bra" }], state()),
+    ).toBe(true);
+    expect(
+      needsClipHandoff([{ type: "addGarment", garment: "top" }], state()),
+    ).toBe(true);
+    expect(
+      needsClipHandoff([{ type: "fetchProp", prop: "vibrator" }], state()),
+    ).toBe(true);
+    expect(
+      needsClipHandoff([{ type: "useProp", mode: "external" }], state()),
+    ).toBe(true);
+  });
+
+  it("sends a change into a floor pose to a clip, but not standing, sitting or a pose she already holds", () => {
+    for (const pose of [
+      "onAllFours",
+      "bentOver",
+      "kneeling",
+      "lying",
+    ] as const) {
+      expect(
+        needsClipHandoff([{ type: "pose", pose, facing: "camera" }], state()),
+      ).toBe(true);
+    }
+    expect(
+      needsClipHandoff(
+        [{ type: "pose", pose: "standing", facing: "camera" }],
+        state(),
+      ),
+    ).toBe(false);
+    expect(
+      needsClipHandoff(
+        [{ type: "pose", pose: "sitting", facing: "camera" }],
+        kneeling,
+      ),
+    ).toBe(false);
+    expect(
+      needsClipHandoff(
+        [{ type: "pose", pose: "kneeling", facing: "camera" }],
+        kneeling,
+      ),
+    ).toBe(false);
+  });
+
+  it("sends spanking and doggy to a clip and keeps the rest of the act catalogue on the stream", () => {
+    expect(needsClipHandoff([{ type: "act", act: "spank" }], state())).toBe(
+      true,
+    );
+    expect(needsClipHandoff([{ type: "act", act: "doggy" }], state())).toBe(
+      true,
+    );
+    for (const act of [
+      "sway",
+      "gesture",
+      "tongue",
+      "boobPlay",
+      "twerk",
+    ] as const) {
+      expect(needsClipHandoff([{ type: "act", act }], state())).toBe(false);
+    }
+  });
+
+  it("keeps talk and easy gestures on the stream", () => {
+    expect(needsClipHandoff([], state())).toBe(false);
+    expect(needsClipHandoff([{ type: "hold", line: "hi" }], state())).toBe(
+      false,
+    );
+    expect(needsClipHandoff([{ type: "touch" }], state())).toBe(false);
+    expect(
+      needsClipHandoff([{ type: "verbatim", text: "wink" }], state()),
+    ).toBe(false);
+    expect(
+      needsClipHandoff([{ type: "framing", framing: "torso" }], state()),
+    ).toBe(false);
+  });
+
+  it("hands off when any one of several intents is hard", () => {
+    expect(
+      needsClipHandoff(
+        [
+          { type: "act", act: "gesture" },
+          { type: "removeGarment", garment: "top" },
+        ],
+        state(),
+      ),
+    ).toBe(true);
   });
 });
 

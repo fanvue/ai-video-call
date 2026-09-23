@@ -2,14 +2,19 @@
 // A T5-conditioned video model follows short positive captions and ignores negations, so the prompt is a caption: who, one action, where.
 import { isIntentSatisfied } from "../intents";
 import type {
+  BeatIntent,
   CreatorProfile,
   GarmentId,
   IntentParser,
   LiveState,
+  Pose,
 } from "../contract";
+import { correctActionTypos } from "./actionTypos";
 import {
   CHECK_IN_ACTION,
   GREETING_ACTION,
+  HANDOFF_LEAD_IN_ACTION,
+  MINOR_CUE_RE,
   SETTLE_ACTION,
   YOUTH_WORD_RE,
   planAction,
@@ -142,6 +147,44 @@ export const planLongLiveCheckIn = (
   wardrobeCheck: [],
 });
 
+// The 5B stream cannot perform these (prompt logs show the right caption, she does not move), so a swap clip plays them instead.
+const CLIP_POSES: ReadonlySet<Pose> = new Set([
+  "onAllFours",
+  "bentOver",
+  "kneeling",
+  "lying",
+]);
+const CLIP_ACTS: ReadonlySet<Extract<BeatIntent, { type: "act" }>["act"]> =
+  new Set(["spank", "doggy"]);
+
+// Expects intents already filtered of satisfied wardrobe steps, as planLongLiveRequest does.
+export const needsClipHandoff = (
+  intents: BeatIntent[],
+  state: LiveState,
+): boolean =>
+  intents.some((intent) => {
+    switch (intent.type) {
+      case "removeGarment":
+      case "addGarment":
+      case "useProp":
+      case "fetchProp":
+        return true;
+      case "pose":
+        return CLIP_POSES.has(intent.pose) && state.body.pose !== intent.pose;
+      case "act":
+        return CLIP_ACTS.has(intent.act);
+      default:
+        return false;
+    }
+  });
+
+export type LongLiveRequestStep = LongLiveStep & {
+  // True when a swap clip plays the action and `prompt` is only a lead-in for the stream meanwhile.
+  handoff: boolean;
+  // The stream's own attempt at the action, sent when there is no clip or the clip fails.
+  fallbackPrompt: string;
+};
+
 export type LongLiveRequestOptions = {
   intentParser?: IntentParser;
   // True once what she wears has been seen on the stream, so prompts may name it.
@@ -153,7 +196,7 @@ export const planLongLiveRequest = async (
   state: LiveState,
   requestText: string,
   options: LongLiveRequestOptions = {},
-): Promise<LongLiveStep> => {
+): Promise<LongLiveRequestStep> => {
   // Only wardrobe steps are dropped when already true: the pose state is a guess, so "stand up" always plays.
   const intents = (
     await requestIntentsFor(requestText, state, options.intentParser)
@@ -179,10 +222,29 @@ export const planLongLiveRequest = async (
   const named = options.wardrobeObserved === true && wardrobeCheck.length === 0;
   // Small talk and negations ("don't take it off") are never quoted: the words themselves read as a cue.
   const action = await planAction(requestText, intents, state);
+  const actionPrompt = buildPrompt({
+    creator,
+    state,
+    action,
+    withWardrobe: named,
+  });
+  // A minor cue stays on the stream, where planAction already failed it closed to the neutral reaction.
+  const handoff =
+    !MINOR_CUE_RE.test(correctActionTypos(requestText)) &&
+    needsClipHandoff(intents, state);
   return {
-    prompt: buildPrompt({ creator, state, action, withWardrobe: named }),
+    prompt: handoff
+      ? buildPrompt({
+          creator,
+          state,
+          action: HANDOFF_LEAD_IN_ACTION,
+          withWardrobe: options.wardrobeObserved === true,
+        })
+      : actionPrompt,
     settlePrompt: planLongLiveSettle(creator, nextState, named),
     nextState,
     wardrobeCheck,
+    handoff,
+    fallbackPrompt: actionPrompt,
   };
 };

@@ -5,6 +5,7 @@ import {
   buildLongLiveSocketUrl,
   FramePacer,
   LONGLIVE_MIN_ACTION_MS,
+  LONGLIVE_RESTART_TIMEOUT_MS,
   LONGLIVE_SETTLE_AFTER_MS,
   LONGLIVE_WARDROBE_CHECK_AFTER_MS,
   LONGLIVE_WARDROBE_CHECK_ATTEMPTS,
@@ -12,6 +13,7 @@ import {
   LongLiveSession,
   type LongLiveComposeInput,
   type LongLiveFrame,
+  type LongLiveHandoffClip,
   type LongLiveSessionDeps,
   type PacedFrame,
   type WebSocketLike,
@@ -814,6 +816,269 @@ describe("LongLiveSession", () => {
       vi.advanceTimersByTime(LIVE_TUNABLES.CHECK_IN_AFTER_IDLE_MS);
       await flush();
       expect(t.composePrompt.mock.calls.at(-1)?.[0].checkIn).toBe(true);
+    });
+  });
+});
+
+describe("LongLiveSession handoff", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const braOff: LiveState = {
+    ...liveState,
+    wardrobe: {
+      ...liveState.wardrobe,
+      bra: { on: false, description: "pink bra" },
+      removedOrder: ["bra"],
+    },
+  };
+
+  const clip: LongLiveHandoffClip = {
+    videoUrl: "https://v3.fal.media/files/clip.mp4",
+    lastFrameUrl: "https://v3.fal.media/files/last.jpg",
+    state: braOff,
+    settlePrompt: "restart scene, topless",
+  };
+
+  const settleAll = async () => {
+    for (let i = 0; i < 5; i += 1) await flush();
+  };
+
+  // A session with the clip path wired and an ask that compose hands off.
+  const setupHandoff = async () => {
+    const t = setup();
+    let finishPlayback: (() => void) | null = null;
+    let failPlayback: ((error: Error) => void) | null = null;
+    const renderHandoffClip = vi.fn(
+      async (): Promise<LongLiveHandoffClip | null> => clip,
+    );
+    const playHandoffClip = vi.fn(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          finishPlayback = resolve;
+          failPlayback = reject;
+        }),
+    );
+    const hideHandoffClip = vi.fn();
+    t.deps.renderHandoffClip = renderHandoffClip;
+    t.deps.playHandoffClip = playHandoffClip;
+    t.deps.hideHandoffClip = hideHandoffClip;
+    const socket = await t.openSession();
+    t.session.attachCanvas(t.canvas);
+    t.composePrompt.mockImplementationOnce(async () => ({
+      prompt: "lead-in scene",
+      fallbackPrompt: "stream tries bra off",
+      settlePrompt: "settle after bra off",
+      state: braOff,
+      reply: "mm ok",
+      wardrobeCheck: ["bra"],
+      handoff: true,
+    }));
+    const ask = async () => {
+      t.session.request("take your bra off", "chat", true);
+      await settleAll();
+      return t.statuses[0]?.[0] as string;
+    };
+    return {
+      ...t,
+      socket,
+      ask,
+      renderHandoffClip,
+      playHandoffClip,
+      hideHandoffClip,
+      finishPlayback: () => finishPlayback?.(),
+      failPlayback: (error: Error) => failPlayback?.(error),
+    };
+  };
+
+  const lastRestart = (socket: FakeSocket) =>
+    socket.sent.filter((message) => message.type === "restart").at(-1) as
+      | { type: string; id: string; referenceImageUrl: string; prompt: string }
+      | undefined;
+
+  const expectFallback = (
+    t: Awaited<ReturnType<typeof setupHandoff>>,
+    requestId: string,
+  ) => {
+    expect(t.socket.sent.at(-1)).toEqual({
+      type: "prompt",
+      prompt: "stream tries bra off",
+      id: requestId,
+    });
+    expect(t.statuses.at(-1)).toEqual([requestId, "generating"]);
+    expect(t.deps.onLiveState).toHaveBeenLastCalledWith(braOff);
+    // Only the fan's ask and her reply reach chat, whatever failed.
+    expect(t.deps.onTranscriptEntry).toHaveBeenCalledTimes(2);
+  };
+
+  it("plays the clip, restarts the stream from its last frame, and reveals the canvas on the first new frame", async () => {
+    const t = await setupHandoff();
+    const requestId = await t.ask();
+    expect(t.socket.sent.at(-1)).toMatchObject({
+      type: "prompt",
+      prompt: "lead-in scene",
+    });
+    expect(t.renderHandoffClip).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId,
+        text: "take your bra off",
+        channel: "chat",
+        paid: true,
+        state: liveState,
+        seedFrame: expect.any(Blob),
+      }),
+    );
+    expect(t.playHandoffClip).toHaveBeenCalledWith(clip.videoUrl);
+    expect(t.statuses.map(([, status]) => status)).toEqual([
+      "queued",
+      "generating",
+      "playing",
+    ]);
+
+    t.finishPlayback();
+    await settleAll();
+    const restart = lastRestart(t.socket);
+    expect(restart).toMatchObject({
+      referenceImageUrl: clip.lastFrameUrl,
+      prompt: clip.settlePrompt,
+    });
+
+    // A frame generated before the restart, still decoding when the ack lands, never reaches the canvas.
+    t.socket.serverFrame(1);
+    t.socket.serverText({ type: "restarted", id: restart?.id, atFrame: 400 });
+    await settleAll();
+    const stale = t.decoded.at(-1);
+    expect(stale?.closed).toBe(true);
+    expect(t.statuses.at(-1)).toEqual([requestId, "done"]);
+    expect(t.deps.onLiveState).toHaveBeenLastCalledWith(braOff);
+    expect(t.hideHandoffClip).not.toHaveBeenCalled();
+
+    await t.sendFrames(t.socket, 10);
+    t.advance(16);
+    expect(t.hideHandoffClip).toHaveBeenCalledTimes(1);
+    expect(t.drawn).not.toContain(stale?.id);
+
+    // The next ask composes against the clip's state, with its clothing named.
+    t.session.request("wave at me", "chat");
+    await settleAll();
+    expect(t.composePrompt.mock.calls.at(-1)?.[0]).toMatchObject({
+      state: braOff,
+      wardrobeObserved: true,
+    });
+  });
+
+  it("reconnects from the clip's last frame and scene after a restart", async () => {
+    const t = await setupHandoff();
+    await t.ask();
+    t.finishPlayback();
+    await settleAll();
+    t.socket.serverText({ type: "restarted", id: lastRestart(t.socket)?.id });
+    await settleAll();
+    t.socket.serverClose(1006);
+    await flush();
+    const next = t.sockets[1] as FakeSocket;
+    next.serverOpen();
+    expect(next.sent[0]).toMatchObject({
+      type: "start",
+      referenceImageUrl: clip.lastFrameUrl,
+      prompt: clip.settlePrompt,
+    });
+  });
+
+  it("falls back to the stream's own attempt when the clip fails to render", async () => {
+    const t = await setupHandoff();
+    t.renderHandoffClip.mockRejectedValueOnce(new Error("502"));
+    const requestId = await t.ask();
+    expect(t.playHandoffClip).not.toHaveBeenCalled();
+    expect(t.hideHandoffClip).not.toHaveBeenCalled();
+    expect(lastRestart(t.socket)).toBeUndefined();
+    expectFallback(t, requestId);
+  });
+
+  it("falls back when there is no clip", async () => {
+    const t = await setupHandoff();
+    t.renderHandoffClip.mockResolvedValueOnce(null);
+    const requestId = await t.ask();
+    expectFallback(t, requestId);
+  });
+
+  it("falls back and hides the clip when playback fails", async () => {
+    const t = await setupHandoff();
+    const requestId = await t.ask();
+    t.failPlayback(new Error("decode error"));
+    await settleAll();
+    expect(t.hideHandoffClip).toHaveBeenCalledTimes(1);
+    expect(lastRestart(t.socket)).toBeUndefined();
+    expectFallback(t, requestId);
+  });
+
+  it("falls back and hides the clip when the server cannot restart", async () => {
+    const t = await setupHandoff();
+    const requestId = await t.ask();
+    t.finishPlayback();
+    await settleAll();
+    t.socket.serverText({
+      type: "restartFailed",
+      id: lastRestart(t.socket)?.id,
+      message: "restart image fetch failed",
+    });
+    await settleAll();
+    expect(t.hideHandoffClip).toHaveBeenCalledTimes(1);
+    expectFallback(t, requestId);
+    // A failed restart is not a stream error: the session stays reconnectable.
+    expect(t.deps.onError).not.toHaveBeenCalled();
+  });
+
+  it("falls back when the restart is never acknowledged", async () => {
+    const t = await setupHandoff();
+    const requestId = await t.ask();
+    t.finishPlayback();
+    await settleAll();
+    expect(lastRestart(t.socket)).toBeDefined();
+    await vi.advanceTimersByTimeAsync(LONGLIVE_RESTART_TIMEOUT_MS);
+    await settleAll();
+    expect(t.hideHandoffClip).toHaveBeenCalledTimes(1);
+    expectFallback(t, requestId);
+  });
+
+  it("queues a later ask behind the playing clip", async () => {
+    const t = await setupHandoff();
+    await t.ask();
+    t.session.request("wave at me", "chat");
+    await settleAll();
+    const composes = t.composePrompt.mock.calls.length;
+    expect(composes).toBe(2);
+    t.finishPlayback();
+    await settleAll();
+    t.socket.serverText({ type: "restarted", id: lastRestart(t.socket)?.id });
+    await settleAll();
+    expect(t.composePrompt.mock.calls).toHaveLength(3);
+    expect(t.socket.sent.at(-1)).toMatchObject({
+      type: "prompt",
+      prompt: "scene for wave at me",
+    });
+  });
+
+  it("sends the stream's own attempt when the clip path is not wired", async () => {
+    const t = setup();
+    const socket = await t.openSession();
+    t.composePrompt.mockImplementationOnce(async () => ({
+      prompt: "lead-in scene",
+      fallbackPrompt: "stream tries bra off",
+      settlePrompt: "settle after bra off",
+      state: braOff,
+      reply: null,
+      handoff: true,
+    }));
+    t.session.request("take your bra off", "chat");
+    await settleAll();
+    expect(socket.sent.at(-1)).toMatchObject({
+      type: "prompt",
+      prompt: "stream tries bra off",
     });
   });
 });

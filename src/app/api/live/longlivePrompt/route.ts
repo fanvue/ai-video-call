@@ -115,6 +115,8 @@ export async function POST(request: Request) {
       state: step.nextState,
       reply: reply.text,
       wardrobeCheck: step.wardrobeCheck,
+      handoff: step.handoff,
+      fallbackPrompt: step.fallbackPrompt,
     });
   } catch (error) {
     console.warn("live/longlivePrompt: compose failed", error);

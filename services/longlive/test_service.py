@@ -183,6 +183,49 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(acks[0]["atFrame"], 29)
         self.assertEqual(self.engine.reanchors, [1])
 
+    def test_restart_rebuilds_the_session_with_monotonic_frames(self):
+        self.engine.block_s = 0.2
+        frames, texts = [], []
+        with self.client.websocket_connect(f"/ws?ticket={self.ticket()}") as ws:
+            ws.send_text(self.start_message())
+            ws.receive_text()
+            ws.send_text(json.dumps({"type": "prompt", "prompt": "old scene", "id": "p1"}))
+            ws.send_text(json.dumps({"type": "restart", "id": "r1", "referenceImageUrl": png_data_uri(), "prompt": "she kneels"}))
+            while len(frames) < 29 * 2 + 32 * 2:
+                message = ws.receive()
+                if message.get("bytes") is not None:
+                    frames.append(struct.unpack(">I", message["bytes"][:4])[0])
+                elif message.get("text") is not None:
+                    texts.append(json.loads(message["text"]))
+            ws.send_text(json.dumps({"type": "stop"}))
+            self.assertEqual(self.close_code(ws), 1000)
+        self.assertEqual(frames, list(range(len(frames))))
+        restarted = [t for t in texts if t["type"] == "restarted"]
+        self.assertEqual([t["id"] for t in restarted], ["r1"])
+        # The first frame after the restart carries the index the ack named.
+        self.assertGreater(restarted[0]["atFrame"], 0)
+        self.assertIn(restarted[0]["atFrame"], frames)
+        self.assertEqual(self.engine.prompts[-1], "she kneels")
+        # The queued prompt belonged to the old scene and is dropped by the restart.
+        self.assertNotIn("old scene", self.engine.prompts)
+
+    def test_restart_with_a_bad_image_keeps_the_session(self):
+        texts, frames = [], 0
+        with self.client.websocket_connect(f"/ws?ticket={self.ticket()}") as ws:
+            ws.send_text(self.start_message())
+            ws.receive_text()
+            ws.send_text(json.dumps({"type": "restart", "id": "r1", "referenceImageUrl": "data:image/png;base64,bm90IGFuIGltYWdl", "prompt": "p"}))
+            while frames < 29 + 32 * 2:
+                message = ws.receive()
+                if message.get("bytes") is not None:
+                    frames += 1
+                elif message.get("text") is not None:
+                    texts.append(json.loads(message["text"]))
+            ws.send_text(json.dumps({"type": "stop"}))
+            self.assertEqual(self.close_code(ws), 1000)
+        self.assertIn({"type": "restartFailed", "id": "r1", "message": "restart image fetch failed"}, texts)
+        self.assertFalse([t for t in texts if t["type"] in ("restarted", "error")])
+
     def test_reanchor_without_id_closes_4400(self):
         with self.client.websocket_connect(f"/ws?ticket={self.ticket()}") as ws:
             ws.send_text(self.start_message())

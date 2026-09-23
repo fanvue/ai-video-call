@@ -17,6 +17,7 @@ from protocol import (
     PromptMessage,
     ReanchorMessage,
     ProtocolError,
+    RestartMessage,
     StartMessage,
     StopMessage,
     decode_data_uri,
@@ -104,6 +105,11 @@ class StreamRun:
         self.pending_lock = threading.Lock()
         self.pending: PromptMessage | None = None
         self.pending_reanchor: ReanchorMessage | None = None
+        self.pending_restart: tuple[object, RestartMessage] | None = None
+        # Blocks the decoder has sent, so a restart can wait for the VAE cache to go idle before engine.start clears it.
+        self.decoded_blocks = 0
+        # The engine counts frames from 0 again after a restart; this keeps the indices sent to the client monotonic.
+        self.frame_offset = 0
         self.queued_frames = 0
         self.queued_lock = threading.Lock()
         self.stop_reason: tuple[int, str] | None = None
@@ -138,6 +144,7 @@ class StreamRun:
             decoder.start()
             session_started = time.monotonic()
             scheduled = 0
+            handed = 0
             while not self.stop_event.is_set():
                 if time.monotonic() - session_started > SESSION_CAP_S:
                     self._emit_text({"type": "error", "message": "session time limit reached"})
@@ -152,8 +159,23 @@ class StreamRun:
                         self.stop_event.wait((ahead - lead_frames) / start.fps)
                         continue
                 with self.pending_lock:
+                    restart, self.pending_restart = self.pending_restart, None
+                    # The restart's own prompt replaces anything queued for the old scene.
+                    if restart is not None:
+                        self.pending = None
+                        self.pending_reanchor = None
                     pending, self.pending = self.pending, None
                     reanchor, self.pending_reanchor = self.pending_reanchor, None
+                if restart is not None:
+                    image, message = restart
+                    while self.decoded_blocks < handed and not self.stop_event.is_set():
+                        self.stop_event.wait(0.01)
+                    if self.stop_event.is_set():
+                        break
+                    print(f"[longlive] restart {message.id}: {message.prompt}", flush=True)
+                    engine.start(image, message.prompt, start.width, start.height)
+                    self.frame_offset = scheduled
+                    self._emit_text({"type": "restarted", "id": message.id, "atFrame": scheduled})
                 if pending is not None:
                     print(f"[longlive] prompt {pending.id}: {pending.prompt}", flush=True)
                     at_frame = engine.switch_prompt(pending.prompt)
@@ -166,6 +188,7 @@ class StreamRun:
                 while not self.stop_event.is_set():
                     try:
                         handoff.put(block, timeout=0.5)
+                        handed += 1
                         break
                     except queue.Full:
                         continue
@@ -197,7 +220,8 @@ class StreamRun:
                     self._finish(1011, "client lag")
                     return
                 for offset, jpeg in enumerate(result.jpegs):
-                    self._emit(("frame", pack_frame(result.first_frame_index + offset, jpeg)))
+                    self._emit(("frame", pack_frame(self.frame_offset + result.first_frame_index + offset, jpeg)))
+                self.decoded_blocks += 1
                 if self.first_frame_at is None:
                     self.first_frame_at = time.monotonic()
                 # Diffusion and decode overlap, so the slower stage sets the sustainable rate.
@@ -233,6 +257,20 @@ class StreamRun:
             else:
                 await self.websocket.send_text(payload)
 
+    async def _queue_restart(self, message: RestartMessage) -> None:
+        from PIL import Image
+
+        try:
+            image = Image.open(io.BytesIO(await fetch_reference_image(message.reference_image_url)))
+            image.load()
+        except Exception as error:  # noqa: BLE001 - a bad restart image leaves the stream on its current scene; the client falls back.
+            print(f"[longlive] restart {message.id} image failed: {error!r}", flush=True)
+            self._emit_text({"type": "restartFailed", "id": message.id, "message": "restart image fetch failed"})
+            return
+        # Last one wins, like prompts.
+        with self.pending_lock:
+            self.pending_restart = (image, message)
+
     async def receive_loop(self) -> None:
         from starlette.websockets import WebSocketDisconnect
 
@@ -249,6 +287,8 @@ class StreamRun:
                 if isinstance(message, ReanchorMessage):
                     with self.pending_lock:
                         self.pending_reanchor = message
+                if isinstance(message, RestartMessage):
+                    await self._queue_restart(message)
                 # A second start is ignored; the contract sends it exactly once.
         except WebSocketDisconnect:
             self._finish(1000, "client closed")

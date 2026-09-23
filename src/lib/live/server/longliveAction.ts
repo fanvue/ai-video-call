@@ -35,6 +35,10 @@ const LLM_TIMEOUT_MS = 700;
 export const REACT_ACTION =
   "She laughs softly and smiles warmly into the camera, tilting her head playfully.";
 
+// Plays on the stream while a clip renders the real action, so it must not start that action itself.
+export const HANDOFF_LEAD_IN_ACTION =
+  "She smiles into the camera and shifts her weight, getting ready for the fan.";
+
 export const SETTLE_ACTION =
   "She relaxes and smiles softly into the camera, playing with a strand of her hair.";
 
