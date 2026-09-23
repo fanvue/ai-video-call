@@ -479,12 +479,14 @@ export const LIVE_TUNABLES = {
   SWAP_SKIP_STALE_IDLE_SWAPS: true,
   // Download each swapped clip as soon as it lands instead of when the player pulls it, so a clip that lands after a boundary plays about a second sooner (prod: 1.3 to 2.3 s from swap landed to on screen).
   SWAP_PREFETCH_READY_CLIPS: true,
-  // Start a reply's full swap from the clip route's render stream instead of after its seed swap, taking that 2 to 4 s off the reply's wait; at most one such early swap runs, outside the pipeline's swap slots.
+  // Start a reply's (and the greeting's) full swap from the clip route's render stream instead of after its seed swap, taking that 2 to 4 s off the wait; at most one such early swap runs, outside the pipeline's swap slots.
   SWAP_EARLY_REPLY_SWAP: true,
-  // Swap a reply's first SWAP_SPLIT_HEAD_FRAMES and the rest on two containers at once, so it plays once the head lands instead of the whole clip; skipped when no second container is free.
+  // Swap a reply's (or the greeting's) head and the rest on two containers at once, so it plays once the head lands instead of the whole clip; skipped when no second container is free.
   SWAP_SPLIT_REPLY: true,
   // About 4.2 s at 24 fps: the rest (about 140 frames at 45 ms) lands while the head plays.
   SWAP_SPLIT_HEAD_FRAMES: 100,
+  // The 15 s greeting is 361 frames: a 100-frame head plays out before its 261-frame rest lands (9 to 12 s). At 150 the rest is 211 frames (7 to 9.5 s at 34 to 45 ms) against a head that lands in 5 to 7 s and plays 6.25 s, so it lands with 2 s or more to spare.
+  SWAP_SPLIT_GREETING_HEAD_FRAMES: 150,
   // ai-video-swap's max_containers (services/swap/modal_app.py); a request past it queues inside Modal.
   SWAP_SERVICE_CONTAINERS: 4,
   // The rest's swap still out this long before the head ends: its raw frames play instead, so the boundary does not freeze.

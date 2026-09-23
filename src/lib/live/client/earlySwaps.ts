@@ -3,36 +3,41 @@ import type { ClipResult } from "@/lib/live/contract";
 
 type SwapTarget = Pick<ClipResult, "videoUrl" | "jobKind">;
 
+type EarlySwapKind = "reply" | "greeting";
+
 type SplitOptions = {
   headFrames: number;
+  greetingHeadFrames: number;
   // Takes a second container for the rest's swap and returns its release, or null when none is free.
   reserve: () => (() => void) | null;
 };
 
-// Reply full swaps started from the clip route's render stream, keyed by the unswapped video url, for finalizeSwap to pick up.
+// Reply and greeting full swaps started from the clip route's render stream, keyed by the unswapped video url, for finalizeSwap to pick up.
 export const createEarlySwaps = <T>(
   runSwap: (clip: SwapTarget, range?: SwapFrameRange) => Promise<T>,
   split?: SplitOptions,
 ) => {
   const swaps = new Map<string, Promise<T>>();
-  // A split reply's frames from split.headFrames on, swapping beside its head.
+  // A split clip's frames from its head's end on, swapping beside its head.
   const rests = new Map<string, Promise<T>>();
   let inFlight = 0;
   return {
-    start: (videoUrl: string) => {
+    start: (videoUrl: string, jobKind: EarlySwapKind = "reply") => {
       // One at a time: it runs outside the pipeline's swap slots, and Modal serves at most 4 containers.
       if (inFlight >= 1) {
         return;
       }
       inFlight += 1;
-      const clip: SwapTarget = { videoUrl, jobKind: "reply" };
+      const clip: SwapTarget = { videoUrl, jobKind };
+      const headFrames =
+        jobKind === "greeting" ? split?.greetingHeadFrames : split?.headFrames;
       const release = split?.reserve() ?? null;
       const swap = release
-        ? runSwap(clip, { endFrame: split?.headFrames })
+        ? runSwap(clip, { endFrame: headFrames })
         : runSwap(clip);
       swaps.set(videoUrl, swap);
       if (release) {
-        const rest = runSwap(clip, { startFrame: split?.headFrames });
+        const rest = runSwap(clip, { startFrame: headFrames });
         rests.set(videoUrl, rest);
         void rest.catch(() => undefined).finally(release);
       }
@@ -55,7 +60,7 @@ export const createEarlySwaps = <T>(
       swaps.delete(clip.videoUrl);
       return swap;
     },
-    // A split reply's rest, taken beside its head; undefined when the reply was not split.
+    // A split clip's rest, taken beside its head; undefined when it was not split.
     takeRest: (clip: SwapTarget): Promise<T> | undefined => {
       const rest = rests.get(clip.videoUrl);
       rests.delete(clip.videoUrl);

@@ -1601,6 +1601,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
             LIVE_TUNABLES.SWAP_SPLIT_REPLY
               ? {
                   headFrames: LIVE_TUNABLES.SWAP_SPLIT_HEAD_FRAMES,
+                  greetingHeadFrames:
+                    LIVE_TUNABLES.SWAP_SPLIT_GREETING_HEAD_FRAMES,
                   reserve: reserveSplitSlot,
                 }
               : undefined,
@@ -1613,11 +1615,15 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         LIVE_TUNABLES.SWAP_EARLY_REPLY_SWAP;
       const pipeline = new ClipPipeline({
         render: earlyReplySwaps
-          ? (req) =>
-              deps.renderClip(
+          ? (req) => {
+              const kind = req.job.kind;
+              return deps.renderClip(
                 req,
-                req.job.kind === "reply" ? earlySwaps.start : undefined,
-              )
+                kind === "reply" || kind === "greeting"
+                  ? (videoUrl) => earlySwaps.start(videoUrl, kind)
+                  : undefined,
+              );
+            }
           : deps.renderClip,
         now: () => Date.now(),
         onEvent: handlePipelineEvent,

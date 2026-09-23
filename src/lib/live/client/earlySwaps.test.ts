@@ -85,6 +85,7 @@ describe("createEarlySwaps", () => {
     const release = vi.fn();
     const early = createEarlySwaps(runSwap, {
       headFrames: 100,
+      greetingHeadFrames: 150,
       reserve: () => release,
     });
     const clip = {
@@ -104,10 +105,29 @@ describe("createEarlySwaps", () => {
     expect(release).toHaveBeenCalledTimes(1);
   });
 
+  it("splits the greeting at its own longer head, as a greeting swap", () => {
+    const runSwap = vi.fn(() => new Promise<string>(() => {}));
+    const early = createEarlySwaps(runSwap, {
+      headFrames: 100,
+      greetingHeadFrames: 150,
+      reserve: () => () => {},
+    });
+    const clip = {
+      videoUrl: "https://example.com/greeting.mp4",
+      jobKind: "greeting" as const,
+    };
+
+    early.start(clip.videoUrl, "greeting");
+    expect(runSwap).toHaveBeenCalledWith(clip, { endFrame: 150 });
+    expect(runSwap).toHaveBeenCalledWith(clip, { startFrame: 150 });
+    expect(early.takeRest(clip)).toBeDefined();
+  });
+
   it("swaps the reply whole when no second container is free", () => {
     const runSwap = vi.fn(() => new Promise<string>(() => {}));
     const early = createEarlySwaps(runSwap, {
       headFrames: 100,
+      greetingHeadFrames: 150,
       reserve: () => null,
     });
     const clip = {

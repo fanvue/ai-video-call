@@ -259,10 +259,7 @@ export class ClipPipeline {
     if (result.swap?.status !== "pending" || !finalizeSwap) {
       return false;
     }
-    // The greeting has nothing else buffered yet, so gating it on its own full swap is dead air on first join; it plays unswapped. Its swap is not run in the background either: prod landed it 0.2 s after the greeting finished, having held one of the two GPUs the first idles were queueing for.
-    if (result.jobKind === "greeting") {
-      return false;
-    }
+    // The greeting waits for its swap like every chain clip: unswapped it showed the raw render's face for 15 s and the first cut jumped to the persona. Its early split swap lands the head in about 6 s, and a failed swap still plays it unswapped.
     this.pendingSwapClipIds.add(result.clipId);
     if (lane === "chained") {
       this.pendingChainSwaps += 1;
