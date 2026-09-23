@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  DEFAULT_PERSONA_ID,
   INTENT_PARSER_LABELS,
   SWAP_PROFILES,
   type IntentParser,
@@ -12,6 +11,14 @@ import {
   type SpeechMode,
   type SwapProfile,
 } from "@/lib/live/contract";
+import {
+  initialPersonaSettings,
+  personaModeFor,
+  personaOptionsFor,
+  submittedPersona,
+  updatePersonaMode,
+  withRegisteredPersona,
+} from "@/lib/live/client/personaSettings";
 import type { PrepareStatus } from "@/lib/live/client/useLiveSession";
 
 const SCENES: { id: SceneId; label: string }[] = [
@@ -31,7 +38,13 @@ export type SetupSubmit = {
   intentParser: IntentParser;
   faceRestore: boolean;
   personaId?: string;
+  swapPersonaId?: string;
 };
+
+type PersonaLoader = () => Promise<{
+  personas: PersonaOption[];
+  canRegister: boolean;
+}>;
 
 type SetupScreenProps = {
   busy: boolean;
@@ -43,11 +56,11 @@ type SetupScreenProps = {
     faceCrop: boolean,
   ) => void;
   onWarmLongLive?: () => void;
-  loadPersonas?: () => Promise<{
-    personas: PersonaOption[];
-    canRegister: boolean;
-  }>;
+  loadPersonas?: PersonaLoader;
   onRegisterPersona?: (file: File) => Promise<{ id: string }>;
+  // Swap mode's own list and registration, served without a GPU.
+  loadSwapPersonas?: PersonaLoader;
+  onRegisterSwapPersona?: (file: File) => Promise<{ id: string }>;
   preparation?: { status: PrepareStatus; seedUrl: string | null };
   onSubmit: (values: SetupSubmit) => void;
 };
@@ -71,6 +84,8 @@ export const SetupScreen = ({
   onWarmLongLive,
   loadPersonas,
   onRegisterPersona,
+  loadSwapPersonas,
+  onRegisterSwapPersona,
   preparation,
   onSubmit,
 }: SetupScreenProps) => {
@@ -85,12 +100,9 @@ export const SetupScreen = ({
   const [swapProfile, setSwapProfile] = useState<SwapProfile>("default");
   const [intentParser, setIntentParser] = useState<IntentParser>("regex");
   const [faceRestore, setFaceRestore] = useState(true);
-  // "" is the Off option; the seed persona stays selectable while a cold listing is still loading.
-  const [personaId, setPersonaId] = useState(DEFAULT_PERSONA_ID);
-  const [personas, setPersonas] = useState<PersonaOption[]>([]);
-  const [canRegister, setCanRegister] = useState(false);
-  const [attested, setAttested] = useState(false);
-  const [registerStatus, setRegisterStatus] = useState<string | null>(null);
+  const [personaSettings, setPersonaSettings] = useState(
+    initialPersonaSettings,
+  );
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Staging is the slow part of the join (20 to 35 s), so it runs here and the call starts only once it has settled.
@@ -120,46 +132,53 @@ export const SetupScreen = ({
     }
   }, [backend, onWarmLongLive]);
 
+  const personaMode = personaModeFor(backend);
+  const loadModePersonas =
+    personaMode === "swap" ? loadSwapPersonas : loadPersonas;
+  const registerModePersona =
+    personaMode === "swap" ? onRegisterSwapPersona : onRegisterPersona;
+  const modeSettings = personaMode ? personaSettings[personaMode] : null;
+
   useEffect(() => {
-    if (backend !== "longlive" || !loadPersonas) {
+    if (!personaMode || !loadModePersonas) {
       return;
     }
     let cancelled = false;
-    loadPersonas()
-      .then((listing) => {
+    loadModePersonas()
+      .then(({ personas, canRegister }) => {
         if (cancelled) return;
-        setPersonas(listing.personas);
-        setCanRegister(listing.canRegister);
+        setPersonaSettings((current) =>
+          updatePersonaMode(current, personaMode, { personas, canRegister }),
+        );
       })
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [backend, loadPersonas]);
-
-  const personaOptions = personas.some(({ id }) => id === DEFAULT_PERSONA_ID)
-    ? personas
-    : [{ id: DEFAULT_PERSONA_ID, note: "" }, ...personas];
+  }, [personaMode, loadModePersonas]);
 
   const registerUpload = () => {
-    if (!file || !attested || !onRegisterPersona) {
+    if (
+      !file ||
+      !personaMode ||
+      !modeSettings?.attested ||
+      !registerModePersona
+    ) {
       return;
     }
-    setRegisterStatus("Registering…");
-    onRegisterPersona(file)
-      .then(({ id }) => {
-        setPersonas((current) =>
-          current.some((persona) => persona.id === id)
-            ? current
-            : [...current, { id, note: "Registered upload" }],
-        );
-        setPersonaId(id);
-        setRegisterStatus(`Registered as ${id}`);
-      })
-      .catch((e: unknown) =>
-        setRegisterStatus(
-          e instanceof Error ? e.message : "Registration failed",
+    const setStatus = (registerStatus: string) =>
+      setPersonaSettings((current) =>
+        updatePersonaMode(current, personaMode, { registerStatus }),
+      );
+    setStatus("Registering…");
+    registerModePersona(file)
+      .then(({ id }) =>
+        setPersonaSettings((current) =>
+          withRegisteredPersona(current, personaMode, id),
         ),
+      )
+      .catch((e: unknown) =>
+        setStatus(e instanceof Error ? e.message : "Registration failed"),
       );
   };
 
@@ -380,16 +399,24 @@ export const SetupScreen = ({
                 Face restore (LongLive)
               </label>
             ) : null}
-            {backend === "longlive" || backend === "swap" ? (
+            {personaMode && modeSettings ? (
               <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
-                Persona face lock
+                {personaMode === "swap"
+                  ? "Persona face lock (swap mode)"
+                  : "Persona face lock"}
                 <select
-                  value={personaId}
-                  onChange={(event) => setPersonaId(event.target.value)}
+                  value={modeSettings.personaId}
+                  onChange={(event) =>
+                    setPersonaSettings((current) =>
+                      updatePersonaMode(current, personaMode, {
+                        personaId: event.target.value,
+                      }),
+                    )
+                  }
                   className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] p-2 text-[var(--foreground)]"
                 >
                   <option value="">Off</option>
-                  {personaOptions.map(({ id, note }) => (
+                  {personaOptionsFor(modeSettings).map(({ id, note }) => (
                     <option key={id} value={id}>
                       {note ? `${id} (${note})` : id}
                     </option>
@@ -397,25 +424,33 @@ export const SetupScreen = ({
                 </select>
               </label>
             ) : null}
-            {backend === "longlive" && canRegister && onRegisterPersona ? (
+            {personaMode && modeSettings?.canRegister && registerModePersona ? (
               <div className="flex flex-col gap-2 text-xs text-[var(--muted)]">
                 <label className="flex items-center gap-2">
                   <input
                     type="checkbox"
-                    checked={attested}
-                    onChange={(event) => setAttested(event.target.checked)}
+                    checked={modeSettings.attested}
+                    onChange={(event) =>
+                      setPersonaSettings((current) =>
+                        updatePersonaMode(current, personaMode, {
+                          attested: event.target.checked,
+                        }),
+                      )
+                    }
                   />
                   This is a Fanvue-owned AI creator likeness, not a real person
                 </label>
                 <button
                   type="button"
-                  disabled={!file || !attested}
+                  disabled={!file || !modeSettings.attested}
                   onClick={registerUpload}
                   className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] p-2 text-[var(--foreground)] disabled:text-[var(--muted)]"
                 >
                   Register this photo as a persona
                 </button>
-                {registerStatus ? <p>{registerStatus}</p> : null}
+                {modeSettings.registerStatus ? (
+                  <p>{modeSettings.registerStatus}</p>
+                ) : null}
               </div>
             ) : null}
             {backend === "longlive" ? (
@@ -445,9 +480,7 @@ export const SetupScreen = ({
             swapProfile,
             intentParser,
             faceRestore,
-            ...((backend === "longlive" || backend === "swap") && personaId
-              ? { personaId }
-              : {}),
+            ...submittedPersona(personaSettings, backend),
           });
         }}
         className={

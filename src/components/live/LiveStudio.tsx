@@ -6,9 +6,11 @@ import {
   composeLongLivePrompt,
   fetchLongLiveTicket,
   fetchPersonas,
+  fetchSwapPersonas,
   fetchLucyToken,
   observeLongLiveWardrobe,
   registerPersona,
+  registerSwapPersona,
   renderClip,
   reportTelemetry,
   swapRenderedClip,
@@ -196,6 +198,7 @@ export const LiveStudio = () => {
           intentParser: values.intentParser,
           faceRestore: values.faceRestore,
           personaId: values.personaId,
+          swapPersonaId: values.swapPersonaId,
         })
         .then(() => {
           setStartedAtMs(Date.now());
@@ -322,6 +325,8 @@ export const LiveStudio = () => {
         onWarmLongLive={warmLongLiveOnce}
         loadPersonas={fetchPersonas}
         onRegisterPersona={registerPersona}
+        loadSwapPersonas={fetchSwapPersonas}
+        onRegisterSwapPersona={registerSwapPersona}
         preparation={{
           status: session.prepareStatus,
           seedUrl: session.preparedSeedUrl,

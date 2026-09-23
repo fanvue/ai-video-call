@@ -1,5 +1,6 @@
 # Modal host for the Swap service, used for the POC while fal serverless access is pending.
 # Deploy: .venv-fal/bin/modal deploy services/swap/modal_app.py
+import os
 import sys
 import threading
 import time
@@ -38,11 +39,19 @@ from swap_core import (  # noqa: E402
 )
 
 app = modal.App("ai-video-swap")
-# Read-only: registration stays on LongLive's gated route; a missing volume fails the deploy instead of leaving an empty allowlist.
+# Read-only for the GPU swap: registration goes through LongLive's route or the CPU store below; a missing volume fails the deploy instead of leaving an empty allowlist.
 personas_volume = modal.Volume.from_name("persona-faces").read_only()
 PERSONA_ROOT = "/personas"
 # Picks up `modal volume put` and registered personas without a reload on every clip.
 PERSONA_RELOAD_S = 30.0
+# Writable only for the CPU store below, which serves swap mode's persona list and registration.
+personas_store_volume = modal.Volume.from_name("persona-faces")
+# No CUDA base, no models: the list and registration are file and JSON work. swap_core is here only because this module imports it at load; its top level is stdlib.
+persona_image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .pip_install("fastapi", "uvicorn")
+    .add_local_python_source("persona", "protocol", "persona_store", "swap_core")
+)
 
 # onnxruntime-gpu needs the CUDA 12 + cuDNN 9 runtime libraries on the image or it silently falls back to CPU.
 image = (
@@ -217,3 +226,30 @@ class SwapService:
                 raise HTTPException(status_code=422, detail=str(error)) from error
 
         return api
+
+
+# Swap mode's persona list and registration without waking a GPU: tokens are minted by the Vercel routes with SWAP_TOKEN, checked here with LongLive's protocol.py.
+@app.cls(
+    image=persona_image,
+    cpu=0.25,
+    memory=256,
+    secrets=[modal.Secret.from_name("ai-video-swap-token")],
+    volumes={PERSONA_ROOT: personas_store_volume},
+    scaledown_window=15,
+    # One container, so registrations serialise on its write lock.
+    max_containers=1,
+    min_containers=0,
+    timeout=60,
+)
+@modal.concurrent(max_inputs=8)
+class PersonaStore:
+    @modal.asgi_app()
+    def web(self):
+        from persona_store import build_persona_api
+
+        return build_persona_api(
+            PERSONA_ROOT,
+            lambda: os.environ.get("SWAP_TOKEN"),
+            personas_store_volume.reload,
+            personas_store_volume.commit,
+        )

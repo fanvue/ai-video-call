@@ -178,8 +178,9 @@ const personaListingSchema = z.object({
 
 export type PersonaListing = z.infer<typeof personaListingSchema>;
 
-export const fetchPersonas = async (): Promise<PersonaListing> => {
-  const res = await fetch("/api/live/personas");
+// LongLive and swap mode keep separate lists: swap mode's comes from the swap app's CPU persona store.
+const listPersonasAt = async (path: string): Promise<PersonaListing> => {
+  const res = await fetch(path);
   const parsed = personaListingSchema.safeParse(
     await res.json().catch(() => null),
   );
@@ -189,23 +190,31 @@ export const fetchPersonas = async (): Promise<PersonaListing> => {
   return parsed.data;
 };
 
+export const fetchPersonas = () => listPersonasAt("/api/live/personas");
+
+export const fetchSwapPersonas = () => listPersonasAt("/api/live/swapPersonas");
+
 // The attestation is required server side; the checkbox only gates the button.
-export const registerPersona = async (
+const registerPersonaAt = async (
+  path: string,
   file: File,
 ): Promise<{ id: PersonaOption["id"]; created: boolean }> => {
   if (file.type && file.type !== "image/jpeg" && file.type !== "image/png") {
     throw new Error("Please use a JPEG or PNG photo.");
   }
   const upload = await shrinkForUpload(file);
-  return postJson<{ id: string; created: boolean }>(
-    "/api/live/personaRegister",
-    {
-      imageBase64: await readFileAsBase64(upload),
-      contentType: upload.type === "image/png" ? "image/png" : "image/jpeg",
-      attested: true,
-    },
-  );
+  return postJson<{ id: string; created: boolean }>(path, {
+    imageBase64: await readFileAsBase64(upload),
+    contentType: upload.type === "image/png" ? "image/png" : "image/jpeg",
+    attested: true,
+  });
 };
+
+export const registerPersona = (file: File) =>
+  registerPersonaAt("/api/live/personaRegister", file);
+
+export const registerSwapPersona = (file: File) =>
+  registerPersonaAt("/api/live/swapPersonaRegister", file);
 
 // Fire-and-forget at session start in swap mode so the GPU container is loading while the first clip renders.
 export const warmSwap = async (): Promise<void> => {

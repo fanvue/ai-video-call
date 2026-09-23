@@ -18,7 +18,7 @@ The earlier per-frame JPEG-over-WebSocket transport (2 to 3 fps effective, 330 t
 
 ## Guards we keep (non-negotiable)
 
-- The swap source is an allowlisted synthetic persona only: the client sends the `personaId` picked in setup, and the service resolves it through the `persona-faces` manifest with LongLive's `persona.py` (synthetic plus rightsHolder required, fail closed). The session's upload drives generation only and never reaches the swap. No valid persona means the clip plays unswapped with the reason. The existing `frameGuard` and reference vetting stay in front of it.
+- The swap source is an allowlisted synthetic persona only: the client sends the `personaId` picked in setup, and the service resolves it through the `persona-faces` manifest with LongLive's `persona.py` (synthetic plus rightsHolder required, fail closed). The session's upload drives generation only and never reaches the swap. No valid persona means the clip plays unswapped with the reason. The existing `frameGuard` and reference vetting stay in front of it. Swap mode's persona setting (`swapPersonaId`) is separate from LongLive's face lock (`personaId`); its list and registration go through `/api/live/swapPersonas` and `/api/live/swapPersonaRegister` to the swap app's CPU `PersonaStore` (`SWAP_PERSONA_URL`), with the same registrar gates as LongLive's routes.
 - 18+ only, one fictional adult. Existing frame checks run on the swapped clip, which is the one that plays.
 - Service token never reaches the client. The server calls the service with a bearer token; the service fails closed when the token secret is missing.
 - A swap failure is not a guard failure: the unswapped turbo clip plays and the overlay reports `failed` with the reason. No auto-retry.

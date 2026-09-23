@@ -107,8 +107,10 @@ export type StartOptions = {
   intentParser?: IntentParser;
   // LongLive only: the server's second-GPU face restore, on unless turned off.
   faceRestore?: boolean;
-  // LongLive's face lock and swap mode's swap source: a manifest persona id, never an image.
+  // LongLive only: a manifest persona id for the face lock.
   personaId?: string;
+  // Swap mode only: the manifest persona id the swap uses as its source, never an image; set separately from LongLive's.
+  swapPersonaId?: string;
 };
 
 export type UseLiveSessionDeps = {
@@ -1460,7 +1462,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         backend: options.backend ?? "turbo",
         speechMode: options.speechMode ?? "text",
         swapProfile: options.swapProfile,
-        personaId: options.personaId,
+        personaId: options.swapPersonaId,
         intentParser: options.intentParser,
         abandonDependents: (job) => {
           directorRef.current?.abandonRequest(requestIdForJob(job));
@@ -1471,7 +1473,11 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         finalizeSwap:
           options.backend === "swap" && swapRenderedClip
             ? (result) =>
-                swapRenderedClip(result, options.personaId, options.swapProfile)
+                swapRenderedClip(
+                  result,
+                  options.swapPersonaId,
+                  options.swapProfile,
+                )
             : undefined,
       });
       pipelineRef.current = pipeline;

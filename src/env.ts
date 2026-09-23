@@ -21,6 +21,8 @@ export const env = createEnv({
     // Self-hosted Swap service (services/swap); either unset makes every swap clip report "failed".
     SWAP_SERVICE_URL: z.url().optional(),
     SWAP_TOKEN: z.string().min(16).optional(),
+    // The swap app's CPU persona store (PersonaStore web URL); unset, swap mode lists no personas and registration answers 503.
+    SWAP_PERSONA_URL: z.url().optional(),
     // Test-only language and vision models; unset leaves every OpenRouter option unavailable.
     OPENROUTER_API_KEY: z.string().min(1).optional(),
     // One-off token for running /api/live/orBench without a browser session; removed after each bench.
@@ -46,6 +48,7 @@ export const env = createEnv({
     GROQ_API_KEY: process.env.GROQ_API_KEY,
     SWAP_SERVICE_URL: process.env.SWAP_SERVICE_URL,
     SWAP_TOKEN: process.env.SWAP_TOKEN,
+    SWAP_PERSONA_URL: process.env.SWAP_PERSONA_URL,
     OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
     BENCH_TOKEN: process.env.BENCH_TOKEN,
     LONGLIVE_TOKEN: process.env.LONGLIVE_TOKEN,
