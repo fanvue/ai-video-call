@@ -744,18 +744,9 @@ class SwapEngine:
         fps = capture.get(cv2.CAP_PROP_FPS) or 24.0
         width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        # Re-encode video from the raw frames we pipe in and copy the source audio track, if any.
+        frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
         writer = subprocess.Popen(
-            [
-                "ffmpeg", "-loglevel", "error", "-y",
-                "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{width}x{height}",
-                "-r", f"{fps}", "-i", "pipe:0",
-                "-i", video_path,
-                "-map", "0:v:0", "-map", "1:a:0?", "-c:a", "copy",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
-                "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-shortest",
-                output_path,
-            ],
+            writer_args(width, height, fps, frame_count, video_path, output_path),
             stdin=subprocess.PIPE,
         )
         assert writer.stdin is not None
@@ -1137,6 +1128,22 @@ def check_frame_range(start_frame: int | None, end_frame: int | None) -> None:
         raise ValueError("start_frame must be >= 0")
     if end_frame is not None and end_frame <= (start_frame or 0):
         raise ValueError("end_frame must be after start_frame")
+
+
+# Re-encode video from the raw frames we pipe in and copy the source audio track, if any.
+# No -shortest: ffmpeg 4.4 (the image's) cut the video at the audio's end before x264 flushed, dropping the last 40 frames of every clip. The audio input is capped to the video's length instead.
+def writer_args(width: int, height: int, fps: float, frame_count: int, video_path: str, output_path: str) -> list[str]:
+    audio_cap = ["-t", f"{frame_count / fps:.6f}"] if frame_count > 0 else []
+    return [
+        "ffmpeg", "-loglevel", "error", "-y",
+        "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{width}x{height}",
+        "-r", f"{fps}", "-i", "pipe:0",
+        *audio_cap, "-i", video_path,
+        "-map", "0:v:0", "-map", "1:a:0?", "-c:a", "copy",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+        output_path,
+    ]
 
 
 # One segment of a split swap, frames [start_frame, end_frame): lossless, so the swap sees the same pixels a whole-clip pass would, and the audio is cut to the same span.

@@ -43,15 +43,15 @@ class FakeSwapEngine:
         return cv2.imencode(".png", frame)[1].tobytes()
 
 
-def write_indexed_clip(path: str) -> None:
-    # Frame i is one flat grey level, so its index survives the lossy x264 encode.
+def write_indexed_clip(path: str, frames: int = FRAMES, audio_sec: float = FRAMES / 24) -> None:
+    # Frame i is one flat grey level, so its index survives the lossy x264 encode (only the first 78 stay distinct).
     with tempfile.TemporaryDirectory() as directory:
-        for index in range(FRAMES):
-            cv2.imwrite(os.path.join(directory, f"{index:03d}.png"), np.full((64, 64, 3), 20 + index * 3, np.uint8))
+        for index in range(frames):
+            cv2.imwrite(os.path.join(directory, f"{index:03d}.png"), np.full((64, 64, 3), 20 + index * 3 % 236, np.uint8))
         subprocess.run(
             [
                 "ffmpeg", "-loglevel", "error", "-y", "-framerate", "24", "-i", os.path.join(directory, "%03d.png"),
-                "-f", "lavfi", "-i", "sine=frequency=440:duration=2.5", "-shortest",
+                "-f", "lavfi", "-i", f"sine=frequency=440:duration={audio_sec}",
                 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "10", "-c:a", "aac", path,
             ],
             check=True,
@@ -60,6 +60,14 @@ def write_indexed_clip(path: str) -> None:
 
 def swap(path: str, output: str) -> None:
     swap_core.SwapEngine.swap_clip(FakeSwapEngine(), path, None, output, workers=2, recipe="longlive")
+
+
+def audio_duration(path: str) -> float:
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=duration", "-of", "csv=p=0", path],
+        capture_output=True, text=True, check=True,
+    )
+    return float(probe.stdout.strip())
 
 
 def frame_levels(path: str) -> list[int]:
@@ -130,6 +138,30 @@ class SplitSwapTest(unittest.TestCase):
                 swap_core.swap_clip_from_url(None, "https://x.fal.media/a.mp4", None, "synth-persona-01")
         self.assertEqual([len(levels) for levels in seen], [FRAMES - SPLIT, FRAMES])
         self.assertLessEqual(abs(seen[0][0] - seen[1][SPLIT]), 1)
+
+    def test_the_writer_keeps_every_frame_and_caps_the_audio_to_them(self):
+        # Audio a second longer than the video: the output keeps all 120 frames and only their 5 s of audio.
+        with tempfile.TemporaryDirectory() as directory:
+            source = os.path.join(directory, "source.mp4")
+            write_indexed_clip(source, frames=120, audio_sec=6)
+            whole = os.path.join(directory, "whole.mp4")
+            swap(source, whole)
+            self.assertEqual(len(frame_levels(whole)), 120)
+            self.assertAlmostEqual(audio_duration(whole), 5, delta=0.05)
+            head = os.path.join(directory, "head.mp4")
+            swap_core.trim_frames(source, head, None, 100)
+            head_swapped = os.path.join(directory, "head-swapped.mp4")
+            swap(head, head_swapped)
+            self.assertEqual(len(frame_levels(head_swapped)), 100)
+            self.assertAlmostEqual(audio_duration(head_swapped), 100 / 24, delta=0.05)
+
+    def test_writer_args_drop_shortest_and_cap_the_audio_input(self):
+        # ffmpeg 4.4 with -shortest dropped a clip's last 40 frames; the local ffmpeg does not, so the args are pinned too.
+        args = swap_core.writer_args(480, 832, 24.0, 100, "in.mp4", "out.mp4")
+        self.assertNotIn("-shortest", args)
+        audio_input = args.index("in.mp4")
+        self.assertEqual(args[audio_input - 3 : audio_input], ["-t", "4.166667", "-i"])
+        self.assertNotIn("-t", swap_core.writer_args(480, 832, 24.0, 0, "in.mp4", "out.mp4"))
 
     def test_rejects_an_empty_or_negative_range(self):
         with self.assertRaises(ValueError):
