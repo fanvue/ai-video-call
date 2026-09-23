@@ -11,7 +11,7 @@ import {
   releaseClipSource,
 } from "@/lib/live/client/clipSource";
 import { ClipPipeline, type PipelineEvent } from "@/lib/live/client/pipeline";
-import { createEarlySwaps } from "@/lib/live/client/earlySwaps";
+import { createEarlySwaps, splitSwap } from "@/lib/live/client/earlySwaps";
 import type { SwapFrameRange } from "@/lib/live/client/api";
 import {
   type PendingReveal,
@@ -1132,6 +1132,14 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
           ? current.holdSwapSlot()
           : null;
       };
+      // The pipeline already counts the chain clip's own slot here, so only the rest needs a free container.
+      const reserveChainRestSlot = () => {
+        const current = pipelineRef.current;
+        return current &&
+          current.swapLoad() + 1 <= LIVE_TUNABLES.SWAP_SERVICE_CONTAINERS
+          ? current.holdSwapSlot()
+          : null;
+      };
       const earlySwaps = runSwap
         ? createEarlySwaps(
             runSwap,
@@ -1181,7 +1189,23 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
                 const early = earlySwaps?.take(result);
                 const rest = earlySwaps?.takeRest(result);
                 if (!early) {
-                  return runSwap(result);
+                  if (
+                    !LIVE_TUNABLES.SWAP_SPLIT_CHAIN ||
+                    result.jobKind === "idle" ||
+                    result.jobKind === "greeting"
+                  ) {
+                    return runSwap(result);
+                  }
+                  return splitSwap(
+                    runSwap,
+                    result,
+                    LIVE_TUNABLES.SWAP_SPLIT_HEAD_FRAMES,
+                    reserveChainRestSlot,
+                  ).then((split) =>
+                    split.rest
+                      ? { ...split.head, rest: split.rest }
+                      : split.head,
+                  );
                 }
                 return rest ? early.then((head) => ({ ...head, rest })) : early;
               }

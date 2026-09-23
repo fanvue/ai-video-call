@@ -68,3 +68,20 @@ export const createEarlySwaps = <T>(
     },
   };
 };
+
+// A chain clip with no early swap still splits when a container is free, so it plays once its head lands: prod (Sept 23, hhg4dahy1) swapped follow-up beats whole in 12 to 15 s and held her frozen 1.7 to 6.8 s after the reply before them.
+export const splitSwap = <T>(
+  runSwap: (clip: SwapTarget, range?: SwapFrameRange) => Promise<T>,
+  clip: SwapTarget,
+  headFrames: number,
+  reserve: () => (() => void) | null,
+): Promise<{ head: T; rest?: Promise<T> }> => {
+  const release = reserve();
+  if (!release) {
+    return runSwap(clip).then((head) => ({ head }));
+  }
+  const head = runSwap(clip, { endFrame: headFrames });
+  const rest = runSwap(clip, { startFrame: headFrames });
+  void rest.catch(() => undefined).finally(release);
+  return head.then((swapped) => ({ head: swapped, rest }));
+};

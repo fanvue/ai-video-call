@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createEarlySwaps } from "./earlySwaps";
+import { createEarlySwaps, splitSwap } from "./earlySwaps";
 
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
@@ -139,5 +139,69 @@ describe("createEarlySwaps", () => {
     expect(runSwap).toHaveBeenCalledTimes(1);
     expect(runSwap).toHaveBeenCalledWith(clip);
     expect(early.takeRest(clip)).toBeUndefined();
+  });
+});
+
+describe("splitSwap", () => {
+  const beat = {
+    videoUrl: "https://example.com/beat.mp4",
+    jobKind: "beat" as const,
+  };
+
+  it("swaps a chain clip's head and rest on two containers, resolving on the head and releasing once the rest settles", async () => {
+    const rest = deferred<string>();
+    const runSwap = vi
+      .fn<
+        (
+          clip: unknown,
+          range?: { startFrame?: number; endFrame?: number },
+        ) => Promise<string>
+      >()
+      .mockImplementation((_clip, range) =>
+        range?.startFrame !== undefined
+          ? rest.promise
+          : Promise.resolve("head"),
+      );
+    const release = vi.fn();
+
+    const split = await splitSwap(runSwap, beat, 100, () => release);
+    expect(runSwap).toHaveBeenCalledWith(beat, { endFrame: 100 });
+    expect(runSwap).toHaveBeenCalledWith(beat, { startFrame: 100 });
+    expect(split.head).toBe("head");
+    expect(release).not.toHaveBeenCalled();
+    rest.resolve("rest");
+    await expect(split.rest).resolves.toBe("rest");
+    await Promise.resolve();
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("swaps a chain clip whole when no container is free for its rest", async () => {
+    const runSwap = vi.fn(() => Promise.resolve("whole"));
+
+    const split = await splitSwap(runSwap, beat, 100, () => null);
+    expect(runSwap).toHaveBeenCalledTimes(1);
+    expect(runSwap).toHaveBeenCalledWith(beat);
+    expect(split).toEqual({ head: "whole" });
+  });
+
+  it("releases the rest's container when the rest fails", async () => {
+    const runSwap = vi
+      .fn<
+        (
+          clip: unknown,
+          range?: { startFrame?: number; endFrame?: number },
+        ) => Promise<string>
+      >()
+      .mockImplementation((_clip, range) =>
+        range?.startFrame !== undefined
+          ? Promise.reject(new Error("Modal 503"))
+          : Promise.resolve("head"),
+      );
+    const release = vi.fn();
+
+    const split = await splitSwap(runSwap, beat, 100, () => release);
+    await expect(split.rest).rejects.toThrow("Modal 503");
+    await Promise.resolve();
+    expect(release).toHaveBeenCalledTimes(1);
   });
 });

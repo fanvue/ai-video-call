@@ -451,6 +451,8 @@ export const LIVE_TUNABLES = {
   SWAP_SPLIT_REPLY: true,
   // About 4.2 s at 24 fps: the rest (about 140 frames at 45 ms) lands while the head plays.
   SWAP_SPLIT_HEAD_FRAMES: 100,
+  // Beats, check-ins and replies that missed the early swap split the same way when a container is free; whole, a beat's 12 to 15 s swap outlasted the reply playing before it.
+  SWAP_SPLIT_CHAIN: true,
   // The 15 s greeting is 361 frames: a 100-frame head plays out before its 261-frame rest lands (9 to 12 s). At 150 the rest is 211 frames (7 to 9.5 s at 34 to 45 ms) against a head that lands in 5 to 7 s and plays 6.25 s, so it lands with 2 s or more to spare.
   SWAP_SPLIT_GREETING_HEAD_FRAMES: 150,
   // ai-video-swap's max_containers (services/swap/modal_app.py); a request past it queues inside Modal.
