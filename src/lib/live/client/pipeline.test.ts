@@ -2170,6 +2170,89 @@ describe("ClipPipeline", () => {
     expect(pipeline.nextClip()?.jobKind).toBe("checkIn");
   });
 
+  it("two-phase swap: every chain clip seeds from the tail of the clip played before it, and every idle between them from that same tail, even when concurrent swaps land out of order", async () => {
+    const queue = makeJobQueue();
+    const requestSeed = new Map<string, string>();
+    const pendingSwaps: Deferred<{
+      videoUrl: string;
+      costUsd: number;
+      report: ClipSwapReport;
+    }>[] = [];
+    const pipeline = trackedPipeline({
+      backend: "swap",
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) =>
+        delayed(() => {
+          const result = {
+            ...chainAdvancingResult(req),
+            swap: { ...SWAPPED_REPORT, status: "pending" as const },
+          };
+          requestSeed.set(result.clipId, req.session.seedFrameUrl);
+          return result;
+        }),
+      finalizeSwap: (result) => {
+        if (result.jobKind === "idle" || result.jobKind === "greeting") {
+          return Promise.resolve({
+            videoUrl: `${result.videoUrl}#swapped`,
+            costUsd: 0,
+            report: { ...SWAPPED_REPORT },
+          });
+        }
+        const deferred = defer<{
+          videoUrl: string;
+          costUsd: number;
+          report: ClipSwapReport;
+        }>();
+        pendingSwaps.push(deferred);
+        return deferred.promise;
+      },
+    });
+
+    queue.push(REPLY_JOB);
+    queue.push({ kind: "checkIn", channel: "chat" });
+    queue.push({ ...REPLY_JOB, requestId: "r2" });
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    const played: ClipResult[] = [];
+    for (let step = 0; step < 16; step += 1) {
+      await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+      // Two chain swaps are held in flight, then land later one first, the order SWAP_CHAIN_MAX_CONCURRENT allows.
+      const landing =
+        pendingSwaps.length >= 2 || step >= 8 ? pendingSwaps.splice(0) : [];
+      for (const deferred of landing.reverse()) {
+        deferred.resolve({
+          videoUrl: "https://example.com/swapped.mp4",
+          costUsd: 0,
+          report: { ...SWAPPED_REPORT },
+        });
+      }
+      await vi.advanceTimersByTimeAsync(0);
+      const next = pipeline.nextClip();
+      if (next) {
+        played.push(next);
+      }
+    }
+
+    const chain = played.filter((clip) => clip.jobKind !== "idle");
+    expect(chain.map((clip) => clip.jobKind)).toEqual([
+      "greeting",
+      "reply",
+      "checkIn",
+      "reply",
+    ]);
+    let tail = "";
+    for (const clip of played) {
+      if (clip.jobKind === "greeting") {
+        tail = clip.seedFrameUrl;
+        continue;
+      }
+      expect(requestSeed.get(clip.clipId)).toBe(tail);
+      if (clip.jobKind !== "idle") {
+        tail = clip.seedFrameUrl;
+      }
+    }
+  });
+
   it("two-phase swap: fillers share SWAP_MAX_CONCURRENT minus one slot, the chain keeps its own, and a queued filler starts when one lands", async () => {
     const queue = makeJobQueue();
     const started: string[] = [];
