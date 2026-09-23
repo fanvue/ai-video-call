@@ -315,7 +315,8 @@ def build_api(engine, session_lock: asyncio.Lock):
     # One H100 at most: the account caps at 2 concurrent GPUs and each session needs a whole card.
     max_containers=1,
     min_containers=0,
-    scaledown_window=120,
+    # Long enough that a container woken from the setup screen is still warm when the viewer goes live.
+    scaledown_window=300,
     # Past the 20 min session cap, so the cap closes the socket rather than the platform.
     timeout=25 * 60,
 )

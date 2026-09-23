@@ -12,10 +12,12 @@ import {
 import type { RequestStatus } from "@/lib/live/client/director";
 
 // Portrait, matching the clip backends' 9:16 player chrome.
-export const LONGLIVE_STREAM = { width: 480, height: 832, fps: 16 } as const;
+// 24 fps is the model's native motion rate; asking for 16 played every move at two-thirds speed.
+export const LONGLIVE_STREAM = { width: 480, height: 832, fps: 24 } as const;
 
 // A cold container loads the 5B weights onto the H100 before its first block; a warm one answers in seconds.
-const OPEN_TIMEOUT_MS = 180_000;
+// Under the 300 s ticket: a cold start is a GPU queue wait plus about 2 min of model load.
+const OPEN_TIMEOUT_MS = 290_000;
 // Long enough for the asked action to play out before the scene settles back to an idle pose.
 export const LONGLIVE_SETTLE_AFTER_MS = 12_000;
 // services/longlive closes with these for a bad ticket and a bad start message; retrying cannot fix either.

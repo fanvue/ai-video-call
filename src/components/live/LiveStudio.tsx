@@ -447,6 +447,11 @@ export const LiveStudio = () => {
             stage={session.connectStage}
             viewerCount={session.viewerCount}
             posterUrl={session.posterUrl}
+            renderingLabel={
+              session.backend === "longlive"
+                ? "Starting the GPU, up to 4 minutes when cold"
+                : undefined
+            }
           />
         ) : null}
 

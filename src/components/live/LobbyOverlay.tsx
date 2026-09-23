@@ -9,6 +9,8 @@ type LobbyOverlayProps = {
   viewerCount: number;
   // The frame the greeting will start on, shown dimmed behind the milestones so going live is a fade, not a jump.
   posterUrl?: string | null;
+  // LongLive has no first clip; its wait is the GPU container loading the model.
+  renderingLabel?: string;
 };
 
 const STAGES: { id: ConnectStage; label: string }[] = [
@@ -24,6 +26,7 @@ export const LobbyOverlay = ({
   stage,
   viewerCount,
   posterUrl = null,
+  renderingLabel,
 }: LobbyOverlayProps) => {
   const activeIndex = STAGES.findIndex((entry) => entry.id === stage);
   const initial = displayName.trim().charAt(0).toUpperCase() || "?";
@@ -65,7 +68,9 @@ export const LobbyOverlay = ({
                   : "text-white/40")
             }
           >
-            {entry.label}
+            {entry.id === "renderingFirstClip" && renderingLabel
+              ? renderingLabel
+              : entry.label}
           </li>
         ))}
       </ul>

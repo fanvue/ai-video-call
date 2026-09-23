@@ -314,7 +314,7 @@ describe("LongLiveSession", () => {
         prompt: "opening scene",
         width: 480,
         height: 832,
-        fps: 16,
+        fps: 24,
       },
     ]);
     expect(t.deps.onStreamState).toHaveBeenCalledWith("live");
