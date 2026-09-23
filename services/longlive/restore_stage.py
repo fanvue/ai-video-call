@@ -33,6 +33,20 @@ class PassthroughCodec:
         pass
 
 
+class BlockingCall:
+    """A blocking remote call behind the get/cancel handle; Modal's spawn()+get() added about 2.5 s over .remote() per block in the face A/B."""
+
+    def __init__(self, pool: ThreadPoolExecutor, fn: Callable[[], Any]):
+        self._future = pool.submit(fn)
+
+    def get(self, timeout: float):
+        return self._future.result(timeout=timeout)
+
+    def cancel(self) -> None:
+        # Drops a call still queued here; one already sent finishes remotely and is discarded, and the server drops blocks already past budget.
+        self._future.cancel()
+
+
 @dataclass
 class RestoreTicket:
     jpegs: list[bytes]

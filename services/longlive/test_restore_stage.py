@@ -4,7 +4,10 @@ import threading
 import time
 import unittest
 
-from restore_stage import RestoreStage
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
+
+from restore_stage import BlockingCall, RestoreStage
 
 FRAMES = [b"a", b"b", b"c"]
 
@@ -206,6 +209,43 @@ class RestoreStageTest(unittest.TestCase):
         stage = self.stage(lambda frames: seen.append(frames) or reply(["x", "y", "z"]), codec=Codec())
         self.assertEqual(self.run_block(stage).jpegs, [b"state:x", b"state:y", b"state:z"])
         self.assertEqual(seen, [[b"a-t", b"b-t", b"c-t"]])
+
+
+
+class BlockingCallTest(unittest.TestCase):
+    def test_returns_the_result_and_times_out(self):
+        pool = ThreadPoolExecutor(1)
+        self.assertEqual(BlockingCall(pool, lambda: 7).get(timeout=1), 7)
+        release = threading.Event()
+        slow = BlockingCall(pool, lambda: release.wait(5))
+        with self.assertRaises(FutureTimeout):
+            slow.get(timeout=0.05)
+        release.set()
+        pool.shutdown(wait=True)
+
+    def test_cancel_drops_a_call_that_has_not_started(self):
+        pool = ThreadPoolExecutor(1)
+        release = threading.Event()
+        ran = []
+        BlockingCall(pool, lambda: release.wait(5))
+        queued = BlockingCall(pool, lambda: ran.append(1))
+        queued.cancel()
+        release.set()
+        pool.shutdown(wait=True)
+        self.assertEqual(ran, [])
+
+    def test_stage_fails_open_through_a_blocking_call(self):
+        pool = ThreadPoolExecutor(2)
+        release = threading.Event()
+        stage = RestoreStage(lambda frames: BlockingCall(pool, lambda: release.wait(5)), timeout_s=0.3, log=lambda line: None)
+        ticket = stage.submit([b"a"])
+        outcome = stage.collect(ticket)
+        self.assertFalse(outcome.restored)
+        self.assertEqual(outcome.jpegs, [b"a"])
+        self.assertEqual(stage.fail_open, 1)
+        release.set()
+        stage.close()
+        pool.shutdown(wait=True)
 
 
 if __name__ == "__main__":

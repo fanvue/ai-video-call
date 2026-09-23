@@ -11,7 +11,7 @@ import os
 import queue
 import threading
 import time
-
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import modal
@@ -34,7 +34,7 @@ from protocol import (
     verify_register_token,
     verify_ticket,
 )
-from restore_stage import MAX_INFLIGHT, RESTORE_TIMEOUT_S, RestoreStage, RestoreTicket
+from restore_stage import MAX_INFLIGHT, RESTORE_TIMEOUT_S, BlockingCall, RestoreStage, RestoreTicket
 
 # Dev deploys set their own name so they never replace the live app.
 app = modal.App(os.environ.get("LONGLIVE_APP_NAME", "ai-video-longlive"))
@@ -625,14 +625,15 @@ class RemoteRestorer:
 
     def __init__(self):
         self.service = FaceRestore()
+        self._calls = ThreadPoolExecutor(MAX_INFLIGHT + 1)
 
     def warm(self, persona_id: str | None = None) -> dict:
         return self.service.warm.remote(persona_id)
 
     def spawn(self, frames: list[bytes], persona_id: str | None, restore: bool):
-        # spawn, not remote: the returned FunctionCall can be cancelled once the block is late.
+        # remote, not spawn: spawn()+get() queued every block past the 2 s budget (3.6 s vs 1.0 s for 32 frames, warm L40S).
         request = {"frames": frames, "personaId": persona_id, "restore": restore, "sentAt": time.time(), "budgetMs": RESTORE_TIMEOUT_S * 1000}
-        return self.service.process.spawn(request)
+        return BlockingCall(self._calls, lambda: self.service.process.remote(request))
 
 
 class PersonaStore:
