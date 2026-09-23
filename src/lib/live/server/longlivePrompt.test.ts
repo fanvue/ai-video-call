@@ -1,6 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CreatorProfile, LiveState, Wardrobe } from "../contract";
-import { planLongLiveGreeting, planLongLiveRequest } from "./longlivePrompt";
+
+const create = vi.fn();
+vi.mock("@/lib/groq", () => ({
+  GROQ_TEXT_MODEL: "test-model",
+  createGroqChatCompletion: (...args: unknown[]) => create(...args),
+}));
+
+const { planLongLiveGreeting, planLongLiveRequest } =
+  await import("./longlivePrompt");
 
 const wardrobe = (overrides: Partial<Wardrobe> = {}): Wardrobe => ({
   top: { on: true, description: "black ribbed tank top" },
@@ -39,81 +47,132 @@ const creator: CreatorProfile = {
 };
 
 const UNDRESS_WORDS =
-  /\b(take[sn]? off|takes off|remov\w*|undress\w*|strip\w*)\b/i;
+  /\b(take[sn]? off|takes off|pulls? her .* off|unhooks?|slides? (her|them|it) down|remov\w*|undress\w*|strip\w*)\b/i;
+// What the old builder leaked into prompts: labels, negations, meta words the video model renders.
+const CAPS_LABEL = /\b[A-Z]{3,}\b/;
+const NEGATION = /\b(not|no|never|without)\b|n't\b/i;
+const META = /\b(zoom|pan|text|subtitles?|watermark|UI)\b/i;
+
+const wordCount = (text: string): number => text.split(/\s+/).length;
+
+const expectCaption = (text: string): void => {
+  expect(text).toMatch(/^An adult woman/);
+  expect(text).not.toMatch(CAPS_LABEL);
+  expect(text).not.toMatch(NEGATION);
+  expect(text).not.toMatch(META);
+  expect(text).not.toContain(String.fromCharCode(0x2014));
+  expect(wordCount(text)).toBeGreaterThanOrEqual(30);
+  expect(wordCount(text)).toBeLessThanOrEqual(110);
+};
+
+beforeEach(() => {
+  create.mockReset();
+  create.mockRejectedValue(new Error("groq down"));
+});
 
 describe("planLongLiveGreeting", () => {
-  it("restates the adult woman, her look, wardrobe, room and the fixed webcam", () => {
+  it("is a short positive caption: her look, what she wears, one action, the room", () => {
     const { prompt, settlePrompt, nextState } = planLongLiveGreeting(
       creator,
       state(),
     );
-    expect(prompt).toContain("One adult woman");
-    expect(prompt).toContain(creator.lookLock);
-    expect(prompt).toContain("black lace bra");
-    expect(prompt).toContain("WARDROBE LOCK");
-    expect(prompt).toContain("FIXED WEBCAM");
-    expect(prompt).toContain("A tidy bedroom");
+    expectCaption(prompt);
+    expectCaption(settlePrompt);
+    expect(prompt).toContain("An adult woman with long wavy auburn hair");
+    expect(prompt).toContain("wearing her black ribbed tank top");
     expect(prompt).toContain("waves hello");
-    expect(settlePrompt).toContain("One adult woman");
+    expect(prompt).toContain("A tidy bedroom");
+    expect(prompt).toContain("Static webcam shot at eye level");
     expect(nextState).toEqual(state());
   });
 
-  it("never names undressing and never uses an em dash", () => {
+  it("never names undressing, and the settle scene never names her clothes", () => {
     const { prompt, settlePrompt } = planLongLiveGreeting(creator, state());
-    for (const text of [prompt, settlePrompt]) {
-      expect(text).not.toMatch(UNDRESS_WORDS);
-      expect(text).not.toContain("\u2014");
-    }
+    expect(prompt).not.toMatch(UNDRESS_WORDS);
+    expect(settlePrompt).not.toMatch(UNDRESS_WORDS);
+    expect(settlePrompt).not.toContain("black lace bra");
+  });
+
+  it("drops a look that frames her as young and keeps only the adult subject", () => {
+    const { prompt } = planLongLiveGreeting(
+      { ...creator, lookLock: "Young girl with pigtails." },
+      state(),
+    );
+    expect(prompt).toMatch(/^An adult woman, wearing/);
+    expect(prompt).not.toMatch(/young|girl|pigtails/i);
   });
 });
 
 describe("planLongLiveRequest", () => {
-  it("quotes a non-wardrobe action without naming any garment removal", () => {
-    const { prompt, nextState } = planLongLiveRequest(
+  it("describes a wave as a concrete motion and never quotes the request", async () => {
+    const { prompt, nextState } = await planLongLiveRequest(
       creator,
       state(),
       "wave at me",
     );
-    expect(prompt).toContain('a viewer just asked: "wave at me"');
-    expect(prompt).toContain("WARDROBE LOCK");
-    expect(prompt).not.toMatch(UNDRESS_WORDS);
+    expectCaption(prompt);
+    expect(prompt).toContain("waves it side to side");
+    expect(prompt).not.toContain("wave at me");
+    expect(prompt).not.toContain("black lace bra");
     expect(nextState.wardrobe).toEqual(wardrobe());
   });
 
-  it("names the removal only for a wardrobe request, and advances the wardrobe", () => {
-    const { prompt, settlePrompt, nextState } = planLongLiveRequest(
+  it("describes a bra removal literally and advances the wardrobe", async () => {
+    const { prompt, settlePrompt, nextState } = await planLongLiveRequest(
       creator,
-      state(),
+      state({
+        wardrobe: wardrobe({
+          top: { on: false, description: "black ribbed tank top" },
+          removedOrder: ["top"],
+        }),
+      }),
       "take your bra off",
     );
-    expect(prompt).toContain("she takes off her black lace bra");
-    expect(prompt).not.toContain("WARDROBE LOCK");
+    expectCaption(prompt);
+    expect(prompt).toContain("unhooks her black lace bra");
+    expect(prompt).toContain("visible nipples");
     expect(nextState.wardrobe.bra.on).toBe(false);
-    // The settle scene describes the new state positively and does not replay the removal.
     expect(settlePrompt).not.toMatch(UNDRESS_WORDS);
-    expect(settlePrompt).not.toContain("(black lace bra)");
-    expect(settlePrompt).toContain("WARDROBE LOCK");
+    expect(settlePrompt).toContain("playing with a strand of her hair");
   });
 
-  it("does not quote a negated wardrobe request, since the words themselves cue the model", () => {
-    const { prompt, nextState } = planLongLiveRequest(
+  it("plays stand up even when the guessed pose already says standing", async () => {
+    const standing = state({
+      body: { ...state().body, pose: "standing" },
+    });
+    const { prompt } = await planLongLiveRequest(creator, standing, "stand up");
+    expect(prompt).toContain("stands tall");
+  });
+
+  it("describes a spin as turning all the way around", async () => {
+    const { prompt } = await planLongLiveRequest(
+      creator,
+      state(),
+      "spin around",
+    );
+    expect(prompt).toContain("turns slowly all the way around");
+  });
+
+  it("does not quote a negated wardrobe request, since the words themselves cue the model", async () => {
+    const { prompt, nextState } = await planLongLiveRequest(
       creator,
       state(),
       "don't take your top off",
     );
     expect(prompt).not.toContain("don't take your top off");
     expect(prompt).not.toMatch(UNDRESS_WORDS);
+    expectCaption(prompt);
     expect(nextState.wardrobe.top.on).toBe(true);
   });
 
-  it("does not replay a removal for a garment that is already off", () => {
+  it("does not replay a removal for a garment that is already off", async () => {
     const current = state({
       wardrobe: wardrobe({
         bra: { on: false, description: "black lace bra" },
         removedOrder: ["bra"],
       }),
     });
-    const { prompt } = planLongLiveRequest(
+    const { prompt } = await planLongLiveRequest(
       creator,
       current,
       "take your bra off",
@@ -121,27 +180,46 @@ describe("planLongLiveRequest", () => {
     expect(prompt).not.toMatch(UNDRESS_WORDS);
   });
 
-  it("puts a garment back on and restores it in the next state", () => {
+  it("puts a garment back on and restores it in the next state", async () => {
     const current = state({
       wardrobe: wardrobe({
         top: { on: false, description: "black ribbed tank top" },
         removedOrder: ["top"],
       }),
     });
-    const { prompt, nextState } = planLongLiveRequest(
+    const { prompt, nextState } = await planLongLiveRequest(
       creator,
       current,
       "put your top back on",
     );
-    expect(prompt).toContain("she puts her black ribbed tank top back on");
+    expect(prompt).toContain("picks up her black ribbed tank top");
     expect(nextState.wardrobe.top.on).toBe(true);
   });
 
-  it("stays within 2000 chars and trims the room, not the action", () => {
+  it("trims an overlong room at a sentence end and keeps the action", async () => {
     const current = state({ surroundings: "A very long room. ".repeat(80) });
-    const { prompt } = planLongLiveRequest(creator, current, "wave at me");
+    const { prompt } = await planLongLiveRequest(
+      creator,
+      current,
+      "wave at me",
+    );
     expect(prompt.length).toBeLessThanOrEqual(2000);
-    expect(prompt).toContain('a viewer just asked: "wave at me"');
-    expect(prompt).toContain("FIXED WEBCAM");
+    expect(prompt).toContain("waves it side to side");
+    expectCaption(prompt);
+  });
+
+  it("uses the LLM sentence when it is one clean positive sentence", async () => {
+    create.mockResolvedValue({
+      choices: [
+        {
+          message: {
+            content:
+              '{"sentence":"She raises both arms above her head and waves them slowly, smiling at the camera."}',
+          },
+        },
+      ],
+    });
+    const { prompt } = await planLongLiveRequest(creator, state(), "wave");
+    expect(prompt).toContain("raises both arms above her head");
   });
 });

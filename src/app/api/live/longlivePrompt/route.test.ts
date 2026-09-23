@@ -4,6 +4,11 @@ import { defaultLiveState } from "@/lib/live/client/defaultLiveState";
 
 vi.mock("@/lib/fanvue", () => ({ getCurrentUser: vi.fn() }));
 vi.mock("@/lib/live/server/writeReply", () => ({ writeReply: vi.fn() }));
+// The action rewrite is down in every test here, so the deterministic template is what gets asserted.
+vi.mock("@/lib/groq", () => ({
+  GROQ_TEXT_MODEL: "test-model",
+  createGroqChatCompletion: () => Promise.reject(new Error("groq down")),
+}));
 
 const { getCurrentUser } = await import("@/lib/fanvue");
 const { writeReply } = await import("@/lib/live/server/writeReply");
@@ -52,8 +57,8 @@ describe("POST /api/live/longlivePrompt", () => {
       reply: string | null;
     };
     expect(response.status).toBe(200);
-    expect(data.prompt).toContain("One adult woman");
-    expect(data.settlePrompt).toContain("One adult woman");
+    expect(data.prompt).toContain("An adult woman");
+    expect(data.settlePrompt).toContain("An adult woman");
     expect(data.reply).toBeNull();
     expect(writeReply).not.toHaveBeenCalled();
   });
@@ -71,7 +76,7 @@ describe("POST /api/live/longlivePrompt", () => {
       state: { wardrobe: { top: { on: boolean } } };
     };
     expect(data.reply).toBe("coming right up");
-    expect(data.prompt).toContain("she takes off her white crop top");
+    expect(data.prompt).toContain("pulls her white crop top off");
     expect(data.state.wardrobe.top.on).toBe(false);
   });
 

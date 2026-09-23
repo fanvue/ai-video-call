@@ -1,42 +1,20 @@
 // LongLive has no session premise: every prompt it gets replaces the last, so each one restates the whole scene.
+// A T5-conditioned video model follows short positive captions and ignores negations, so the prompt is a caption: who, one action, where.
 import { isIntentSatisfied } from "../intents";
-import type { BeatIntent, CreatorProfile, LiveState } from "../contract";
+import type { CreatorProfile, LiveState } from "../contract";
 import {
-  cameraLockLine,
-  describeState,
-  lookLockLine,
-  planBeatIntent,
-  resolveIntents,
-  wardrobeLockLine,
-} from "./planClip";
+  GREETING_ACTION,
+  SETTLE_ACTION,
+  YOUTH_WORD_RE,
+  planAction,
+} from "./longliveAction";
+import { planBeatIntent, resolveIntents } from "./planClip";
 
 const MAX_PROMPT_CHARS = 2000;
+const MAX_ROOM_CHARS = 240;
 
-const SCENE_LINE =
-  "A continuous, uncut, real-time solo webcam livestream, shot on a fixed phone camera in portrait. One adult woman, alone, live for her viewers.";
-
-const STEADY_LINE =
-  "Small natural movements, no cuts, no scene changes. No text overlays, no watermark, no subtitles, no UI.";
-
-// The stream is video only, so she never mouths words that nobody hears.
-const SILENT_LINE = "She does not speak; lips relaxed, no mouthing words.";
-
-const GREETING_ACTION =
-  "ACTION: she has just gone live, settles into frame, smiles at the camera and waves hello to her viewers.";
-
-const SETTLE_ACTION =
-  "ACTION: she holds this position, relaxed, smiling and chatting with her viewers through the lens.";
-
-const REACT_ACTION =
-  "ACTION: she reads a viewer's message, smiles and reacts warmly to the camera, relaxed and flirty.";
-
-type WardrobeIntent = Extract<
-  BeatIntent,
-  { type: "removeGarment" | "addGarment" }
->;
-
-const isWardrobeIntent = (intent: BeatIntent): intent is WardrobeIntent =>
-  intent.type === "removeGarment" || intent.type === "addGarment";
+const STYLE_LINE =
+  "Static webcam shot at eye level, warm lamp light, realistic.";
 
 export type LongLiveStep = {
   prompt: string;
@@ -45,60 +23,54 @@ export type LongLiveStep = {
   nextState: LiveState;
 };
 
+// A look that frames her as young is dropped whole; the reference frame still carries her identity.
+const subjectSentence = (lookLock: string): string => {
+  const look = lookLock.trim().replace(/[.\s]+$/, "");
+  if (look.length === 0 || YOUTH_WORD_RE.test(look)) return "An adult woman.";
+  return `An adult woman with ${look.charAt(0).toLowerCase()}${look.slice(1)}.`;
+};
+
+// Cut at a sentence end so an overlong room never pushes the action out.
+const roomSentence = (surroundings: string): string => {
+  const room = surroundings.trim();
+  if (room.length <= MAX_ROOM_CHARS) return room;
+  const cut = room.slice(0, MAX_ROOM_CHARS);
+  const end = cut.lastIndexOf(". ");
+  return end > 0 ? cut.slice(0, end + 1) : `${cut.trimEnd()}.`;
+};
+
+const wornList = (state: LiveState): string | null => {
+  const worn = (["top", "bottom", "bra", "panties"] as const)
+    .filter((id) => state.wardrobe[id].on)
+    .map((id) => `her ${state.wardrobe[id].description}`);
+  if (worn.length === 0) return null;
+  return worn.length === 1
+    ? worn[0]
+    : `${worn.slice(0, -1).join(", ")} and ${worn[worn.length - 1]}`;
+};
+
 const buildPrompt = (params: {
   creator: CreatorProfile;
   state: LiveState;
-  nextState: LiveState;
   action: string;
-  wardrobeChange: string | null;
+  // Only the greeting names her clothes; later prompts leave the frames to carry them.
+  withWardrobe: boolean;
 }): string => {
-  const { creator, state, nextState, wardrobeChange } = params;
-  const lines = [
-    SCENE_LINE,
-    lookLockLine(creator.lookLock),
-    wardrobeChange
-      ? `NOW: she is ${describeState(state.wardrobe, state.body)} ${wardrobeChange} Afterwards she is ${describeState(nextState.wardrobe, nextState.body)}`
-      : `NOW: she is ${describeState(nextState.wardrobe, nextState.body)}`,
-    // Positive-only hold line, so a prompt without a wardrobe change never names undressing.
-    wardrobeChange ? null : wardrobeLockLine(nextState.wardrobe),
-    params.action,
-    cameraLockLine(nextState.body.framing),
-    STEADY_LINE,
-    SILENT_LINE,
-    // Last, so an overlong room description is what gets trimmed, not the action.
-    `ROOM: ${state.surroundings}`,
-  ];
-  return lines
-    .filter((line): line is string => line !== null)
+  const { creator, state, action, withWardrobe } = params;
+  const worn = withWardrobe ? wornList(state) : null;
+  const subject = subjectSentence(creator.lookLock);
+  return [
+    worn ? `${subject.replace(/\.$/, "")}, wearing ${worn}.` : subject,
+    action,
+    roomSentence(state.surroundings),
+    STYLE_LINE,
+  ]
     .join(" ")
     .slice(0, MAX_PROMPT_CHARS);
 };
 
-const describeWardrobeChange = (
-  intents: WardrobeIntent[],
-  state: LiveState,
-): string => {
-  const steps = intents.map((intent) => {
-    const description = state.wardrobe[intent.garment].description;
-    return intent.type === "removeGarment"
-      ? `she takes off her ${description} with her hands and sets it aside`
-      : `she puts her ${description} back on with her hands`;
-  });
-  const sentence =
-    steps.length === 1
-      ? `Now ${steps[0]}.`
-      : `One garment at a time, ${steps.join(", then ")}.`;
-  return `${sentence} The fabric moves only where her hands move it.`;
-};
-
 const settleFor = (creator: CreatorProfile, state: LiveState): string =>
-  buildPrompt({
-    creator,
-    state,
-    nextState: state,
-    action: SETTLE_ACTION,
-    wardrobeChange: null,
-  });
+  buildPrompt({ creator, state, action: SETTLE_ACTION, withWardrobe: false });
 
 export const planLongLiveGreeting = (
   creator: CreatorProfile,
@@ -107,24 +79,30 @@ export const planLongLiveGreeting = (
   prompt: buildPrompt({
     creator,
     state,
-    nextState: state,
     action: GREETING_ACTION,
-    wardrobeChange: null,
+    withWardrobe: true,
   }),
   settlePrompt: settleFor(creator, state),
   nextState: state,
 });
 
-export const planLongLiveRequest = (
+export const planLongLiveRequest = async (
   creator: CreatorProfile,
   state: LiveState,
   requestText: string,
-): LongLiveStep => {
+): Promise<LongLiveStep> => {
+  // Only wardrobe steps are dropped when already true: the pose state is a guess, so "stand up" always plays.
   const intents = resolveIntents(
     requestText,
     state.wardrobe,
     state.body,
-  ).filter((intent) => !isIntentSatisfied(intent, state));
+  ).filter(
+    (intent) =>
+      !(
+        (intent.type === "removeGarment" || intent.type === "addGarment") &&
+        isIntentSatisfied(intent, state)
+      ),
+  );
   let nextState = state;
   for (const intent of intents) {
     if (intent.type === "hold") continue;
@@ -135,23 +113,10 @@ export const planLongLiveRequest = (
       body: plan.nextBody,
     };
   }
-  const wardrobeIntents = intents.filter(isWardrobeIntent);
-  const physical = intents.some((intent) => intent.type !== "hold");
   // Small talk and negations ("don't take it off") are never quoted: the words themselves read as a cue.
-  const action = physical
-    ? `ACTION: a viewer just asked: "${requestText.replace(/"/g, "'")}". She does exactly that now, playfully and fully.`
-    : REACT_ACTION;
+  const action = await planAction(requestText, intents, state);
   return {
-    prompt: buildPrompt({
-      creator,
-      state,
-      nextState,
-      action,
-      wardrobeChange:
-        wardrobeIntents.length > 0
-          ? describeWardrobeChange(wardrobeIntents, state)
-          : null,
-    }),
+    prompt: buildPrompt({ creator, state, action, withWardrobe: false }),
     settlePrompt: settleFor(creator, nextState),
     nextState,
   };

@@ -57,16 +57,19 @@ export async function POST(request: Request) {
   }
 
   try {
-    const step = planLongLiveRequest(creator, state, requestText);
-    const reply = await writeReply({
-      transcript,
-      requestText,
-      physical: LONGLIVE_PHYSICAL,
-      creator,
-      channel,
-      world: state.world,
-      speechMode,
-    });
+    // Both are Groq calls with no dependency on each other, so the action rewrite adds no latency on top of the reply.
+    const [step, reply] = await Promise.all([
+      planLongLiveRequest(creator, state, requestText),
+      writeReply({
+        transcript,
+        requestText,
+        physical: LONGLIVE_PHYSICAL,
+        creator,
+        channel,
+        world: state.world,
+        speechMode,
+      }),
+    ]);
     return NextResponse.json({
       prompt: step.prompt,
       settlePrompt: step.settlePrompt,
