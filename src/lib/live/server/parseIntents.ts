@@ -58,6 +58,24 @@ const validIntents = (raw: unknown): BeatIntent[] => {
     .slice(0, MAX_INTENTS);
 };
 
+export const intentParseMessages = (
+  text: string,
+  state: LiveState,
+): { role: "system" | "user"; content: string }[] => [
+  { role: "system", content: SYSTEM_PROMPT },
+  {
+    role: "user",
+    content: `${describeState(state)}\nRequest: ${text.slice(0, 500)}`,
+  },
+];
+
+// Throws on unparseable JSON; an empty array means nothing usable came back.
+export const intentsFromLlmOutput = (raw: string, text: string): BeatIntent[] =>
+  keepSpecificGestures(
+    validIntents(JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] ?? raw)),
+    text,
+  );
+
 // Null on any failure or an empty result, so the caller keeps the regex intents.
 export const parseIntentsWithLlm = async (
   text: string,
@@ -69,19 +87,10 @@ export const parseIntentsWithLlm = async (
       reasoningEffort: "low",
       temperature: 0,
       responseFormat: { type: "json_object" },
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: `${describeState(state)}\nRequest: ${text.slice(0, 500)}`,
-        },
-      ],
+      messages: intentParseMessages(text, state),
     });
     const raw = completion.choices[0]?.message?.content?.trim() ?? "";
-    const intents = keepSpecificGestures(
-      validIntents(JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] ?? raw)),
-      text,
-    );
+    const intents = intentsFromLlmOutput(raw, text);
     return intents.length > 0 ? intents : null;
   } catch (error) {
     console.warn(
