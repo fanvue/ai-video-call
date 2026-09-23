@@ -649,6 +649,19 @@ const planAct = (
         explicit: true,
       };
     case "spank": {
+      // Seated or lying, her backside is on the bed: prod rendered only a vague slap at the hip, so she first comes up onto her knees side-on.
+      if (body.pose === "sitting" || body.pose === "lying") {
+        return {
+          physical:
+            "0-3s: she rises onto her knees on the bed and turns her hips side-on to the webcam, looking back over " +
+            "her shoulder at the lens. 3-9s: one hand comes around and spanks her own ass cheek, a few firm slaps, " +
+            "visible skin reaction. 9-11s: she holds the pose, hand resting on her hip, eyes on the lens.",
+          nextWardrobe: wardrobe,
+          nextBody: { ...body, pose: "kneeling", facing: "side", hands: "free", contact: "none" },
+          durationSec: ACTION_BEAT_SEC,
+          explicit: true,
+        };
+      }
       const turnsToSide = body.facing === "camera";
       return {
         physical:

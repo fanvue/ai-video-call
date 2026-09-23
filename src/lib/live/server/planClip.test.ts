@@ -435,6 +435,23 @@ describe("planClip: reply catalog -> intents", () => {
     expect(plan.prompt).toMatch(/spanks her own ass/i);
   });
 
+  it("a seated spank first brings her up onto her knees side-on so her backside is in shot", () => {
+    const plan = replyPlan("spank your ass");
+    expect(plan.prompt).toMatch(/rises onto her knees/i);
+    expect(plan.expectedState.body.pose).toBe("kneeling");
+    expect(plan.expectedState.body.facing).toBe("side");
+  });
+
+  it("a spank from all fours stays in place with no rise", () => {
+    const s = session({
+      state: state({ body: body({ pose: "onAllFours", facing: "away" }) }),
+    });
+    const plan = replyPlan("spank your ass", s);
+    expect(plan.prompt).toMatch(/spanks her own ass/i);
+    expect(plan.prompt).not.toMatch(/rises onto her knees/i);
+    expect(plan.expectedState.body.pose).toBe("onAllFours");
+  });
+
   it('"slap that ass" also resolves to the spank act', () => {
     const plan = replyPlan("slap that ass");
     expect(plan.prompt).toMatch(/spanks her own ass/i);
