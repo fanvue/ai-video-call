@@ -100,7 +100,14 @@ describe("POST /api/live/swap", () => {
     );
     const [args] = vi.mocked(swapClip).mock.calls[0];
     expect(Object.keys(args).sort()).toEqual(
-      ["budgetMs", "jobKind", "personaId", "swapModel", "videoUrl"].sort(),
+      [
+        "budgetMs",
+        "jobKind",
+        "personaId",
+        "recipe",
+        "swapModel",
+        "videoUrl",
+      ].sort(),
     );
     expect(JSON.stringify(args)).not.toContain("anchor.jpg");
   });
@@ -138,6 +145,18 @@ describe("POST /api/live/swap", () => {
     );
     const rejected = await POST(jsonBody({ ...body, swapProfile: "simswap" }));
     expect(rejected.status).toBe(400);
+  });
+
+  it("maps the Face lock toggle to the longlive recipe, and leaves it unset by default", async () => {
+    vi.mocked(swapClip).mockRejectedValue(new Error("stop"));
+    await POST(jsonBody({ ...body, swapFaceLock: true }));
+    expect(swapClip).toHaveBeenCalledWith(
+      expect.objectContaining({ recipe: "longlive" }),
+    );
+    await POST(jsonBody(body));
+    expect(swapClip).toHaveBeenCalledWith(
+      expect.objectContaining({ recipe: undefined }),
+    );
   });
 
   it("gives the greeting the short budget and fails open to the unswapped clip", async () => {

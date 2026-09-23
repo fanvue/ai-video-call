@@ -36,6 +36,23 @@ class FakeEngine:
         self.loaded = []
         self.uploads = []
         self.gfpgan = object() if gfpgan else None
+        # Recorded so a test can check swap_tail_from_url reaches the engine with the recipe it was given.
+        self.tail_calls = []
+
+    def swap_tail(self, video_path, source_face, recipe=swap_core.FACE_RECIPE):
+        self.tail_calls.append((video_path, source_face, recipe))
+        return (
+            {
+                "swap_ms": 0,
+                "had_face": True,
+                "similarity_before": None,
+                "similarity_after": None,
+                "enhance_ms": 0,
+                "sharpness_before": None,
+                "sharpness_after": None,
+            },
+            b"png-bytes",
+        )
 
     def has_swap_model(self, model):
         return model in ("inswapper", "inswapper_fp16")
@@ -138,6 +155,81 @@ class PersonaGateTest(unittest.TestCase):
             check_swap_options(self.engine, "inswapper_fp16", "gpen")
         check_swap_options(self.engine, "inswapper_fp16", "longlive")
         check_swap_options(FakeEngine(gfpgan=False), "inswapper_fp16", "legacy")
+
+    # Face lock (Advanced) sends "longlive" through swap_clip_from_url; it must reach swap_clip_with_face's options and gate before the download.
+    def test_swap_clip_from_url_forwards_the_recipe_and_gates_before_download(self):
+        self.write([GOOD])
+        with mock.patch.object(
+            swap_core, "download", side_effect=lambda _url, path: open(path, "wb").close()
+        ) as download, mock.patch.object(swap_core, "swap_clip_with_face") as swap:
+            swap.return_value = {
+                "stats": {
+                    "recipe": "longlive",
+                    "restored": True,
+                    "frames": 1,
+                    "swap_ms": 0,
+                    "ms_per_frame": 0,
+                    "similarity_before": None,
+                    "similarity_after": None,
+                    "enhance_ms": 0,
+                    "sharpness_before": None,
+                    "sharpness_after": None,
+                }
+            }
+            swap_core.swap_clip_from_url(
+                self.engine,
+                "https://x.fal.media/a.mp4",
+                self.root,
+                "synth-persona-01",
+                "inswapper_fp16",
+                "longlive",
+            )
+        swap.assert_called_once_with(
+            self.engine, mock.ANY, "persona-face", "inswapper_fp16", {"recipe": "longlive"}
+        )
+        download.assert_called_once()
+
+    def test_swap_clip_from_url_fails_closed_on_an_unknown_recipe_before_download(self):
+        self.write([GOOD])
+        with mock.patch.object(swap_core, "download") as download:
+            with self.assertRaises(ValueError):
+                swap_core.swap_clip_from_url(
+                    self.engine,
+                    "https://x.fal.media/a.mp4",
+                    self.root,
+                    "synth-persona-01",
+                    "inswapper_fp16",
+                    "gpen",
+                )
+        download.assert_not_called()
+
+    # Same for /swapTail: the seed swap must honour and validate the recipe like swapClip does.
+    def test_swap_tail_from_url_forwards_the_recipe(self):
+        self.write([GOOD])
+        with mock.patch.object(swap_core, "download") as download:
+            swap_core.swap_tail_from_url(
+                self.engine, "https://x.fal.media/a.mp4", self.root, "synth-persona-01", "longlive"
+            )
+        self.assertEqual(self.engine.tail_calls[-1][2], "longlive")
+        download.assert_called_once()
+
+    def test_swap_tail_from_url_defaults_to_the_legacy_recipe(self):
+        self.write([GOOD])
+        with mock.patch.object(swap_core, "download"):
+            swap_core.swap_tail_from_url(
+                self.engine, "https://x.fal.media/a.mp4", self.root, "synth-persona-01"
+            )
+        self.assertEqual(self.engine.tail_calls[-1][2], "legacy")
+
+    def test_swap_tail_from_url_fails_closed_on_an_unknown_recipe_before_download(self):
+        self.write([GOOD])
+        with mock.patch.object(swap_core, "download") as download:
+            with self.assertRaises(ValueError):
+                swap_core.swap_tail_from_url(
+                    self.engine, "https://x.fal.media/a.mp4", self.root, "synth-persona-01", "gpen"
+                )
+        download.assert_not_called()
+        self.assertEqual(self.engine.tail_calls, [])
 
 
 @unittest.skipIf(np is None, SKIP_REASON)

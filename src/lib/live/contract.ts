@@ -282,6 +282,13 @@ export const swapModelFor = (profile?: SwapProfile): string | undefined =>
     ? SWAP_PROFILES[profile].swapModel
     : undefined;
 
+// Face lock under Advanced: on, swap requests carry LongLive's persona recipe (kept eyes/mouth, GFPGAN 1.4 restore) instead of the default legacy pass, at about 3x the swap GPU time.
+export const swapRecipeSchema = z.enum(["legacy", "longlive"]);
+export type SwapRecipe = z.infer<typeof swapRecipeSchema>;
+// Undefined when off so the service's own default recipe (legacy) governs.
+export const swapRecipeFor = (faceLock?: boolean): SwapRecipe | undefined =>
+  faceLock ? "longlive" : undefined;
+
 // Request / response
 
 export const liveSessionSnapshotSchema = z.object({
@@ -313,6 +320,8 @@ export const clipRequestSchema = z.object({
   backend: renderBackendSchema.default("turbo"),
   speechMode: speechModeSchema.default("text"),
   swapProfile: swapProfileSchema.optional(),
+  // Face lock toggle under Advanced; see swapRecipeFor. Absent is the same as off.
+  swapFaceLock: z.boolean().optional(),
   // Swap mode's swap source, resolved against the persona manifest; absent, clips play unswapped.
   personaId: personaIdSchema.optional(),
   intentParser: intentParserSchema.optional(),

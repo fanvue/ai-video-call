@@ -90,7 +90,11 @@ export type ReferenceUploadResult = {
 };
 
 export type LiveSessionStatus =
-  "connecting" | "live" | "holding" | "ended" | "error";
+  | "connecting"
+  | "live"
+  | "holding"
+  | "ended"
+  | "error";
 
 export type BufferDepth = {
   idleReady: number;
@@ -104,6 +108,8 @@ export type StartOptions = {
   backend?: RenderBackend;
   speechMode?: SpeechMode;
   swapProfile?: SwapProfile;
+  // Swap mode only: Advanced's Face lock toggle, off by default; see swapRecipeFor.
+  swapFaceLock?: boolean;
   intentParser?: IntentParser;
   // LongLive only: the server's second-GPU face restore, on unless turned off.
   faceRestore?: boolean;
@@ -150,6 +156,7 @@ export type UseLiveSessionDeps = {
     result: ClipResult,
     personaId: string | undefined,
     swapProfile?: SwapProfile,
+    swapFaceLock?: boolean,
   ) => Promise<{ videoUrl: string; costUsd: number; report: ClipSwapReport }>;
   // Optional: playback and connect events for the server log; tests leave it out.
   reportTelemetry?: (
@@ -160,7 +167,12 @@ export type UseLiveSessionDeps = {
 
 // Staging state of the reference step started from the setup screen: "unstaged" is a completed step whose still was refused or failed, so the greeting starts on the photo.
 export type PrepareStatus =
-  "idle" | "staging" | "ready" | "uploaded" | "unstaged" | "failed";
+  | "idle"
+  | "staging"
+  | "ready"
+  | "uploaded"
+  | "unstaged"
+  | "failed";
 
 // A join that has not shown the greeting by now is the "stuck in connecting" report; log where it stalled.
 const CONNECT_STALL_MS = 60_000;
@@ -183,10 +195,15 @@ export type StudioTimings = {
 
 // Real join-flow progress, driven by actual pipeline milestones (see useLiveSession.start).
 export type ConnectStage =
-  "uploading" | "capturingLook" | "renderingFirstClip" | "primingBuffer";
+  | "uploading"
+  | "capturingLook"
+  | "renderingFirstClip"
+  | "primingBuffer";
 
 export type QueueOwner =
-  { type: "fan" } | { type: "viewer"; handle: string } | { type: "studio" };
+  | { type: "fan" }
+  | { type: "viewer"; handle: string }
+  | { type: "studio" };
 
 // `requestId` is only set for a reply/beat job (a request-owned act); it's what the failed-chip
 // timeout and the "playing" transition key off.
@@ -511,11 +528,15 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     if (!director) {
       return;
     }
-    const queued = director.getState().jobQueue.map((job): QueueStripEntry => ({
-      kind: job.kind,
-      owner:
-        job.kind === "reply" ? ownerForReplyJob(job) : currentOwnerRef.current,
-    }));
+    const queued = director.getState().jobQueue.map(
+      (job): QueueStripEntry => ({
+        kind: job.kind,
+        owner:
+          job.kind === "reply"
+            ? ownerForReplyJob(job)
+            : currentOwnerRef.current,
+      }),
+    );
     setQueueStrip({ current: currentActRef.current, queued });
   }, []);
 
@@ -1462,6 +1483,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         backend: options.backend ?? "turbo",
         speechMode: options.speechMode ?? "text",
         swapProfile: options.swapProfile,
+        swapFaceLock: options.swapFaceLock,
         personaId: options.swapPersonaId,
         intentParser: options.intentParser,
         abandonDependents: (job) => {
@@ -1477,6 +1499,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
                   result,
                   options.swapPersonaId,
                   options.swapProfile,
+                  options.swapFaceLock,
                 )
             : undefined,
       });

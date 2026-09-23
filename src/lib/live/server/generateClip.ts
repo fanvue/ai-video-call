@@ -7,6 +7,7 @@ import {
   LIVE_TUNABLES,
   stateFrameKey,
   swapModelFor,
+  swapRecipeFor,
   type ClipRequest,
   type ClipResult,
   type ClipSwapReport,
@@ -390,6 +391,7 @@ export const generateClip = async (
           job.kind === "greeting" ? SWAP_GREETING_BUDGET_MS : SWAP_BUDGET_MS,
         jobKind: job.kind,
         swapModel: swapModelFor(request.swapProfile),
+        recipe: swapRecipeFor(request.swapFaceLock),
       });
       videoUrl = swapped.videoUrl;
       costUsd += swapped.costUsd;
@@ -440,6 +442,7 @@ export const generateClip = async (
                   videoUrl,
                   personaId: request.personaId,
                   jobKind: job.kind,
+                  recipe: swapRecipeFor(request.swapFaceLock),
                 })
                   .then((swapped) => {
                     costUsd += swapped.costUsd;

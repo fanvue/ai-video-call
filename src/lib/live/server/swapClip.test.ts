@@ -11,7 +11,7 @@ vi.mock("@/lib/fal/uploadImage", () => ({
   uploadToFal: (...args: unknown[]) => uploadToFal(...args),
 }));
 
-const { failedSwapReport, swapClip, swapServiceLastFrame } =
+const { failedSwapReport, swapClip, swapServiceLastFrame, swapTail } =
   await import("./swapClip");
 
 const serviceStats = {
@@ -107,6 +107,39 @@ describe("swapClip", () => {
     expect(JSON.parse(init.body as string)).toMatchObject({
       model: "hyperswap_1c",
     });
+  });
+
+  it("sends the Face lock recipe to the service", async () => {
+    fetchMock.mockResolvedValueOnce(swapped());
+    uploadToFal
+      .mockResolvedValueOnce("https://fal.test/swap.mp4")
+      .mockResolvedValueOnce("https://fal.test/last.jpg");
+
+    await swapClip({
+      videoUrl: "https://fal.test/turbo.mp4",
+      personaId: "synth-persona-01",
+      recipe: "longlive",
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(JSON.parse(init.body as string)).toMatchObject({
+      recipe: "longlive",
+    });
+  });
+
+  it("omits the recipe when Face lock is off, so the service's own legacy default governs", async () => {
+    fetchMock.mockResolvedValueOnce(swapped());
+    uploadToFal
+      .mockResolvedValueOnce("https://fal.test/swap.mp4")
+      .mockResolvedValueOnce("https://fal.test/last.jpg");
+
+    await swapClip({
+      videoUrl: "https://fal.test/turbo.mp4",
+      personaId: "synth-persona-01",
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(JSON.parse(init.body as string)).not.toHaveProperty("recipe");
   });
 
   it("refuses without a persona and never contacts the service or fetches a reference", async () => {
@@ -247,6 +280,77 @@ describe("swapServiceLastFrame", () => {
     expect(uploadToFal.mock.calls[0][1]).toMatch(/^seed-.*\.png$/);
     expect(uploadToFal.mock.calls[0][2]).toBe("image/png");
     expect(url).toBe("https://fal.test/seed.png");
+  });
+});
+
+describe("swapTail", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", fetchMock);
+    fetchMock.mockReset();
+    uploadToFal.mockReset();
+    envMock.SWAP_SERVICE_URL = "https://swap.test";
+    envMock.SWAP_TOKEN = "0123456789abcdef0123456789abcdef";
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const tailResponse = () =>
+    jsonResponse({
+      last_frame_base64: Buffer.from("tail").toString("base64"),
+      stats: {
+        swap_ms: 400,
+        had_face: true,
+        similarity_before: 0.4,
+        similarity_after: 0.8,
+      },
+    });
+
+  it("posts the clip and persona id to the service and rehosts the swapped seed", async () => {
+    fetchMock.mockResolvedValueOnce(tailResponse());
+    uploadToFal.mockResolvedValueOnce("https://fal.test/tail.png");
+
+    const outcome = await swapTail({
+      videoUrl: "https://fal.test/turbo.mp4",
+      personaId: "synth-persona-01",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(url.toString()).toBe("https://swap.test/swapTail");
+    expect(JSON.parse(init.body as string)).toEqual({
+      video_url: "https://fal.test/turbo.mp4",
+      persona_id: "synth-persona-01",
+    });
+    expect(outcome.lastFrameUrl).toBe("https://fal.test/tail.png");
+    expect(outcome.costUsd).toBeCloseTo((0.4 * 1.95) / 3600, 6);
+  });
+
+  it("sends the Face lock recipe to the service", async () => {
+    fetchMock.mockResolvedValueOnce(tailResponse());
+    uploadToFal.mockResolvedValueOnce("https://fal.test/tail.png");
+
+    await swapTail({
+      videoUrl: "https://fal.test/turbo.mp4",
+      personaId: "synth-persona-01",
+      recipe: "longlive",
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(JSON.parse(init.body as string)).toMatchObject({
+      recipe: "longlive",
+    });
+  });
+
+  it("refuses without a persona and never contacts the service", async () => {
+    await expect(
+      swapTail({
+        videoUrl: "https://fal.test/turbo.mp4",
+        personaId: undefined,
+      }),
+    ).rejects.toThrow("No persona selected");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

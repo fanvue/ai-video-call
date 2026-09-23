@@ -36,6 +36,7 @@ export type SetupSubmit = {
   backend: RenderBackend;
   speechMode: SpeechMode;
   swapProfile: SwapProfile;
+  swapFaceLock: boolean;
   intentParser: IntentParser;
   faceRestore: boolean;
   personaId?: string;
@@ -99,6 +100,7 @@ export const SetupScreen = ({
   // LongLive is the default while the realtime model and its LoRA are under test.
   const [backend, setBackend] = useState<RenderBackend>("longlive");
   const [swapProfile, setSwapProfile] = useState<SwapProfile>("default");
+  const [swapFaceLock, setSwapFaceLock] = useState(false);
   const [intentParser, setIntentParser] = useState<IntentParser>("regex");
   const [faceRestore, setFaceRestore] = useState(true);
   const [personaSettings, setPersonaSettings] = useState(
@@ -386,6 +388,22 @@ export const SetupScreen = ({
                 </select>
               </label>
             ) : null}
+            {backend === "swap" ? (
+              <div className="flex flex-col gap-1">
+                <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
+                  <input
+                    type="checkbox"
+                    checked={swapFaceLock}
+                    onChange={(event) => setSwapFaceLock(event.target.checked)}
+                  />
+                  Face lock
+                </label>
+                <p className="text-xs text-[var(--muted)]">
+                  Persona swap plus GFPGAN face restore, as in LongLive; about
+                  3x the swap GPU time
+                </p>
+              </div>
+            ) : null}
             {backend === "director" ? (
               <p className="text-xs text-[var(--muted)]">
                 fal&apos;s content policy rejects explicit requests; they show
@@ -498,6 +516,7 @@ export const SetupScreen = ({
             backend,
             speechMode: voiceExperimental ? "native" : "text",
             swapProfile,
+            swapFaceLock,
             intentParser,
             faceRestore,
             ...submittedPersona(personaSettings, backend),

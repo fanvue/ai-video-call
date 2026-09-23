@@ -195,6 +195,7 @@ export const LiveStudio = () => {
           backend: values.backend,
           speechMode: values.speechMode,
           swapProfile: values.swapProfile,
+          swapFaceLock: values.swapFaceLock,
           intentParser: values.intentParser,
           faceRestore: values.faceRestore,
           personaId: values.personaId,

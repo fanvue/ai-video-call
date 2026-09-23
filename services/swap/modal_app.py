@@ -17,6 +17,8 @@ from swap_core import (  # noqa: E402
     CROSSFACE_GHOST_URL,
     DEFAULT_SWAP_MODEL,
     ENHANCER_URL,
+    FACE_RECIPE,
+    FACE_RECIPES,
     GFPGAN_URL,
     GHOST_1_URL,
     HYPERSWAP_1C_URL,
@@ -89,6 +91,8 @@ class SwapClipRequest(BaseModel):
     # The swap source is a manifest persona; an uploaded reference sent here is ignored, never swapped in.
     persona_id: str | None = None
     model: str = DEFAULT_SWAP_MODEL
+    # "Face lock" under Advanced: "longlive" swaps in LongLive's persona recipe (kept eyes/mouth, GFPGAN restore) instead of the legacy pass.
+    recipe: str = FACE_RECIPE
 
 
 class FaceCropRequest(BaseModel):
@@ -206,8 +210,12 @@ class SwapService:
         ) -> dict:
             if not token_allowed(bearer_token(authorization)):
                 raise HTTPException(status_code=403, detail="unauthorized")
+            if body.recipe not in FACE_RECIPES:
+                raise HTTPException(status_code=400, detail=f"unknown face recipe {body.recipe!r}")
             try:
-                return swap_tail_from_url(engine, body.video_url, self.fresh_personas(), body.persona_id)
+                return swap_tail_from_url(
+                    engine, body.video_url, self.fresh_personas(), body.persona_id, recipe=body.recipe
+                )
             except ValueError as error:
                 raise HTTPException(status_code=422, detail=str(error)) from error
 
@@ -220,8 +228,12 @@ class SwapService:
                 raise HTTPException(status_code=403, detail="unauthorized")
             if body.model not in SWAP_MODELS:
                 raise HTTPException(status_code=422, detail=f"unknown swap model {body.model!r}")
+            if body.recipe not in FACE_RECIPES:
+                raise HTTPException(status_code=400, detail=f"unknown face recipe {body.recipe!r}")
             try:
-                return swap_clip_from_url(engine, body.video_url, self.fresh_personas(), body.persona_id, body.model)
+                return swap_clip_from_url(
+                    engine, body.video_url, self.fresh_personas(), body.persona_id, body.model, recipe=body.recipe
+                )
             except ValueError as error:
                 raise HTTPException(status_code=422, detail=str(error)) from error
 

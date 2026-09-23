@@ -274,6 +274,17 @@ describe("generateClip seeds a swap-mode chain clip from /swapTail", () => {
     expect(result.costUsd).toBeCloseTo(0.275 + 0.01, 6);
   });
 
+  it("maps Face lock to the longlive recipe on the seed swap too", async () => {
+    swapTail.mockResolvedValue({
+      lastFrameUrl: "https://example.com/tail-swapped.png",
+      costUsd: 0.01,
+    });
+    await generateClip({ ...personaRequest(reply), swapFaceLock: true });
+    expect(swapTail).toHaveBeenCalledWith(
+      expect.objectContaining({ recipe: "longlive" }),
+    );
+  });
+
   it("falls back to the raw last frame when the persona gate refuses the swapped tail", async () => {
     swapTail.mockRejectedValue(
       new Error("Swap service responded 422: persona gate: not in manifest"),

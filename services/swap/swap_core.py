@@ -1008,9 +1008,10 @@ def swap_clip_from_url(
     persona_root: str | None,
     persona_id: object,
     model: str = DEFAULT_SWAP_MODEL,
+    recipe: str = FACE_RECIPE,
 ) -> dict[str, Any]:
     # Gate before the download, so a refused persona costs nothing.
-    check_swap_options(engine, model, FACE_RECIPE)
+    check_swap_options(engine, model, recipe)
     source_face = persona_source_face(engine, persona_root, persona_id)
     with tempfile.TemporaryDirectory() as directory:
         source_path = os.path.join(directory, "source.mp4")
@@ -1018,7 +1019,7 @@ def swap_clip_from_url(
         download(video_url, source_path)
         download_ms = int((time.perf_counter() - started) * 1000)
         with open(source_path, "rb") as file:
-            result = swap_clip_with_face(engine, file.read(), source_face, model)
+            result = swap_clip_with_face(engine, file.read(), source_face, model, {"recipe": recipe})
     result["stats"]["download_ms"] = download_ms
     stats = result["stats"]
     print(
@@ -1031,16 +1032,20 @@ def swap_clip_from_url(
 
 
 def swap_tail_from_url(
-    engine: SwapEngine, video_url: str, persona_root: str | None, persona_id: object
+    engine: SwapEngine,
+    video_url: str,
+    persona_root: str | None,
+    persona_id: object,
+    recipe: str = FACE_RECIPE,
 ) -> dict[str, Any]:
-    check_swap_options(engine, DEFAULT_SWAP_MODEL, FACE_RECIPE)
+    check_swap_options(engine, DEFAULT_SWAP_MODEL, recipe)
     source_face = persona_source_face(engine, persona_root, persona_id)
     with tempfile.TemporaryDirectory() as directory:
         source_path = os.path.join(directory, "source.mp4")
         started = time.perf_counter()
         download(video_url, source_path)
         download_ms = int((time.perf_counter() - started) * 1000)
-        stats, seed_png = engine.swap_tail(source_path, source_face)
+        stats, seed_png = engine.swap_tail(source_path, source_face, recipe=recipe)
     stats["download_ms"] = download_ms
     print(
         f"swapTail: download_ms={download_ms} swap_ms={stats['swap_ms']} had_face={stats['had_face']} "

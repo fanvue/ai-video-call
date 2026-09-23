@@ -56,6 +56,7 @@ export const swapClip = async ({
   budgetMs = SWAP_BUDGET_MS,
   jobKind = "unknown",
   swapModel,
+  recipe,
 }: {
   videoUrl: string;
   // The swap source is an allowlisted manifest persona only; the session's upload drives generation and never reaches the swap.
@@ -63,6 +64,7 @@ export const swapClip = async ({
   budgetMs?: number;
   jobKind?: string;
   swapModel?: string;
+  recipe?: string;
 }): Promise<SwapClipOutcome> => {
   if (!personaId) {
     throw new Error("No persona selected, the clip plays unswapped");
@@ -75,6 +77,7 @@ export const swapClip = async ({
     video_url: videoUrl,
     persona_id: personaId,
     ...(swapModel ? { model: swapModel } : {}),
+    ...(recipe ? { recipe } : {}),
   });
   const controllers: AbortController[] = [];
   const attempt = async () => {
@@ -253,12 +256,14 @@ export const swapTail = async ({
   personaId,
   budgetMs = SWAP_TAIL_BUDGET_MS,
   jobKind = "unknown",
+  recipe,
 }: {
   videoUrl: string;
   // Same gate as swapClip: an allowlisted manifest persona only, never a session upload.
   personaId: string | undefined;
   budgetMs?: number;
   jobKind?: string;
+  recipe?: string;
 }): Promise<{ lastFrameUrl: string; costUsd: number }> => {
   if (!personaId) {
     throw new Error("No persona selected, the clip plays unswapped");
@@ -273,7 +278,11 @@ export const swapTail = async ({
       Authorization: `Bearer ${env.SWAP_TOKEN}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ video_url: videoUrl, persona_id: personaId }),
+    body: JSON.stringify({
+      video_url: videoUrl,
+      persona_id: personaId,
+      ...(recipe ? { recipe } : {}),
+    }),
     signal: AbortSignal.timeout(budgetMs),
   });
   if (!response.ok) {

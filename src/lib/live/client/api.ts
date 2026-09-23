@@ -99,12 +99,14 @@ export const swapRenderedClip = async (
   result: ClipResult,
   personaId: string | undefined,
   swapProfile?: SwapProfile,
+  swapFaceLock?: boolean,
 ): Promise<SwapRenderedClipResult> => {
   const raw = await postJson<unknown>("/api/live/swap", {
     videoUrl: result.videoUrl,
     personaId,
     jobKind: result.jobKind,
     swapProfile,
+    swapFaceLock,
   });
   return swapResultSchema.parse(raw);
 };

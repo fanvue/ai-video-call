@@ -37,6 +37,7 @@ export type ClipPipelineOptions = {
   backend?: RenderBackend;
   speechMode?: SpeechMode;
   swapProfile?: SwapProfile;
+  swapFaceLock?: boolean;
   personaId?: string;
   intentParser?: IntentParser;
   // Called with a chain job that failed past retry, so the caller (director) can drop only that
@@ -98,6 +99,7 @@ export class ClipPipeline {
   private backend: RenderBackend;
   private speechMode: SpeechMode;
   private readonly swapProfile?: SwapProfile;
+  private readonly swapFaceLock?: boolean;
   private readonly personaId?: string;
   private readonly intentParser?: IntentParser;
 
@@ -164,6 +166,7 @@ export class ClipPipeline {
     this.backend = options.backend ?? "turbo";
     this.speechMode = options.speechMode ?? "text";
     this.swapProfile = options.swapProfile;
+    this.swapFaceLock = options.swapFaceLock;
     this.personaId = options.personaId;
     this.intentParser = options.intentParser;
   }
@@ -658,6 +661,7 @@ export class ClipPipeline {
       backend: this.backend,
       speechMode: this.speechMode,
       swapProfile: this.swapProfile,
+      swapFaceLock: this.swapFaceLock,
       personaId: this.personaId,
       intentParser: this.intentParser,
       useIdentityReference,
@@ -859,6 +863,7 @@ export class ClipPipeline {
       backend: this.backend === "swap" ? "swap" : "turbo",
       speechMode: this.speechMode,
       swapProfile: this.swapProfile,
+      swapFaceLock: this.swapFaceLock,
       personaId: this.personaId,
       useIdentityReference: false,
     };

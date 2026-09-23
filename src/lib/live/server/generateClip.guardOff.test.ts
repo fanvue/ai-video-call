@@ -373,6 +373,20 @@ describe("generateClip on the swap backend", () => {
     expect(Object.values(args)).not.toContain(session.anchorFrameUrl);
   });
 
+  it("maps Face lock to the longlive recipe, and leaves it unset by default", async () => {
+    swapClip.mockResolvedValue(swapped);
+    await generateClip({
+      ...swapRequest({ kind: "checkIn", channel: "chat" }),
+      swapFaceLock: true,
+    });
+    expect(swapClip.mock.calls[0][0]).toMatchObject({ recipe: "longlive" });
+
+    await generateClip(swapRequest({ kind: "checkIn", channel: "chat" }));
+    expect(
+      (swapClip.mock.calls[1][0] as { recipe?: string }).recipe,
+    ).toBeUndefined();
+  });
+
   it("never touches the swap service on other backends", async () => {
     await generateClip(request({ kind: "greeting" }));
     expect(swapClip).not.toHaveBeenCalled();
