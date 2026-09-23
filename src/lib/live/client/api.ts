@@ -152,6 +152,9 @@ const swapResultSchema = z.object({
 });
 export type SwapRenderedClipResult = z.infer<typeof swapResultSchema>;
 
+// A split reply's segment: frames [startFrame, endFrame) of the rendered clip.
+export type SwapFrameRange = { startFrame?: number; endFrame?: number };
+
 // Second phase of a swap-mode clip: finishes the face swap of a clip that came back with swap.status "pending".
 export const swapRenderedClip = async (
   result: Pick<ClipResult, "videoUrl" | "jobKind">,
@@ -159,6 +162,7 @@ export const swapRenderedClip = async (
   swapProfile?: SwapProfile,
   swapFaceLock?: boolean,
   swapHandMask?: boolean,
+  range?: SwapFrameRange,
 ): Promise<SwapRenderedClipResult> => {
   const raw = await postJson<unknown>("/api/live/swap", {
     videoUrl: result.videoUrl,
@@ -167,6 +171,7 @@ export const swapRenderedClip = async (
     swapProfile,
     swapFaceLock,
     swapHandMask,
+    ...range,
   });
   return swapResultSchema.parse(raw);
 };

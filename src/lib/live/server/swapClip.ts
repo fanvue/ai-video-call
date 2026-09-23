@@ -95,6 +95,8 @@ export const swapClip = async ({
   swapModel,
   recipe,
   handMask,
+  startFrame,
+  endFrame,
 }: {
   videoUrl: string;
   // The swap source is an allowlisted manifest persona only; the session's upload drives generation and never reaches the swap.
@@ -105,6 +107,9 @@ export const swapClip = async ({
   recipe?: SwapRecipe;
   // Hand mask under Advanced; off leaves the service's own OCCLUSION_MASK default.
   handMask?: boolean;
+  // A split reply's segment, frames [startFrame, endFrame); absent, the whole clip.
+  startFrame?: number;
+  endFrame?: number;
 }): Promise<SwapClipOutcome> => {
   if (!personaId) {
     throw new Error("No persona selected, the clip plays unswapped");
@@ -119,6 +124,8 @@ export const swapClip = async ({
     ...(swapModel ? { model: swapModel } : {}),
     ...(recipe ? { recipe } : {}),
     ...(handMask ? { occlusion_mask: true } : {}),
+    ...(startFrame !== undefined ? { start_frame: startFrame } : {}),
+    ...(endFrame !== undefined ? { end_frame: endFrame } : {}),
   });
   const controllers: AbortController[] = [];
   const attempt = async () => {
@@ -200,7 +207,7 @@ export const swapClip = async ({
   ]);
   const { stats } = parsed;
   console.log(
-    `swapClip: kind=${jobKind} serviceMs=${serviceMs} (swap ${stats.swap_ms}) rehostMs=${Date.now() - stamp} downloadMs=${stats.download_ms ?? 0} frames=${stats.frames} enhanceMs=${stats.enhance_ms ?? 0} sharpness=${stats.sharpness_before ?? "?"}->${stats.sharpness_after ?? "?"}`,
+    `swapClip: kind=${jobKind} range=${startFrame ?? ""}:${endFrame ?? ""} serviceMs=${serviceMs} (swap ${stats.swap_ms}) rehostMs=${Date.now() - stamp} downloadMs=${stats.download_ms ?? 0} frames=${stats.frames} enhanceMs=${stats.enhance_ms ?? 0} sharpness=${stats.sharpness_before ?? "?"}->${stats.sharpness_after ?? "?"}`,
   );
   return {
     videoUrl: swappedVideoUrl,
@@ -215,6 +222,7 @@ export const swapClip = async ({
       similarityAfter: stats.similarity_after,
       restored: stats.restored,
       reason: null,
+      fps: stats.fps,
     },
     costUsd: (stats.swap_ms / 1000) * LIVE_TUNABLES.SWAP_COST_PER_SEC_USD,
   };

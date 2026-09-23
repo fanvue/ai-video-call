@@ -132,6 +132,25 @@ describe("swapClip", () => {
     });
   });
 
+  it("sends a split reply's frame range and reports the swapped fps, so the client knows how long the head is", async () => {
+    fetchMock.mockResolvedValueOnce(swapped());
+    uploadToFal
+      .mockResolvedValueOnce("https://fal.test/swap.mp4")
+      .mockResolvedValueOnce("https://fal.test/last.jpg");
+
+    const outcome = await swapClip({
+      videoUrl: "https://fal.test/turbo.mp4",
+      personaId: "synth-persona-01",
+      startFrame: 100,
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    const sent = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(sent.start_frame).toBe(100);
+    expect(sent).not.toHaveProperty("end_frame");
+    expect(outcome.report.fps).toBe(serviceStats.fps);
+  });
+
   it("omits the recipe when Face lock is off, so the service's own legacy default governs", async () => {
     fetchMock.mockResolvedValueOnce(swapped());
     uploadToFal

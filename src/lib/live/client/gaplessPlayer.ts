@@ -44,6 +44,8 @@ export type ClipToPlay = {
   // A requested clip (reply / beat / settle): cuts into a looping idle the moment it is playable
   // instead of waiting for the loop and any preloaded idle to run out.
   interrupts: boolean;
+  // Plays from here instead of 0: a split reply's rest falling back to the raw render's own frames.
+  startSec?: number;
 };
 
 // A paused active element that should be playing gets one play() nudge per this window.
@@ -418,6 +420,9 @@ export class GaplessPlayer {
       this.failClip(clip, "preloadNotPlayable");
       return;
     }
+    if (clip.startSec) {
+      inactive.currentTime = clip.startSec;
+    }
     this.preloadedSlot = targetSlot;
     if (this.status === "holding") {
       void this.performSwap(clip, false);
@@ -457,7 +462,7 @@ export class GaplessPlayer {
       return;
     }
     el.pause();
-    el.currentTime = 0;
+    el.currentTime = clip.startSec ?? 0;
   }
 
   // A clip that never became playable, or whose play() never produced a frame: tell the pipeline
@@ -507,6 +512,9 @@ export class GaplessPlayer {
       this.onClipReturned(clip.id);
       this.start();
       return;
+    }
+    if (clip.startSec) {
+      el.currentTime = clip.startSec;
     }
     this.currentClipId = clip.id;
     this.currentClipLoops = clip.loops;

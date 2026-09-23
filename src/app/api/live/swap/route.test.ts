@@ -224,4 +224,16 @@ describe("POST /api/live/swap", () => {
     );
     warn.mockRestore();
   });
+
+  it("forwards a split reply's frame range and rejects a negative one", async () => {
+    vi.mocked(swapClip).mockRejectedValue(new Error("stop here"));
+    await POST(jsonBody({ ...body, startFrame: 0, endFrame: 100 }));
+    expect(vi.mocked(swapClip).mock.calls[0]?.[0]).toMatchObject({
+      startFrame: 0,
+      endFrame: 100,
+    });
+    const response = await POST(jsonBody({ ...body, startFrame: -1 }));
+    expect(response.status).toBe(400);
+    expect(swapClip).toHaveBeenCalledTimes(1);
+  });
 });

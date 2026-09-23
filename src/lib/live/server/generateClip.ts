@@ -369,7 +369,7 @@ export const generateClip = async (
   const rendered = await renderPromise;
   const renderMs = Date.now() - renderStarted;
   console.log(
-    `generateClip: renderMs=${renderMs} kind=${job.kind} backend=${backend} dualRef=${videoBackend.supportsIdentityReference ? useIdentityReference : "n/a"} bankedEnd=${!!bankedEndFrameUrl}`,
+    `generateClip: renderMs=${renderMs} planMs=${planMs} kind=${job.kind} backend=${backend} dualRef=${videoBackend.supportsIdentityReference ? useIdentityReference : "n/a"} bankedEnd=${!!bankedEndFrameUrl}`,
   );
   // Clip-level trace: without the prompt and frame URLs a scene jump reported from a session could not be tied to a clip.
   console.log(

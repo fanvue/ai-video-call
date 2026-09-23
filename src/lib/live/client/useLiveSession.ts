@@ -40,6 +40,7 @@ import {
 } from "@/lib/live/client/clipSource";
 import { ClipPipeline, type PipelineEvent } from "@/lib/live/client/pipeline";
 import { createEarlySwaps } from "@/lib/live/client/earlySwaps";
+import type { SwapFrameRange } from "@/lib/live/client/api";
 import {
   type PendingReveal,
   replyRevealDue,
@@ -168,6 +169,7 @@ export type UseLiveSessionDeps = {
     swapProfile?: SwapProfile,
     swapFaceLock?: boolean,
     swapHandMask?: boolean,
+    range?: SwapFrameRange,
   ) => Promise<{ videoUrl: string; costUsd: number; report: ClipSwapReport }>;
   // Optional: playback and connect events for the server log; tests leave it out.
   reportTelemetry?: (
@@ -423,29 +425,40 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     setTypingDevice(null);
   }, []);
 
-  const appendReply = useCallback((pending: PendingReveal) => {
-    const director = directorRef.current;
-    if (!director) {
-      return;
-    }
-    pendingRevealRef.current = null;
-    setTypingCreator(false);
-    setTypingDevice(null);
-    const now = Date.now();
-    setTranscript((prev) => [
-      ...prev,
-      {
-        id: `${pending.clipId}-reply`,
-        role: "creator",
-        channel: pending.channel,
-        text: pending.text,
-        atSec: Math.max(
-          0,
-          Math.floor((now - director.getState().startedAt) / 1000),
-        ),
-      },
-    ]);
-  }, []);
+  const appendReply = useCallback(
+    (pending: PendingReveal) => {
+      const director = directorRef.current;
+      if (!director) {
+        return;
+      }
+      pendingRevealRef.current = null;
+      setTypingCreator(false);
+      setTypingDevice(null);
+      const now = Date.now();
+      // The chat half of the fan's wait, next to requestVisible's video half.
+      if (pending.sentAtMs !== undefined) {
+        reportTelemetry?.("replyRevealed", {
+          clipId: pending.clipId,
+          held: pending.holdForAction,
+          ms: now - pending.sentAtMs,
+        });
+      }
+      setTranscript((prev) => [
+        ...prev,
+        {
+          id: `${pending.clipId}-reply`,
+          role: "creator",
+          channel: pending.channel,
+          text: pending.text,
+          atSec: Math.max(
+            0,
+            Math.floor((now - director.getState().startedAt) / 1000),
+          ),
+        },
+      ]);
+    },
+    [reportTelemetry],
+  );
 
   const revealIfDue = useCallback(
     (currentTimeSec: number, clipId: string) => {
@@ -494,6 +507,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       hasSpeech: speechModeRef.current === "native" && result.reply !== null,
       loops: result.loops,
       interrupts: result.jobKind !== "idle",
+      startSec: pipeline.startSecFor(result.clipId),
     };
   }, []);
 
@@ -644,7 +658,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       currentPlayingClipIdRef.current = clipId;
       const result = clipMetaRef.current.get(clipId);
       if (result) {
-        pipelineRef.current?.onClipStarted(result.seedFrameUrl);
+        pipelineRef.current?.onClipStarted(result.seedFrameUrl, clipId);
       }
       // Displayed state only advances once the viewer actually sees the clip, not at render time.
       if (
@@ -912,6 +926,13 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
           void pending.then(releaseClipSource);
         }
       }
+      // A split reply's rest: playable and prefetched like any clip, but its head already carried canon, the reply and the render cost.
+      if (event.type === "clipPartReady") {
+        setCostTotal((total) => total + result.costUsd);
+        player.checkForClip();
+        refreshBufferDepth();
+        return;
+      }
       setCostTotal((total) => total + result.costUsd);
       setLastTimings({
         jobKind: result.jobKind,
@@ -957,7 +978,18 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
           holdForAction: result.setupOnly === true,
           replySeen: false,
           readyAtMs: Date.now(),
+          sentAtMs: requestSentAtMsRef.current.get(
+            requestIdByClipIdRef.current.get(result.clipId) ?? "",
+          ),
         };
+        const { sentAtMs } = pendingRevealRef.current;
+        // Splits requestVisible into the swap landing and the download plus cut-in after it.
+        if (sentAtMs !== undefined) {
+          reportTelemetry?.("replyLanded", {
+            clipId: result.clipId,
+            ms: Date.now() - sentAtMs,
+          });
+        }
         setTypingCreator(true);
         setTypingDevice(
           result.state.body.prop === "phone"
@@ -1542,16 +1574,38 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
 
       const swapRenderedClip = deps.swapRenderedClip;
       const runSwap = swapRenderedClip
-        ? (clip: Pick<ClipResult, "videoUrl" | "jobKind">) =>
+        ? (
+            clip: Pick<ClipResult, "videoUrl" | "jobKind">,
+            range?: SwapFrameRange,
+          ) =>
             swapRenderedClip(
               clip,
               options.swapPersonaId,
               options.swapProfile,
               options.swapFaceLock,
               options.swapHandMask,
+              range,
             )
         : null;
-      const earlySwaps = runSwap ? createEarlySwaps(runSwap) : null;
+      // The head and the rest each take a container; with fewer free, the reply swaps whole rather than queue inside Modal.
+      const reserveSplitSlot = () => {
+        const current = pipelineRef.current;
+        return current &&
+          current.swapLoad() + 2 <= LIVE_TUNABLES.SWAP_SERVICE_CONTAINERS
+          ? current.holdSwapSlot()
+          : null;
+      };
+      const earlySwaps = runSwap
+        ? createEarlySwaps(
+            runSwap,
+            LIVE_TUNABLES.SWAP_SPLIT_REPLY
+              ? {
+                  headFrames: LIVE_TUNABLES.SWAP_SPLIT_HEAD_FRAMES,
+                  reserve: reserveSplitSlot,
+                }
+              : undefined,
+          )
+        : null;
       const earlyReplySwaps =
         options.backend === "swap" &&
         earlySwaps !== null &&
@@ -1582,7 +1636,14 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
           directorRef.current?.consumeIdentityReferenceDue(Date.now()) ?? false,
         finalizeSwap:
           options.backend === "swap" && runSwap
-            ? (result) => earlySwaps?.take(result) ?? runSwap(result)
+            ? (result) => {
+                const early = earlySwaps?.take(result);
+                const rest = earlySwaps?.takeRest(result);
+                if (!early) {
+                  return runSwap(result);
+                }
+                return rest ? early.then((head) => ({ ...head, rest })) : early;
+              }
             : undefined,
       });
       pipelineRef.current = pipeline;

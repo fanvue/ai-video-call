@@ -842,8 +842,9 @@ describe("planClip: idle duration", () => {
 describe("planClip: swap mode clip length", () => {
   it("runs chain clips at SWAP_ACTION_CLIP_SEC, leaves idle to the pipeline and other backends alone", () => {
     const base = { session: session(), speechMode: "text" as const };
-    // Swap latency is per frame, so chain clips are no longer stretched past the action's own length.
-    expect(LIVE_TUNABLES.SWAP_ACTION_CLIP_SEC).toBe(
+    // Swap latency is per frame, so chain clips run at the fal floor, never past the action's own length.
+    expect(LIVE_TUNABLES.SWAP_ACTION_CLIP_SEC).toBe(LIVE_TUNABLES.MIN_CLIP_SEC);
+    expect(LIVE_TUNABLES.SWAP_ACTION_CLIP_SEC).toBeLessThanOrEqual(
       LIVE_TUNABLES.ACTION_CLIP_SEC,
     );
     // A raw-upload greeting (seed is the anchor) chains forward like a reply, but runs long enough to cover the first idle's render and swap.
@@ -884,6 +885,28 @@ describe("planClip: swap mode clip length", () => {
     });
     expect(turbo.durationSec).toBe(LIVE_TUNABLES.ACTION_CLIP_SEC);
     expect(turbo.prompt).toContain("The clip ends there.");
+
+    // An 11 s action reply is compressed onto the 10 s swap clip, its time-boxes rescaled to end at 10 s.
+    const reply = planClip({
+      ...base,
+      session: session({
+        state: state({ body: body({ pose: "kneeling", facing: "side" }) }),
+      }),
+      job: {
+        kind: "reply",
+        requestId: "r1",
+        text: "spank your ass",
+        channel: "chat",
+        from: "fan",
+        precededByIdle: false,
+      },
+      backend: "swap",
+    });
+    expect(reply.durationSec).toBe(LIVE_TUNABLES.SWAP_ACTION_CLIP_SEC);
+    expect(reply.prompt).not.toMatch(/\b11s\b/);
+    expect(reply.prompt).toContain(
+      `By ${LIVE_TUNABLES.SWAP_ACTION_CLIP_SEC}s she is`,
+    );
   });
 
   it("compresses a MAX_CLIP_SEC wardrobe beat to SWAP_ACTION_CLIP_SEC, rescaling its choreography time-boxes", () => {
@@ -910,7 +933,7 @@ describe("planClip: swap mode clip length", () => {
     });
     expect(swap.durationSec).toBe(LIVE_TUNABLES.SWAP_ACTION_CLIP_SEC);
     expect(swap.prompt).not.toContain("13-15s:");
-    expect(swap.prompt).toContain("10-11s:");
+    expect(swap.prompt).toContain("9-10s:");
     expect(swap.prompt).not.toContain(
       `By ${LIVE_TUNABLES.MAX_CLIP_SEC}s she is`,
     );

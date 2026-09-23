@@ -20,6 +20,8 @@ export type PipelineEvent =
   | { type: "clipReady"; result: ClipResult; lane: "idle" | "chained" }
   // A swap-mode clip rendered and (for a chain clip) its tail is the new seed, but the clip itself is still being swapped; canon advances now, playback waits for clipReady.
   | { type: "clipRendered"; result: ClipResult; lane: "idle" | "chained" }
+  // A split reply's rest is playable (swapped, or its raw frames on the fail-open); not canon, its head already was.
+  | { type: "clipPartReady"; result: ClipResult }
   | { type: "clipDiscarded"; result: ClipResult; costUsd: number }
   | { type: "bufferEmpty" }
   | { type: "bufferRecovered" }
@@ -51,14 +53,33 @@ export type ClipPipelineOptions = {
   ) => Promise<{ url: string | null; costUsd: number }>;
   // Whether the next chain job should include the dual identity reference (see consumeIdentityReferenceDue).
   needsIdentityReference?: () => boolean;
-  // Swap mode: finishes a clip whose swap.status is "pending" (the full face swap) before it may play.
-  finalizeSwap?: (result: ClipResult) => Promise<{
-    videoUrl: string;
-    lastFrameUrl?: string;
-    costUsd: number;
-    report: ClipSwapReport;
-  }>;
+  // Swap mode: finishes a clip whose swap.status is "pending" (the full face swap) before it may play. With rest, it swapped only the head and rest brings the frames after it.
+  finalizeSwap?: (
+    result: ClipResult,
+  ) => Promise<SwapOutcome & { rest?: Promise<SwapOutcome> }>;
 };
+
+type SwapOutcome = {
+  videoUrl: string;
+  lastFrameUrl?: string;
+  costUsd: number;
+  report: ClipSwapReport;
+};
+
+const failedSwap = (error: unknown): ClipSwapReport => ({
+  status: "failed",
+  swapMs: 0,
+  frames: 0,
+  framesWithFace: 0,
+  msPerFrame: 0,
+  similarityBefore: null,
+  similarityAfter: null,
+  restored: false,
+  reason: (error instanceof Error ? error.message : String(error)).slice(
+    0,
+    300,
+  ),
+});
 
 export type SnapshotSource = () => LiveSessionSnapshot;
 
@@ -134,6 +155,15 @@ export class ClipPipeline {
   private chainedReady: ClipResult[] = [];
   // Clips still having their full swap finished: they hold their queue position but are not playable yet.
   private pendingSwapClipIds = new Set<string>();
+  // A split reply's rest still swapping, by its clipId: nothing may play between it and its head.
+  private splitRests = new Map<
+    string,
+    { headClipId: string; failOpen: () => void; leadMs: number }
+  >();
+  // A rest playing its raw frames on the fail-open starts this far into the rendered clip.
+  private startSecByClipId = new Map<string, number>();
+  // Containers held outside the pipeline for a split reply's rest; idle swaps leave them free.
+  private heldSwapSlots = 0;
   private consecutiveSwapFailures = 0;
   private pendingChainSwaps = 0;
   private activeSwaps = 0;
@@ -238,6 +268,7 @@ export class ClipPipeline {
       this.pendingChainSwaps += 1;
     }
     this.onEvent({ type: "clipRendered", result, lane });
+    const renderedVideoUrl = result.videoUrl;
     const runSwap = () =>
       finalizeSwap(result)
         .then(
@@ -246,22 +277,12 @@ export class ClipPipeline {
             result.swap = swapped.report;
             result.costUsd += swapped.costUsd;
             this.addCost(swapped.costUsd);
+            if (swapped.rest) {
+              this.beginSplitRest(result, renderedVideoUrl, swapped.rest);
+            }
           },
           (error: unknown) => {
-            result.swap = {
-              status: "failed",
-              swapMs: 0,
-              frames: 0,
-              framesWithFace: 0,
-              msPerFrame: 0,
-              similarityBefore: null,
-              similarityAfter: null,
-              restored: false,
-              reason: (error instanceof Error
-                ? error.message
-                : String(error)
-              ).slice(0, 300),
-            };
+            result.swap = failedSwap(error);
           },
         )
         .then(() => {
@@ -325,7 +346,10 @@ export class ClipPipeline {
         this.activeSwaps < max
       ) {
         index = chainIndex;
-      } else if (idleIndex !== -1 && activeIdleSwaps < max - 1) {
+      } else if (
+        idleIndex !== -1 &&
+        activeIdleSwaps + this.heldSwapSlots < max - 1
+      ) {
         index = idleIndex;
       }
       if (index === -1) {
@@ -356,6 +380,124 @@ export class ClipPipeline {
     return onCursor !== -1
       ? onCursor
       : this.queuedSwaps.findIndex((q) => q.lane === "idle");
+  }
+
+  // Swaps in flight on the pipeline's slots plus containers held for a split rest.
+  swapLoad(): number {
+    return this.activeSwaps + this.heldSwapSlots;
+  }
+
+  // Holds a container for a split reply's rest until the returned release runs; idle swaps wait, chain swaps do not.
+  holdSwapSlot(): () => void {
+    this.heldSwapSlots += 1;
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      this.heldSwapSlots -= 1;
+      if (!this.disposed) {
+        this.dispatchSwaps();
+      }
+    };
+  }
+
+  // Where the player starts a clip, when not at 0: a split rest playing its raw frames.
+  startSecFor(clipId: string): number | undefined {
+    return this.startSecByClipId.get(clipId);
+  }
+
+  // The head is playable now; the rest queues right behind it and plays when its swap lands, or its raw frames once it is late or failed.
+  private beginSplitRest(
+    head: ClipResult,
+    renderedVideoUrl: string,
+    rest: Promise<SwapOutcome>,
+  ): void {
+    const report = head.swap;
+    const index = this.chainedReady.indexOf(head);
+    const headSec = report?.fps ? report.frames / report.fps : 0;
+    // A head that fell back to the whole unswapped clip already covers every frame; so does one from a swap service that ignored the range (not yet deployed), or the reply would play twice.
+    if (
+      report?.status !== "swapped" ||
+      headSec <= 0 ||
+      headSec >= head.durationSec - 0.5 ||
+      index === -1
+    ) {
+      void rest.then(
+        (swapped) => {
+          this.addCost(swapped.costUsd);
+          this.onEvent({
+            type: "clipDiscarded",
+            result: head,
+            costUsd: swapped.costUsd,
+          });
+        },
+        () => undefined,
+      );
+      return;
+    }
+    const part: ClipResult = {
+      ...head,
+      clipId: `${head.clipId}:rest`,
+      videoUrl: renderedVideoUrl,
+      durationSec: Math.max(0, head.durationSec - headSec),
+      costUsd: 0,
+      swap: { ...report, status: "pending" },
+    };
+    head.durationSec = headSec;
+    this.chainedReady.splice(index + 1, 0, part);
+    this.pendingSwapClipIds.add(part.clipId);
+    let settled = false;
+    const finish = (outcome: SwapOutcome | null, failure: unknown) => {
+      settled = true;
+      this.splitRests.delete(part.clipId);
+      if (this.disposed) {
+        return;
+      }
+      if (outcome?.report.status === "swapped") {
+        part.videoUrl = outcome.videoUrl;
+        part.swap = outcome.report;
+      } else {
+        this.startSecByClipId.set(part.clipId, headSec);
+        part.swap = outcome?.report ?? failedSwap(failure);
+      }
+      this.pendingSwapClipIds.delete(part.clipId);
+      this.onEvent({ type: "clipPartReady", result: part });
+      this.announceIfRecovered();
+    };
+    this.splitRests.set(part.clipId, {
+      headClipId: head.clipId,
+      failOpen: () => {
+        if (!settled) {
+          finish(null, new Error("split rest late, playing its raw frames"));
+        }
+      },
+      leadMs: Math.max(
+        0,
+        headSec * 1000 - LIVE_TUNABLES.SWAP_SPLIT_REST_LEAD_MS,
+      ),
+    });
+    rest.then(
+      (swapped) => {
+        this.addCost(swapped.costUsd);
+        if (settled) {
+          this.onEvent({
+            type: "clipDiscarded",
+            result: part,
+            costUsd: swapped.costUsd,
+          });
+          return;
+        }
+        part.costUsd = swapped.costUsd;
+        finish(swapped, null);
+      },
+      (error: unknown) => {
+        if (!settled) {
+          finish(null, error);
+        }
+      },
+    );
   }
 
   // Frames playback can still stand on: now, after a chain clip already on the shelf, or at the chain's tail and anchor.
@@ -474,7 +616,11 @@ export class ClipPipeline {
   nextClip(): ClipResult | null {
     const clip = this.pickNext();
     if (!clip) {
-      if (!this.bufferIsEmpty) {
+      // The head is still on screen with its rest due, so this is not an empty buffer.
+      const holdingForRest =
+        this.chainedReady[0] !== undefined &&
+        this.splitRests.has(this.chainedReady[0].clipId);
+      if (!this.bufferIsEmpty && !holdingForRest) {
         this.bufferIsEmpty = true;
         this.onEvent({ type: "bufferEmpty" });
       }
@@ -500,6 +646,10 @@ export class ClipPipeline {
       this.playoutCursorFrameUrl = chained.seedFrameUrl;
       this.fillIdleStockpile();
       return chained;
+    }
+    // A split rest continues its head frame for frame; an idle between them would jump to the reply's end pose and back.
+    if (chained && this.splitRests.has(chained.clipId)) {
+      return null;
     }
     if (!this.firstChainClipPlayed) {
       return null;
@@ -609,8 +759,14 @@ export class ClipPipeline {
 
   // Called once the player confirms a pulled clip is actually on screen; a clip merely pulled to
   // preload must never move this (that was the bug: preloading silently advanced the anchor).
-  onClipStarted(seedFrameUrl: string): void {
+  onClipStarted(seedFrameUrl: string, clipId?: string): void {
     this.displayAnchorFrameUrl = seedFrameUrl;
+    // The head is on screen: its rest must be playable before the head ends, or the boundary freezes.
+    for (const rest of this.splitRests.values()) {
+      if (rest.headClipId === clipId) {
+        setTimeout(rest.failOpen, rest.leadMs);
+      }
+    }
   }
 
   private tryAdvanceChain(): void {

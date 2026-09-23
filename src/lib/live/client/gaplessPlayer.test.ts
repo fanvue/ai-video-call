@@ -411,6 +411,28 @@ describe("GaplessPlayer", () => {
     expect(player.getActiveSlot()).toBe("b");
   });
 
+  it("a clip with startSec plays from there, preloaded or first, so a split reply's raw rest continues the head's frames", async () => {
+    const rest = { ...clip("rest"), startSec: 4.2 };
+    const { a, b, player } = setup([clip("head"), rest]);
+    player.start();
+    await flush();
+    await flush();
+    // The warm-decode play and pause must not rewind it to the raw clip's first frame.
+    expect(b.src).toBe(rest.videoUrl);
+    expect(b.currentTime).toBe(4.2);
+    a.fireTimeUpdate(9.96);
+    await flush();
+    b.fire("playing");
+    await flush();
+    expect(player.getActiveSlot()).toBe("b");
+    expect(b.currentTime).toBe(4.2);
+
+    const first = setup([{ ...clip("solo"), startSec: 3 }]);
+    first.player.start();
+    await flush();
+    expect(first.a.currentTime).toBe(3);
+  });
+
   it("frame-exact boundary: keeps the incoming clip on frame 0 until the outgoing one is on its last frame, then hard-cuts", async () => {
     const { a, b, player } = setup([clip("c1"), clip("c2")]);
     player.start();

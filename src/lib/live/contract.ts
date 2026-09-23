@@ -368,6 +368,8 @@ export const clipSwapReportSchema = z.object({
   similarityAfter: z.number().nullable(),
   restored: z.boolean(),
   reason: z.string().max(300).nullable(),
+  // The swapped video's frame rate; a split reply's head is frames / fps long.
+  fps: z.number().min(0).optional(),
 });
 export type ClipSwapReport = z.infer<typeof clipSwapReportSchema>;
 
@@ -439,7 +441,8 @@ export const LIVE_TUNABLES = {
   // Looping idles kept per settled pose and replayed in shuffled order; once full, no more idles render until the pose changes. Prod rendered one every 5 to 10 s while nobody typed, most of the spend and the swap queue replies waited behind.
   IDLE_DECK_SIZE: 3,
   // Swap latency is per frame (~40 ms), so a 15 s reply cost ~5 s more to swap than an 11 s one. Bridge idles from the reply's tail start when it renders, well before it plays, so it no longer needs the extra length to cover the next clip.
-  SWAP_ACTION_CLIP_SEC: 11,
+  // 10 s, the fal floor: with Face lock on (longlive, 39 to 46 ms a frame in prod) the 11th second was 25 frames, about 1.1 s of every reply's wait.
+  SWAP_ACTION_CLIP_SEC: 10,
   // The first idle seeds from the greeting's tail and needs render + swap (~12 s) before it can play; an 11 s greeting ended 0.4 s before that landed and prod held 3.5 s on its last frame, so the greeting runs the full clip length to cover it.
   SWAP_GREETING_CLIP_SEC: 15,
   // Two-phase swap: the server swaps only the clip's last frame (about 1.5 s) so the next chain clip renders at once, and the client swaps the full clip in parallel before playing it. Off, the render call waits for the whole swap (about 7 s) before the chain can move.
@@ -478,6 +481,14 @@ export const LIVE_TUNABLES = {
   SWAP_PREFETCH_READY_CLIPS: true,
   // Start a reply's full swap from the clip route's render stream instead of after its seed swap, taking that 2 to 4 s off the reply's wait; at most one such early swap runs, outside the pipeline's swap slots.
   SWAP_EARLY_REPLY_SWAP: true,
+  // Swap a reply's first SWAP_SPLIT_HEAD_FRAMES and the rest on two containers at once, so it plays once the head lands instead of the whole clip; skipped when no second container is free.
+  SWAP_SPLIT_REPLY: true,
+  // About 4.2 s at 24 fps: the rest (about 140 frames at 45 ms) lands while the head plays.
+  SWAP_SPLIT_HEAD_FRAMES: 100,
+  // ai-video-swap's max_containers (services/swap/modal_app.py); a request past it queues inside Modal.
+  SWAP_SERVICE_CONTAINERS: 4,
+  // The rest's swap still out this long before the head ends: its raw frames play instead, so the boundary does not freeze.
+  SWAP_SPLIT_REST_LEAD_MS: 1000,
   // Timeupdate fires about four times a second, so a deferred cut-in on a looping element needs a wider boundary window than SWAP_LEAD_SEC or the wrap slips past it.
   CUT_IN_LEAD_SEC: 0.35,
   // Stage an in-scene still (selected room, canon lingerie) from the upload before the greeting; the raw photo's clothes and room otherwise contradict the prompt and the first clip visibly morphs.

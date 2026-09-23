@@ -2775,3 +2775,216 @@ describe("ClipPipeline", () => {
     });
   });
 });
+
+describe("ClipPipeline split reply", () => {
+  type Outcome = {
+    videoUrl: string;
+    lastFrameUrl?: string;
+    costUsd: number;
+    report: ClipSwapReport;
+  };
+  const PENDING: ClipSwapReport = {
+    ...SWAPPED_REPORT,
+    status: "pending",
+    frames: 0,
+  };
+  const HEAD_SEC = 100 / 24;
+  const headOutcome: Outcome = {
+    videoUrl: "https://example.com/head-swapped.mp4",
+    costUsd: 0.002,
+    report: { ...SWAPPED_REPORT, frames: 100, fps: 24 },
+  };
+  const restOutcome: Outcome = {
+    videoUrl: "https://example.com/rest-swapped.mp4",
+    costUsd: 0.003,
+    report: { ...SWAPPED_REPORT, frames: 140, fps: 24 },
+  };
+  const pipelines: ClipPipeline[] = [];
+
+  beforeEach(() => {
+    resultCounter = 0;
+    frameCounter = 0;
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    for (const pipeline of pipelines.splice(0)) {
+      pipeline.dispose();
+    }
+    vi.useRealTimers();
+  });
+
+  // Greeting played, reply rendered with its swap pending; the reply's head and rest are the test's to settle. Fillers swap instantly.
+  const rig = async () => {
+    const events: PipelineEvent[] = [];
+    const head = defer<Outcome>();
+    const rest = defer<Outcome>();
+    const queue = makeJobQueue();
+    const pipeline = new ClipPipeline({
+      backend: "swap",
+      now: () => 0,
+      onEvent: (event) => events.push(event),
+      render: async (req) =>
+        delayed(() => ({ ...chainAdvancingResult(req), swap: PENDING })),
+      finalizeSwap: (result) =>
+        result.jobKind === "reply"
+          ? head.promise.then((swapped) => ({
+              ...swapped,
+              rest: rest.promise,
+            }))
+          : Promise.resolve({
+              videoUrl: `${result.videoUrl}?swapped`,
+              costUsd: 0.001,
+              report: SWAPPED_REPORT,
+            }),
+    });
+    pipelines.push(pipeline);
+    queue.push(REPLY_JOB);
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    expect(pipeline.nextClip()?.jobKind).toBe("greeting");
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    const rendered = events.find(
+      (e) => e.type === "clipRendered" && e.result.jobKind === "reply",
+    );
+    const renderedVideoUrl =
+      rendered?.type === "clipRendered" ? rendered.result.videoUrl : "";
+    expect(renderedVideoUrl).not.toBe("");
+    return { pipeline, events, head, rest, renderedVideoUrl };
+  };
+
+  it("plays the head once it lands, holds for the rest with no filler between them, then plays the swapped rest", async () => {
+    const { pipeline, events, head, rest } = await rig();
+    head.resolve(headOutcome);
+    await vi.advanceTimersByTimeAsync(0);
+    const headClip = pipeline.nextClip();
+    expect(headClip?.videoUrl).toBe(headOutcome.videoUrl);
+    expect(headClip?.durationSec).toBeCloseTo(HEAD_SEC);
+    // Bridge fillers from the reply's tail render and swap meanwhile; none may cut in before the rest.
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS * 4);
+    const seen = events.length;
+    expect(pipeline.nextClip()).toBeNull();
+    expect(events.slice(seen).some((e) => e.type === "bufferEmpty")).toBe(
+      false,
+    );
+
+    rest.resolve(restOutcome);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(events.some((e) => e.type === "clipPartReady")).toBe(true);
+    const part = pipeline.nextClip();
+    expect(part?.clipId).toBe(`${headClip?.clipId}:rest`);
+    expect(part?.videoUrl).toBe(restOutcome.videoUrl);
+    expect(part?.seedFrameUrl).toBe(headClip?.seedFrameUrl);
+    expect(pipeline.startSecFor(part?.clipId ?? "")).toBeUndefined();
+    expect(part?.costUsd).toBe(restOutcome.costUsd);
+    // After the rest, the tail's fillers are fair game again.
+    expect(pipeline.nextClip()?.jobKind).toBe("idle");
+  });
+
+  it("a failed rest plays the raw render from the head's last frame on, rather than freezing", async () => {
+    const { pipeline, head, rest, renderedVideoUrl } = await rig();
+    head.resolve(headOutcome);
+    await vi.advanceTimersByTimeAsync(0);
+    pipeline.nextClip();
+    rest.reject(new Error("Modal 503"));
+    await vi.advanceTimersByTimeAsync(0);
+    const part = pipeline.nextClip();
+    expect(part?.videoUrl).toBe(renderedVideoUrl);
+    expect(part?.swap?.status).toBe("failed");
+    expect(pipeline.startSecFor(part?.clipId ?? "")).toBeCloseTo(HEAD_SEC);
+  });
+
+  it("a rest still out SWAP_SPLIT_REST_LEAD_MS before the head ends plays raw, and its late swap is discarded", async () => {
+    const { pipeline, events, head, rest, renderedVideoUrl } = await rig();
+    head.resolve(headOutcome);
+    await vi.advanceTimersByTimeAsync(0);
+    const headClip = pipeline.nextClip();
+    pipeline.onClipStarted(headClip?.seedFrameUrl ?? "", headClip?.clipId);
+    await vi.advanceTimersByTimeAsync(
+      HEAD_SEC * 1000 - LIVE_TUNABLES.SWAP_SPLIT_REST_LEAD_MS - 50,
+    );
+    expect(events.some((e) => e.type === "clipPartReady")).toBe(false);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(events.some((e) => e.type === "clipPartReady")).toBe(true);
+    const part = pipeline.nextClip();
+    expect(part?.videoUrl).toBe(renderedVideoUrl);
+
+    rest.resolve(restOutcome);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(part?.videoUrl).toBe(renderedVideoUrl);
+    expect(
+      events.some(
+        (e) =>
+          e.type === "clipDiscarded" &&
+          e.result.clipId === part?.clipId &&
+          e.costUsd === restOutcome.costUsd,
+      ),
+    ).toBe(true);
+  });
+
+  it("a head that fell back to the whole unswapped clip plays alone, and the rest's cost is still counted", async () => {
+    const { pipeline, events, head, rest, renderedVideoUrl } = await rig();
+    head.resolve({
+      videoUrl: renderedVideoUrl,
+      costUsd: 0,
+      report: { ...PENDING, status: "failed", reason: "timeout" },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const whole = pipeline.nextClip();
+    expect(whole?.videoUrl).toBe(renderedVideoUrl);
+    expect(whole?.durationSec).toBe(10);
+    rest.resolve(restOutcome);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(events.some((e) => e.type === "clipPartReady")).toBe(false);
+    expect(
+      events.some(
+        (e) => e.type === "clipDiscarded" && e.costUsd === restOutcome.costUsd,
+      ),
+    ).toBe(true);
+  });
+
+  it("a head that came back whole (a swap service that ignored the range) plays alone instead of twice", async () => {
+    const { pipeline, events, head, rest } = await rig();
+    head.resolve({
+      ...headOutcome,
+      report: { ...SWAPPED_REPORT, frames: 241, fps: 24 },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pipeline.nextClip()?.durationSec).toBe(10);
+    rest.resolve(restOutcome);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(events.some((e) => e.type === "clipPartReady")).toBe(false);
+  });
+
+  it("a held slot keeps idle swaps off the rest's container but never blocks a chain swap", async () => {
+    const idleSwaps: string[] = [];
+    const queue = makeJobQueue();
+    const pipeline = new ClipPipeline({
+      backend: "swap",
+      now: () => 0,
+      onEvent: () => {},
+      render: async (req) =>
+        delayed(() => ({ ...chainAdvancingResult(req), swap: PENDING })),
+      finalizeSwap: (result) => {
+        if (result.jobKind === "idle") {
+          idleSwaps.push(result.clipId);
+        }
+        return new Promise(() => {});
+      },
+    });
+    pipelines.push(pipeline);
+    const release = pipeline.holdSwapSlot();
+    expect(pipeline.swapLoad()).toBe(1);
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS * 4);
+    // SWAP_MAX_CONCURRENT 3 keeps one slot for the chain: two idle swaps, one with the held slot.
+    expect(idleSwaps.length).toBe(LIVE_TUNABLES.SWAP_MAX_CONCURRENT - 2);
+    queue.push(REPLY_JOB);
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    expect(pipeline.swapLoad()).toBe(idleSwaps.length + 2);
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(idleSwaps.length).toBe(LIVE_TUNABLES.SWAP_MAX_CONCURRENT - 1);
+  });
+});

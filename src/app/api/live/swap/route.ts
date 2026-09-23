@@ -36,6 +36,9 @@ const bodySchema = z.object({
   swapProfile: swapProfileSchema.optional(),
   swapFaceLock: z.boolean().optional().default(false),
   swapHandMask: z.boolean().optional().default(false),
+  // A split reply's segment, frames [startFrame, endFrame); absent, the whole clip.
+  startFrame: z.number().int().min(0).optional(),
+  endFrame: z.number().int().min(1).optional(),
 });
 
 // Second phase of the swap: the clip already came back from /api/live/clip unswapped with a swapped tail as the next seed; this finishes the clip itself before the client plays it. Fails open to the unswapped clip with a failed report.
@@ -58,6 +61,8 @@ export async function POST(request: Request) {
     swapProfile,
     swapFaceLock,
     swapHandMask,
+    startFrame,
+    endFrame,
   } = parsed.data;
   const recipe = swapRecipeFor(swapFaceLock);
   const startedAt = Date.now();
@@ -73,6 +78,8 @@ export async function POST(request: Request) {
       swapModel: swapModelFor(swapProfile),
       recipe,
       handMask: swapHandMask,
+      ...(startFrame !== undefined ? { startFrame } : {}),
+      ...(endFrame !== undefined ? { endFrame } : {}),
     });
     return NextResponse.json({
       videoUrl: swapped.videoUrl,

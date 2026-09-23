@@ -16,6 +16,8 @@ export type PendingReveal = {
   // Set once the held reply clip has been on screen, so only a clip after it can release the text.
   replySeen: boolean;
   readyAtMs: number;
+  // When the fan sent the request, for the send-to-reveal telemetry.
+  sentAtMs?: number;
 };
 
 export type PlayingClip = {
