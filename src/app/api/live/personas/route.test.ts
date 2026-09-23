@@ -31,7 +31,7 @@ describe("GET /api/live/personas", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("returns only ids and notes, with a server-minted ticket", async () => {
+  it("returns only ids, notes, names and addedAt, with a server-minted ticket", async () => {
     vi.mocked(getCurrentUser).mockResolvedValue({
       uuid: "u",
       email: "x@notfanvue.com",
@@ -43,6 +43,8 @@ describe("GET /api/live/personas", () => {
             {
               id: "synth-persona-01",
               note: "Seed",
+              name: "Ava",
+              addedAt: "2026-09-23T17:03:00+00:00",
               rightsHolder: "Fanvue",
               file: "synth-persona-01.jpg",
             },
@@ -52,7 +54,14 @@ describe("GET /api/live/personas", () => {
     );
     const response = await GET();
     expect(await response.json()).toEqual({
-      personas: [{ id: "synth-persona-01", note: "Seed" }],
+      personas: [
+        {
+          id: "synth-persona-01",
+          note: "Seed",
+          name: "Ava",
+          addedAt: "2026-09-23T17:03:00+00:00",
+        },
+      ],
       canRegister: false,
     });
     const url = fetchMock.mock.calls[0][0] as URL;
@@ -62,6 +71,20 @@ describe("GET /api/live/personas", () => {
     expect(url.searchParams.get("ticket")).toMatch(
       /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/,
     );
+  });
+
+  it("falls back to an empty name and addedAt for an old entry", async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue({ uuid: "u" } as never);
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          personas: [{ id: "synth-persona-01", note: "Seed" }],
+        }),
+      ),
+    );
+    expect((await (await GET()).json()).personas).toEqual([
+      { id: "synth-persona-01", note: "Seed", name: "", addedAt: "" },
+    ]);
   });
 
   it("tells a Fanvue account it can register", async () => {

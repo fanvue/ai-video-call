@@ -72,7 +72,8 @@ const postJson = async <T>(url: string, body: unknown): Promise<T> => {
     body: JSON.stringify(body),
   });
   const data = (await res.json().catch(() => null)) as
-    (T & { error?: string }) | null;
+    | (T & { error?: string })
+    | null;
   if (!res.ok || !data) {
     throw new Error(data?.error ?? `Request to ${url} failed (${res.status})`);
   }
@@ -198,6 +199,7 @@ export const fetchSwapPersonas = () => listPersonasAt("/api/live/swapPersonas");
 const registerPersonaAt = async (
   path: string,
   file: File,
+  name: string,
 ): Promise<{ id: PersonaOption["id"]; created: boolean }> => {
   if (file.type && file.type !== "image/jpeg" && file.type !== "image/png") {
     throw new Error("Please use a JPEG or PNG photo.");
@@ -206,15 +208,16 @@ const registerPersonaAt = async (
   return postJson<{ id: string; created: boolean }>(path, {
     imageBase64: await readFileAsBase64(upload),
     contentType: upload.type === "image/png" ? "image/png" : "image/jpeg",
+    name,
     attested: true,
   });
 };
 
-export const registerPersona = (file: File) =>
-  registerPersonaAt("/api/live/personaRegister", file);
+export const registerPersona = (file: File, name: string) =>
+  registerPersonaAt("/api/live/personaRegister", file, name);
 
-export const registerSwapPersona = (file: File) =>
-  registerPersonaAt("/api/live/swapPersonaRegister", file);
+export const registerSwapPersona = (file: File, name: string) =>
+  registerPersonaAt("/api/live/swapPersonaRegister", file, name);
 
 // Fire-and-forget at session start in swap mode so the GPU container is loading while the first clip renders.
 export const warmSwap = async (): Promise<void> => {

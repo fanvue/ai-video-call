@@ -76,8 +76,21 @@ class PersonaStoreTest(unittest.TestCase):
     def ticket(self, **overrides):
         return sign({"sid": "s-1", "exp": NOW + 300, **overrides})
 
-    def register(self, image: bytes = JPEG, content_type: str = "image/jpeg", token: str | None = None, **extra):
-        body = {"token": register_token(image) if token is None else token, "imageBase64": base64.b64encode(image).decode(), "contentType": content_type, **extra}
+    def register(
+        self,
+        image: bytes = JPEG,
+        content_type: str = "image/jpeg",
+        token: str | None = None,
+        name: str | None = "Ava",
+        **extra,
+    ):
+        body = {
+            "token": register_token(image) if token is None else token,
+            "imageBase64": base64.b64encode(image).decode(),
+            "contentType": content_type,
+            "name": name,
+            **extra,
+        }
         return self.client.post("/personas/register", json=body)
 
     def manifest(self):
@@ -89,20 +102,23 @@ class PersonaStoreTest(unittest.TestCase):
             params = {} if ticket is None else {"ticket": ticket}
             self.assertEqual(self.client.get("/personas", params=params).status_code, 401, ticket)
 
-    def test_list_includes_registered_uploads_and_only_ids_and_notes(self):
+    def test_list_includes_registered_uploads_and_only_ids_notes_names_and_addedat(self):
         self.assertEqual(self.register().status_code, 200)
         listing = self.client.get("/personas", params={"ticket": self.ticket()}).json()["personas"]
         upload_id = f"upload-{hashlib.sha256(JPEG).hexdigest()[:12]}"
         self.assertEqual([p["id"] for p in listing], ["synth-persona-01", upload_id])
-        self.assertTrue(all(set(p) == {"id", "note"} for p in listing))
+        self.assertTrue(all(set(p) == {"id", "note", "name", "addedAt"} for p in listing))
+        # SEED predates the name field; the fallback keeps it listed under its id.
+        self.assertEqual(listing[0]["name"], "")
+        self.assertEqual(listing[1]["name"], "Ava")
         self.assertGreater(self.reloads, 0)
 
     def test_registration_writes_longlives_entry_format(self):
-        response = self.register(PNG, "image/png")
+        response = self.register(PNG, "image/png", name="Ava Two")
         sha = hashlib.sha256(PNG).hexdigest()
         self.assertEqual(response.json(), {"id": f"upload-{sha[:12]}", "created": True})
         entry = self.manifest()[-1]
-        expected = registered_entry(sha, ".png", "user-uuid-1", entry["addedAt"])
+        expected = registered_entry(sha, ".png", "user-uuid-1", entry["addedAt"], "Ava Two")
         self.assertEqual(entry, expected)
         with open(os.path.join(self.root, expected["file"]), "rb") as handle:
             self.assertEqual(handle.read(), PNG)
@@ -110,6 +126,11 @@ class PersonaStoreTest(unittest.TestCase):
         # The swap gate accepts what the store wrote.
         persona, reason = resolve_persona(self.root, expected["id"])
         self.assertIsNotNone(persona, reason)
+        self.assertEqual(persona.name, "Ava Two")
+
+    def test_registration_rejects_a_missing_or_invalid_name(self):
+        for name in (None, "", "   ", "x" * 41, "Ava\n", "Ava/2"):
+            self.assert_rejected(self.register(name=name), 400)
 
     def test_second_registration_of_the_same_image_is_not_created_again(self):
         self.register()

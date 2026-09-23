@@ -14,6 +14,7 @@ import {
 import {
   initialPersonaSettings,
   personaModeFor,
+  personaOptionLabel,
   personaOptionsFor,
   submittedPersona,
   updatePersonaMode,
@@ -57,10 +58,10 @@ type SetupScreenProps = {
   ) => void;
   onWarmLongLive?: () => void;
   loadPersonas?: PersonaLoader;
-  onRegisterPersona?: (file: File) => Promise<{ id: string }>;
+  onRegisterPersona?: (file: File, name: string) => Promise<{ id: string }>;
   // Swap mode's own list and registration, served without a GPU.
   loadSwapPersonas?: PersonaLoader;
-  onRegisterSwapPersona?: (file: File) => Promise<{ id: string }>;
+  onRegisterSwapPersona?: (file: File, name: string) => Promise<{ id: string }>;
   preparation?: { status: PrepareStatus; seedUrl: string | null };
   onSubmit: (values: SetupSubmit) => void;
 };
@@ -157,11 +158,13 @@ export const SetupScreen = ({
     };
   }, [personaMode, loadModePersonas]);
 
+  const registeredName = modeSettings?.name.trim() ?? "";
   const registerUpload = () => {
     if (
       !file ||
       !personaMode ||
       !modeSettings?.attested ||
+      !registeredName ||
       !registerModePersona
     ) {
       return;
@@ -171,10 +174,10 @@ export const SetupScreen = ({
         updatePersonaMode(current, personaMode, { registerStatus }),
       );
     setStatus("Registering…");
-    registerModePersona(file)
+    registerModePersona(file, registeredName)
       .then(({ id }) =>
         setPersonaSettings((current) =>
-          withRegisteredPersona(current, personaMode, id),
+          withRegisteredPersona(current, personaMode, id, registeredName),
         ),
       )
       .catch((e: unknown) =>
@@ -416,9 +419,9 @@ export const SetupScreen = ({
                   className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] p-2 text-[var(--foreground)]"
                 >
                   <option value="">Off</option>
-                  {personaOptionsFor(modeSettings).map(({ id, note }) => (
-                    <option key={id} value={id}>
-                      {note ? `${id} (${note})` : id}
+                  {personaOptionsFor(modeSettings).map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {personaOptionLabel(option)}
                     </option>
                   ))}
                 </select>
@@ -426,6 +429,23 @@ export const SetupScreen = ({
             ) : null}
             {personaMode && modeSettings?.canRegister && registerModePersona ? (
               <div className="flex flex-col gap-2 text-xs text-[var(--muted)]">
+                <label className="flex flex-col gap-1">
+                  Name
+                  <input
+                    type="text"
+                    value={modeSettings.name}
+                    onChange={(event) =>
+                      setPersonaSettings((current) =>
+                        updatePersonaMode(current, personaMode, {
+                          name: event.target.value,
+                        }),
+                      )
+                    }
+                    maxLength={40}
+                    placeholder="So testers can tell faces apart"
+                    className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] p-2 text-[var(--foreground)]"
+                  />
+                </label>
                 <label className="flex items-center gap-2">
                   <input
                     type="checkbox"
@@ -442,7 +462,7 @@ export const SetupScreen = ({
                 </label>
                 <button
                   type="button"
-                  disabled={!file || !modeSettings.attested}
+                  disabled={!file || !modeSettings.attested || !registeredName}
                   onClick={registerUpload}
                   className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] p-2 text-[var(--foreground)] disabled:text-[var(--muted)]"
                 >

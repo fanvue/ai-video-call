@@ -25,6 +25,7 @@ const request = (body: unknown) =>
 const validBody = (extra: Record<string, unknown> = {}) => ({
   imageBase64: JPEG.toString("base64"),
   contentType: "image/jpeg",
+  name: "Ava Test",
   attested: true,
   ...extra,
 });
@@ -119,6 +120,37 @@ describe("POST /api/live/swapPersonaRegister", () => {
     expect(response.status).toBe(400);
   });
 
+  it("answers 400 for a missing, empty or out-of-charset name", async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(fanvueUser as never);
+    for (const name of [
+      undefined,
+      "",
+      "   ",
+      "x".repeat(41),
+      "Ava <3",
+      "Ava/2",
+    ]) {
+      const response = await POST(request(validBody({ name })));
+      expect(response.status).toBe(400);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("trims the name and accepts the allowed charset", async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(fanvueUser as never);
+    for (const name of ["Ava", "Ava-Jane_02.5 O'Brien", "  Padded  "]) {
+      // A fresh Response per call: the shared beforeEach one's body is single-use.
+      fetchMock.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ id: `upload-${SHA.slice(0, 12)}`, created: true }),
+          { status: 200 },
+        ),
+      );
+      const response = await POST(request(validBody({ name })));
+      expect(response.status).toBe(200);
+    }
+  });
+
   it("registers under the hash id, sends a purpose-bound token and logs only the user id and hash", async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(fanvueUser as never);
     const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
@@ -135,6 +167,7 @@ describe("POST /api/live/swapPersonaRegister", () => {
     const sent = JSON.parse(init.body as string) as {
       token: string;
       imageBase64: string;
+      name: string;
     };
     const claims = JSON.parse(
       Buffer.from(sent.token.split(".")[0], "base64url").toString(),
@@ -144,6 +177,7 @@ describe("POST /api/live/swapPersonaRegister", () => {
       uid: "user-uuid-1",
       sha256: SHA,
     });
+    expect(sent.name).toBe("Ava Test");
     expect(JSON.stringify(sent)).not.toContain(SECRET);
     expect(JSON.stringify(sent)).not.toContain("fanvue.com");
     expect(info).toHaveBeenCalledTimes(1);

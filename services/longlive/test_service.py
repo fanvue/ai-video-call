@@ -342,14 +342,14 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(client.get("/personas").status_code, 401)
         self.assertEqual(client.get(f"/personas?ticket={self.ticket(secret='z' * 64)}").status_code, 401)
         response = client.get(f"/personas?ticket={self.ticket()}")
-        self.assertEqual(response.json(), {"personas": [{"id": "synth-persona-01", "note": "Seed"}]})
+        self.assertEqual(response.json(), {"personas": [{"id": "synth-persona-01", "note": "Seed", "name": "", "addedAt": "2026-09-23"}]})
         self.assertNotIn("rightsHolder", response.text)
         self.assertNotIn(".jpg", response.text)
 
     def register_body(self, image=b"\xff\xd8\xff new upload", **token_overrides):
         claims = {"purpose": "persona-register", "uid": "user-uuid-1", "sha256": hashlib.sha256(image).hexdigest(), "exp": int(time.time()) + 60}
         claims.update(token_overrides)
-        return {"token": sign_ticket(claims, SECRET), "imageBase64": base64.b64encode(image).decode(), "contentType": "image/jpeg"}
+        return {"token": sign_ticket(claims, SECRET), "imageBase64": base64.b64encode(image).decode(), "contentType": "image/jpeg", "name": "Test persona"}
 
     def test_register_writes_a_vouched_entry_once(self):
         personas = self.personas()
@@ -362,7 +362,7 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(personas.commits, 1)
         with open(os.path.join(personas.root, "manifest.json")) as handle:
             entry = json.load(handle)[-1]
-        self.assertEqual(entry["addedBy"], "user-uuid-1")
+        self.assertEqual((entry["addedBy"], entry["name"]), ("user-uuid-1", "Test persona"))
         self.assertEqual((entry["synthetic"], entry["attested"], entry["rightsHolder"], entry["sha256"]), (True, True, "Fanvue", sha))
         listed = client.get(f"/personas?ticket={self.ticket()}").json()["personas"]
         self.assertIn(f"upload-{sha[:12]}", [p["id"] for p in listed])
@@ -373,6 +373,7 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(client.post("/personas/register", json={**body, "token": self.ticket()}).status_code, 401)
         self.assertEqual(client.post("/personas/register", json={**body, "imageBase64": base64.b64encode(b"\xff\xd8\xff other").decode()}).status_code, 401)
         self.assertEqual(client.post("/personas/register", json={**body, "contentType": "image/gif"}).status_code, 400)
+        self.assertEqual(client.post("/personas/register", json={**body, "name": "<b>"}).status_code, 400)
         self.assertEqual(client.post("/personas/register", json={**body, "contentType": "image/png"}).status_code, 400)
         self.assertEqual(client.post("/personas/register", json=self.register_body(exp=int(time.time()) - 5)).status_code, 401)
         self.assertEqual(client.post("/personas/register", json=[]).status_code, 400)

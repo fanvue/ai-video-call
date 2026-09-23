@@ -39,9 +39,14 @@ export async function GET() {
       console.warn(`live/personas: listing failed (${response.status})`);
       return NextResponse.json({ personas: [], canRegister });
     }
-    // Rebuilt field by field so nothing beyond id and note can reach the browser.
+    // Rebuilt field by field so nothing beyond id, note, name and addedAt can reach the browser.
     return NextResponse.json({
-      personas: parsed.data.personas.map(({ id, note }) => ({ id, note })),
+      personas: parsed.data.personas.map(({ id, note, name, addedAt }) => ({
+        id,
+        note,
+        name,
+        addedAt,
+      })),
       canRegister,
     });
   } catch (error) {

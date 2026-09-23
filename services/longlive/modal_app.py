@@ -418,7 +418,7 @@ def build_api(engine, session_lock: asyncio.Lock, restorer=None, personas=None, 
         if personas is None:
             return {"personas": []}
         await asyncio.to_thread(fresh_personas)
-        # Ids and notes only: never the images, file names or rights metadata.
+        # Ids, notes, names and addedAt only: never the images, file names or rights metadata.
         return {"personas": await asyncio.to_thread(list_personas, personas.root)}
 
     @api.post("/personas/register")
@@ -450,7 +450,16 @@ def build_api(engine, session_lock: asyncio.Lock, restorer=None, personas=None, 
         # The token names one image; it cannot be replayed to register a different one.
         if sha256 != claims["sha256"]:
             return JSONResponse({"error": "token does not match the image"}, status_code=401)
-        entry = registered_entry(sha256, extension, claims["uid"], datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        try:
+            entry = registered_entry(
+                sha256,
+                extension,
+                claims["uid"],
+                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                body.get("name"),
+            )
+        except ValueError as error:
+            return JSONResponse({"error": str(error)}, status_code=400)
 
         def write() -> bool:
             fresh_personas()

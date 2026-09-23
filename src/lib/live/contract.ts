@@ -256,6 +256,9 @@ export const DEFAULT_PERSONA_ID = "synth-persona-01";
 export const personaOptionSchema = z.object({
   id: personaIdSchema,
   note: z.string().max(200),
+  // Old manifest entries predate this field; defaults to "" so the picker falls back to the id.
+  name: z.string().max(40).default(""),
+  addedAt: z.string().max(64).default(""),
 });
 export type PersonaOption = z.infer<typeof personaOptionSchema>;
 

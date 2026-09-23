@@ -19,6 +19,9 @@ const MAGIC: Record<"image/jpeg" | "image/png", number[]> = {
   "image/png": [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
 };
 
+// So testers can tell registered faces apart in the picker; the file itself stays hash-named.
+const NAME_RE = /^[A-Za-z0-9 .\-_']+$/;
+
 // Unknown keys (an "email", say) are stripped: who may register comes from the session alone.
 const bodySchema = z.object({
   imageBase64: z
@@ -26,6 +29,9 @@ const bodySchema = z.object({
     .min(1)
     .max(Math.ceil((MAX_IMAGE_BYTES * 4) / 3) + 4),
   contentType: z.union([z.literal("image/jpeg"), z.literal("image/png")]),
+  name: z.string().trim().min(1).max(40).regex(NAME_RE, {
+    error: "Name may only use letters, digits, spaces, and . - _ '",
+  }),
   attested: z.literal(true, {
     error:
       "Confirm this is a Fanvue-owned AI creator likeness, not a real person",
@@ -62,7 +68,7 @@ export async function POST(request: Request) {
       { status: 503 },
     );
   }
-  const { imageBase64, contentType } = parsed.data;
+  const { imageBase64, contentType, name } = parsed.data;
   const image = Buffer.from(imageBase64, "base64");
   const magic = MAGIC[contentType];
   if (
@@ -93,6 +99,7 @@ export async function POST(request: Request) {
           token,
           imageBase64: image.toString("base64"),
           contentType,
+          name,
         }),
         signal: AbortSignal.timeout(50_000),
       },
