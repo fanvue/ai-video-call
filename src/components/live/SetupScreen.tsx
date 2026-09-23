@@ -32,7 +32,12 @@ export type SetupSubmit = {
 type SetupScreenProps = {
   busy: boolean;
   error: string | null;
-  onPrepare?: (file: File, sceneId: SceneId, stage: boolean) => void;
+  onPrepare?: (
+    file: File,
+    sceneId: SceneId,
+    stage: boolean,
+    faceCrop: boolean,
+  ) => void;
   onWarmLongLive?: () => void;
   preparation?: { status: PrepareStatus; seedUrl: string | null };
   onSubmit: (values: SetupSubmit) => void;
@@ -85,7 +90,8 @@ export const SetupScreen = ({
       return;
     }
     const timeoutId = setTimeout(
-      () => onPrepare(file, sceneId, backend !== "swap"),
+      () =>
+        onPrepare(file, sceneId, backend !== "swap", backend !== "longlive"),
       PREPARE_DEBOUNCE_MS,
     );
     return () => clearTimeout(timeoutId);

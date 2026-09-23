@@ -1358,7 +1358,7 @@ const splitClauses = (
   return result;
 };
 
-const dedupeConsecutiveIntents = (intents: BeatIntent[]): BeatIntent[] =>
+export const dedupeConsecutiveIntents = (intents: BeatIntent[]): BeatIntent[] =>
   intents.filter(
     (intent, i) =>
       i === 0 || JSON.stringify(intent) !== JSON.stringify(intents[i - 1]),
@@ -1367,7 +1367,7 @@ const dedupeConsecutiveIntents = (intents: BeatIntent[]): BeatIntent[] =>
 // Contract caps followUps at 6, plus the primary beat itself.
 const MAX_TOTAL_BEATS = 7;
 
-const capIntents = (intents: BeatIntent[]): BeatIntent[] => {
+export const capIntents = (intents: BeatIntent[]): BeatIntent[] => {
   if (intents.length > MAX_TOTAL_BEATS) {
     console.warn(
       `resolveIntents: request resolved to ${intents.length} intents, dropping the tail beyond ${MAX_TOTAL_BEATS}`,

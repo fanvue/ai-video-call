@@ -1,8 +1,16 @@
 // One literal, present-tense sentence of visible body motion per request: the only thing LongLive's text encoder is steered by.
 import { GROQ_TEXT_MODEL, createGroqChatCompletion } from "@/lib/groq";
-import type { BeatIntent, GarmentId, LiveState } from "../contract";
-import { isIntentSatisfied } from "../intents";
+import type {
+  BeatIntent,
+  Body,
+  GarmentId,
+  LiveState,
+  Pose,
+  Wardrobe,
+} from "../contract";
+import { HELD_OBJECTS, isIntentSatisfied } from "../intents";
 import { correctActionTypos } from "./actionTypos";
+import { planBeatIntent } from "./planClip";
 
 // A request with a minor cue fails closed to the neutral reaction, before it reaches the LLM or a template.
 export const MINOR_CUE_RE =
@@ -15,7 +23,7 @@ export const YOUTH_WORD_RE =
 // Negations and meta words steer a T5-conditioned video model toward the very thing they name.
 const NEGATION_RE = /\b(not|no|never|without|nothing)\b|n't\b/i;
 const META_RE =
-  /\b(zoom\w*|pan|pans|panning|text|caption\w*|subtitle\w*|watermark\w*|logo|screen|letters|words|says|speaks|talks|mouths)\b/i;
+  /\b(zoom\w*|pan|pans|panning|text|caption\w*|subtitle\w*|watermark\w*|logo|screen|letters|words|says|speaks|talks|mouths|web ?cam\w*|live ?stream\w*)\b/i;
 const REFUSAL_RE =
   /\b(sorry|cannot|can't|unable|as an ai|i won't|i will not|not able)\b/i;
 
@@ -33,50 +41,117 @@ export const SETTLE_ACTION =
 export const GREETING_ACTION =
   "She smiles warmly into the camera and waves hello with one hand, then settles in and relaxes.";
 
-const SPIN_ACTION =
-  "She stands up and turns slowly all the way around, showing her back, then faces the camera again with a smile.";
+// Clip mode's check-in, minus "glances at the chat": a named screen or chat reads as a cue to draw one.
+export const CHECK_IN_ACTION =
+  "She looks back into the camera with a warm smile, tilting her head as she leans in a little closer.";
+
 const WAVE_ACTION =
   "She lifts her right hand high and waves it side to side at the camera, smiling brightly.";
 const KISS_ACTION =
   "She presses her fingertips to her puckered lips, then sweeps her hand forward toward the camera, blowing a kiss.";
 const WINK_ACTION =
   "She tilts her head and gives the camera a slow playful wink with a big smile.";
-const DANCE_ACTION =
-  "She stands up and dances to music, swaying her hips side to side, rolling her shoulders and running her hands through her hair.";
+const SMILE_ACTION =
+  "She gives the camera a big warm smile and a little shrug of her shoulders.";
 const SHOW_BREASTS_ACTION =
   "She cups her bare breasts in both hands and presents them to the camera, her nipples clearly visible.";
 const SHOW_BOTTOM_ACTION =
   "She turns around and shows her bottom to the camera, looking back over her shoulder with a smile.";
 const SHOW_NAKED_ACTION =
   "She shows off her fully naked body to the camera, turning slowly from side to side.";
+const RISE_LEAD_IN = "She stands up onto her feet.";
+// planClip's SIT_UP_LINE: panties and bottoms cannot come off or go on from these poses.
+const SIT_UP_LEAD_IN = "She sits up on the edge of the bed.";
+const NEEDS_SIT_UP = new Set<Pose>([
+  "lying",
+  "onAllFours",
+  "bentOver",
+  "kneeling",
+]);
+
+type Act = Extract<BeatIntent, { type: "act" }>["act"];
+type FetchableProp = Extract<BeatIntent, { type: "fetchProp" }>["prop"];
+type PropMode = Extract<BeatIntent, { type: "useProp" }>["mode"];
+type Facing = Body["facing"];
+type Posture = "standing" | "sitting" | "lying";
+
+// planClip's posture(): every non-standing, non-lying pose undresses like sitting.
+const posture = (pose: Pose): Posture =>
+  pose === "standing" ? "standing" : pose === "lying" ? "lying" : "sitting";
 
 const isPlural = (description: string): boolean =>
   /s$/i.test(description.trim());
 
-const removalClause = (
-  garment: GarmentId,
-  description: string,
-  wornAfter: Set<GarmentId>,
-): string => {
-  const it = isPlural(description) ? "them" : "it";
-  switch (garment) {
-    case "top":
-      return wornAfter.has("bra")
-        ? `pulls her ${description} off and tosses it aside, showing her bra`
-        : `pulls her ${description} off and tosses it aside, baring her naked breasts and nipples`;
-    case "bra":
-      return `reaches behind her back, unhooks her ${description} and slides it off her arms, baring her naked breasts with visible nipples`;
-    case "bottom":
-      return wornAfter.has("panties")
-        ? `slides her ${description} down her legs and steps out of ${it}, showing her panties`
-        : `slides her ${description} down her legs and steps out of ${it}, her bare vulva visible`;
-    case "panties":
-      return `hooks her thumbs into her ${description}, slides ${it} down her legs and steps out of ${it}, her bare vulva visible`;
-  }
+const itFor = (description: string): string =>
+  isPlural(description) ? "them" : "it";
+
+const wornLayer = (wardrobe: Wardrobe, ids: GarmentId[]): string | null => {
+  const id = ids.find((garment) => wardrobe[garment].on);
+  return id ? wardrobe[id].description : null;
 };
 
+// Mirrors planClip's removalChoreo: the same garment, posture and skirt branches as one untimed clause.
+const REMOVAL_CLAUSE: Record<
+  GarmentId,
+  (description: string, pose: Pose, wornAfter: Set<GarmentId>) => string
+> = {
+  top: (description, _pose, wornAfter) =>
+    wornAfter.has("bra")
+      ? `pulls her ${description} up over her head and tosses it aside, showing her bra`
+      : `pulls her ${description} up over her head and tosses it aside, baring her naked breasts and nipples`,
+  bra: (description) =>
+    `reaches behind her back, unhooks her ${description} and slides it off her arms, baring her naked breasts with visible nipples`,
+  bottom: (description, pose, wornAfter) => {
+    const reveal = wornAfter.has("panties")
+      ? "showing her panties"
+      : "her bare vulva visible";
+    if (/skirt/i.test(description))
+      return `unzips her ${description} at the hip, lets it drop to her feet and steps out of it, ${reveal}`;
+    return posture(pose) === "standing"
+      ? `pushes her ${description} down over her hips, bends forward and steps out of ${itFor(description)}, ${reveal}`
+      : `lifts her hips and slides her ${description} down her legs and off over her feet, ${reveal}`;
+  },
+  panties: (description, pose) => {
+    const it = itFor(description);
+    switch (posture(pose)) {
+      case "standing":
+        return `hooks her thumbs into her ${description}, pushes ${it} down her legs and steps out of ${it}, her bare vulva visible`;
+      case "lying":
+        return `lifts her hips, slides her ${description} down her thighs and pulls ${it} off over her feet, her bare vulva visible`;
+      case "sitting":
+        return `hooks her thumbs into her ${description}, lifts her hips off the seat and slides ${it} down her legs and off, her bare vulva visible`;
+    }
+  },
+};
+
+// Mirrors planClip's dressChoreo.
+const DRESS_CLAUSE: Record<
+  GarmentId,
+  (description: string, pose: Pose) => string
+> = {
+  top: (description) =>
+    `picks up her ${description} and pulls it down over her head, smoothing it over her body`,
+  bra: (description) =>
+    `picks up her ${description}, slides the straps over her shoulders and hooks the clasp behind her back`,
+  bottom: (description, pose) =>
+    /skirt/i.test(description)
+      ? `steps into her ${description}, draws it up to her waist and zips it at the hip`
+      : posture(pose) === "standing"
+        ? `steps into her ${description} and pulls ${itFor(description)} up her legs, fastening the waistband`
+        : `slides her feet into her ${description} and draws ${itFor(description)} up her thighs, lifting her hips to fasten the waistband`,
+  panties: (description, pose) =>
+    posture(pose) === "standing"
+      ? `steps into her ${description} and pulls ${itFor(description)} up her legs to her hips`
+      : `slides her feet into her ${description}, draws ${itFor(description)} up her thighs and lifts her hips to settle ${itFor(description)} in place`,
+};
+
+type WardrobeIntent = Extract<
+  BeatIntent,
+  { type: "removeGarment" | "addGarment" }
+>;
+
 const wardrobeSentence = (
-  intents: Extract<BeatIntent, { type: "removeGarment" | "addGarment" }>[],
+  intents: WardrobeIntent[],
   state: LiveState,
 ): string => {
   const worn = new Set(
@@ -84,14 +159,15 @@ const wardrobeSentence = (
       (id) => state.wardrobe[id].on,
     ),
   );
+  const pose = state.body.pose;
   const clauses = intents.map((intent) => {
     const description = state.wardrobe[intent.garment].description;
     if (intent.type === "addGarment") {
       worn.add(intent.garment);
-      return `picks up her ${description} and puts ${isPlural(description) ? "them" : "it"} back on`;
+      return DRESS_CLAUSE[intent.garment](description, pose);
     }
     worn.delete(intent.garment);
-    return removalClause(intent.garment, description, worn);
+    return REMOVAL_CLAUSE[intent.garment](description, pose, worn);
   });
   const naked =
     worn.size === 0 && intents.every((i) => i.type === "removeGarment");
@@ -106,63 +182,136 @@ const wardrobeSentence = (
     : `She ${clauses.join(", then ")}.`;
 };
 
-const POSE_ACTIONS: Record<string, string> = {
-  standing:
-    "She gets up onto her feet and stands tall facing the camera, her whole body in view.",
-  sitting:
-    "She sits down comfortably facing the camera and leans back on her hands.",
-  lying:
-    "She lies down on her back across the bed, turning her head to look at the camera.",
-  kneeling:
-    "She kneels upright facing the camera, knees apart, hands resting on her thighs.",
-  onAllFours:
-    "She gets down on her hands and knees facing the camera and looks up with a smile.",
-  bentOver:
-    "She turns her back to the camera and bends forward at the waist, looking back over her shoulder.",
-  leaning: "She leans toward the camera, resting her forearms on her knees.",
+// Mirrors planClip's POSE_DESCRIPTION, as a motion into the pose rather than a state.
+const POSE_MOTION: Record<Pose, string> = {
+  standing: "gets up onto her feet and stands tall, her whole body in view",
+  sitting: "sits down comfortably and leans back on her hands",
+  leaning: "leans back against the pillows behind her",
+  kneeling: "kneels upright with her knees apart and her hands on her thighs",
+  lying: "lies down on her back across the bed",
+  onAllFours: "gets down on her hands and knees",
+  bentOver: "bends forward at the waist with her hands braced on her knees",
 };
 
-const FRAMING_ACTIONS: Record<string, string> = {
+// Mirrors planClip's FACING_TRANSITION_LABEL.
+const FACING_CLAUSE: Record<Facing, string> = {
+  camera: "facing the camera",
+  away: "with her back to the camera, looking over her shoulder",
+  side: "turned at an angle to the camera",
+};
+
+const FRAMING_ACTIONS: Record<Body["framing"], string> = {
   torso:
     "She leans in close to the camera so her face and chest fill the frame.",
   wider: "She steps back from the camera so her whole body is in view.",
-  medium: "She settles back to a comfortable distance from the camera.",
+  medium:
+    "She settles back to a comfortable distance from the camera, in view from the waist up.",
 };
 
-const ACT_ACTIONS: Record<string, string> = {
-  twerk:
-    "She turns her back to the camera, bends her knees and twerks, bouncing her bottom in rhythm.",
-  grind:
-    "She rolls her hips slowly in a grinding motion, hands sliding along her thighs.",
-  bounce:
-    "She bounces up and down in rhythm, her breasts moving with each bounce.",
-  spread: "She leans back and spreads her legs wide toward the camera.",
-  sway: "She sways her hips slowly side to side, running her hands down her sides.",
-  crawl: "She crawls toward the camera on her hands and knees.",
-  spin: SPIN_ACTION,
-  tongue: "She sticks her tongue out playfully at the camera and laughs.",
-  tease:
-    "She runs her fingertips slowly along her neckline and down over her hips, teasing the camera with a playful smile.",
-  dance: DANCE_ACTION,
-  doggy:
-    "She gets on her hands and knees with her back to the camera, arching her back and looking over her shoulder.",
-  spank: "She turns to the side and gives her own bottom a firm playful spank.",
-  boobPlay:
-    "She cups her breasts in both hands and squeezes them together, smiling at the camera.",
+const FETCH_ACTIONS: Record<FetchableProp, string> = {
+  vibrator:
+    "She reaches off to the side, picks up her vibrator and holds it up to show the camera.",
+  dildo:
+    "She reaches off to the side, picks up her dildo and holds it up to show the camera.",
+  drink:
+    "She reaches off to the side, picks up her drink and holds it in one hand.",
 };
 
-const PROP_NAMES: Record<string, string> = {
-  vibrator: "vibrator",
-  dildo: "dildo",
-  drink: "drink",
+const USE_PROP_ACTIONS: Record<PropMode, (prop: string) => string> = {
+  mouth: (prop) =>
+    `She brings her ${prop} to her mouth and slowly licks and sucks its tip, looking at the camera.`,
+  external: (prop) =>
+    `She presses her ${prop} between her thighs and moves it slowly against herself, eyes on the camera.`,
 };
 
 const gestureAction = (text: string): string => {
   if (/\bkiss/i.test(text)) return KISS_ACTION;
   if (/\bwink/i.test(text)) return WINK_ACTION;
   if (/\b(wave|waving|hi|hello|hey)\b/i.test(text)) return WAVE_ACTION;
-  return "She gives the camera a big warm smile and a little shrug of her shoulders.";
+  return SMILE_ACTION;
 };
+
+// The clip regex puts clip-mode tease text in detail; LongLive keys off which garment it names.
+const teaseAction = (
+  detail: string | undefined,
+  wardrobe: Wardrobe,
+): string => {
+  if (detail && /strap/i.test(detail))
+    return `She hooks one finger under her ${wardrobe.bra.description} strap, slides it off her shoulder, holds it there, then lets it snap back into place.`;
+  if (detail && /waistband|panties/i.test(detail))
+    return `She hooks a thumb into the waistband of her ${wardrobe.panties.description}, tugs it out from her hip, then lets it snap back.`;
+  if (detail && /hem/i.test(detail))
+    return `She lifts the hem of her ${wardrobe.top.description} a few inches, holds it up, then lets it drop back down.`;
+  const layer = wornLayer(wardrobe, ["top", "bra", "panties", "bottom"]);
+  return layer
+    ? `She runs her fingertips slowly along the edge of her ${layer}, tugging it gently, teasing the camera with a playful smile.`
+    : "She runs her fingertips slowly down her neck and over her hips, teasing the camera with a playful smile.";
+};
+
+// Mirrors planAct: the same pose, facing and wardrobe branches, one untimed sentence each.
+const ACT_ACTIONS: Record<
+  Act,
+  (
+    intent: Extract<BeatIntent, { type: "act" }>,
+    state: LiveState,
+    text: string,
+  ) => string
+> = {
+  grind: (_intent, { body }) =>
+    body.pose === "onAllFours"
+      ? "On her hands and knees with her back arched, she rocks and grinds her hips toward the camera in a slow, steady rhythm."
+      : "She rolls her hips slowly in a grinding motion toward the camera, hands sliding along her thighs.",
+  twerk: () =>
+    "She turns her back to the camera, bends her knees and twerks, shaking and bouncing her hips and bottom to the beat.",
+  bounce: (_intent, { body, wardrobe }) => {
+    const surface = body.pose === "standing" ? "on her heels" : "on her seat";
+    const top = wardrobe.top.on
+      ? `, her ${wardrobe.top.description} moving with her`
+      : "";
+    return `She bounces up and down ${surface} in rhythm, her breasts moving with each bounce${top}.`;
+  },
+  spread: (intent, { body }) => {
+    if (intent.detail === "ass") {
+      const lead =
+        body.pose === "onAllFours" || body.pose === "bentOver"
+          ? "Bent forward with her back to the camera"
+          : "She turns her back to the camera and bends forward at the waist, then";
+      return `${lead}, she reaches back with both hands and pulls her bottom apart toward the camera, looking back over her shoulder.`;
+    }
+    return body.pose === "standing"
+      ? "She steps her feet wide apart and bends forward slightly, her legs spread toward the camera."
+      : body.pose === "lying"
+        ? "Lying on her back, she draws her knees up and lets them fall open, her legs spread toward the camera."
+        : "She draws her knees up and lets them fall open, her legs spread toward the camera.";
+  },
+  sway: () =>
+    "Bent forward at the waist, she sways and arches her back, her hips rocking slowly side to side.",
+  crawl: () =>
+    "On her hands and knees, she crawls slowly toward the camera until her body fills more of the frame.",
+  spin: () =>
+    "She turns slowly all the way around, showing her back, then faces the camera again with a smile.",
+  gesture: (_intent, _state, text) => gestureAction(text),
+  tongue: () =>
+    "She sticks her tongue out playfully at the camera, then slowly licks her lips.",
+  tease: (intent, { wardrobe }) => teaseAction(intent.detail, wardrobe),
+  dance: () =>
+    "She dances to music, swaying her hips side to side, rolling her shoulders and running her hands through her hair.",
+  doggy: () =>
+    "She lowers herself onto her hands and knees with her hips toward the camera, arches her back and rocks her hips slowly, glancing back over her shoulder.",
+  spank: (_intent, { body }) =>
+    body.facing === "camera"
+      ? "She turns her hips to the side and gives her own bottom a few firm playful spanks, eyes on the camera."
+      : "She gives her own bottom a few firm playful spanks, eyes on the camera.",
+  boobPlay: (_intent, { wardrobe }) => {
+    const layer = wornLayer(wardrobe, ["bra", "top"]);
+    return layer
+      ? `She cups her breasts in both hands over her ${layer}, squeezing them gently, thumbs circling slowly.`
+      : "She cups her bare breasts in both hands, squeezing them gently, thumbs circling slowly over her nipples.";
+  },
+};
+
+// planAct's "0-2s: she rises to her feet" lead-in.
+const ACTS_FROM_STANDING = new Set<Act>(["twerk", "dance", "spin"]);
 
 // "can you run your hands through your hair" -> "She runs her hands through her hair."
 const rephraseRequest = (text: string): string | null => {
@@ -174,6 +323,7 @@ const rephraseRequest = (text: string): string | null => {
       "",
     )
     .replace(/\s+(please|pls|for me|for us)$/i, "")
+    .replace(/\b(me|us)\b/gi, "the camera")
     .replace(/\byourself\b/gi, "herself")
     .replace(/\byour\b/gi, "her")
     .replace(/\byou\b/gi, "her")
@@ -186,57 +336,134 @@ const rephraseRequest = (text: string): string | null => {
     : /[^aeiou]y$/.test(verb)
       ? `${verb.slice(0, -1)}ies`
       : `${verb}s`;
-  return `She ${[third, ...words.slice(1)].join(" ")}.`;
+  const sentence = `She ${[third, ...words.slice(1)].join(" ")}.`;
+  return NEGATION_RE.test(sentence) || META_RE.test(sentence) ? null : sentence;
 };
 
+// A clip hold line is kept when it is a positive motion; "holds her exact pose" lines are the reaction instead.
+const holdAction = (line: string): string | null => {
+  const sentence = line.trim().replace(/\bwebcam\b/gi, "camera");
+  if (!sentence.startsWith("She ")) return null;
+  if (/\b(holds|stays)\b[^.]*\b(pose|as she is)\b/i.test(sentence)) return null;
+  if ([YOUTH_WORD_RE, NEGATION_RE, META_RE].some((re) => re.test(sentence)))
+    return null;
+  return sentence;
+};
+
+const restAction = ({ body, baselineBody }: LiveState): string => {
+  const steps: string[] = [];
+  if (HELD_OBJECTS.has(body.prop)) steps.push(`sets her ${body.prop} aside`);
+  if (body.hands === "onBody") steps.push("eases her hand off her body");
+  if (body.pose !== baselineBody.pose || body.facing !== baselineBody.facing)
+    steps.push(
+      `${POSE_MOTION[baselineBody.pose]}, ${FACING_CLAUSE[baselineBody.facing]}`,
+    );
+  steps.push("rests her hands in her lap and relaxes");
+  return `She ${steps.join(", then ")}.`;
+};
+
+const touchAction = ({ wardrobe, body }: LiveState): string => {
+  const covering = wardrobe.panties.on
+    ? `over her ${wardrobe.panties.description}`
+    : wardrobe.bottom.on
+      ? `over her ${wardrobe.bottom.description}`
+      : "against her bare skin";
+  const position =
+    body.pose === "standing"
+      ? "Standing with her legs slightly apart, she slides one hand down the front of her body"
+      : body.pose === "lying" || body.pose === "onAllFours"
+        ? "She reaches one hand back between her legs"
+        : "Sitting with her knees apart, she slides one hand down between her legs";
+  return `${position} and rubs herself slowly ${covering}, her hips rocking gently as she bites her lip.`;
+};
+
+// One sentence per intent from the body it runs from; null only for a line that is not a motion.
 const intentSentence = (
   intent: BeatIntent,
-  text: string,
   state: LiveState,
+  text: string,
 ): string | null => {
   switch (intent.type) {
+    case "removeGarment":
+    case "addGarment":
+      return wardrobeSentence([intent], state);
     case "pose":
-      return intent.facing === "away" && intent.pose !== "bentOver"
-        ? `${POSE_ACTIONS[intent.pose].replace(/ facing the camera/, "")} She turns her back to the camera and looks over her shoulder.`
-        : POSE_ACTIONS[intent.pose];
+      return `She ${POSE_MOTION[intent.pose]}, ${FACING_CLAUSE[intent.facing]}.`;
     case "framing":
       return FRAMING_ACTIONS[intent.framing];
     case "fetchProp":
-      return `She reaches off to the side, picks up her ${PROP_NAMES[intent.prop]} and holds it up to show the camera.`;
+      return FETCH_ACTIONS[intent.prop];
     case "useProp": {
-      const prop =
-        state.body.prop === "none" || state.body.prop === "fetching"
-          ? "toy"
-          : state.body.prop;
-      return intent.mode === "mouth"
-        ? `She licks and sucks the tip of her ${prop} slowly, looking at the camera.`
-        : `She presses her ${prop} between her thighs and moves it slowly against herself.`;
+      const prop = HELD_OBJECTS.has(state.body.prop) ? state.body.prop : "toy";
+      return USE_PROP_ACTIONS[intent.mode](prop);
     }
     case "rest":
-      return "She puts everything down, rests her hands in her lap and relaxes.";
+      return restAction(state);
     case "touch":
-      return "She slides one hand slowly down her body and between her thighs, touching herself and biting her lip.";
+      return touchAction(state);
     case "act":
-      return intent.act === "gesture"
-        ? gestureAction(text)
-        : ACT_ACTIONS[intent.act];
+      return ACT_ACTIONS[intent.act](intent, state, text);
+    case "hold":
+      return holdAction(intent.line);
     case "verbatim":
       return rephraseRequest(intent.text);
-    case "hold":
-    case "removeGarment":
-    case "addGarment":
-      return null;
   }
 };
 
-// Joins up to three steps into one sentence: "She stands up..., then she turns...".
+// Mirrors planBeatIntent's lead-ins: set a held prop down, sit up to undress below the waist, and planAct's rise to her feet.
+// Unlike planBeatIntent, a hold keeps the prop: in one sentence "sets her drink aside, then takes a sip" reads backwards.
+const setsPropDown = (intent: BeatIntent, body: Body): boolean =>
+  body.hands === "holdingProp" &&
+  HELD_OBJECTS.has(body.prop) &&
+  intent.type !== "fetchProp" &&
+  intent.type !== "useProp" &&
+  intent.type !== "rest" &&
+  intent.type !== "hold";
+
+const sitsUp = (intent: BeatIntent, body: Body): boolean =>
+  (intent.type === "removeGarment" || intent.type === "addGarment") &&
+  (intent.garment === "panties" || intent.garment === "bottom") &&
+  NEEDS_SIT_UP.has(body.pose);
+
+const risesToFeet = (intent: BeatIntent, body: Body): boolean =>
+  intent.type === "act" &&
+  ACTS_FROM_STANDING.has(intent.act) &&
+  body.pose !== "standing";
+
+// The lead-in sentences and the body they leave her in, so the intent's own sentence reads from there.
+const leadIns = (
+  intent: BeatIntent,
+  body: Body,
+): { steps: string[]; body: Body } => {
+  const steps: string[] = [];
+  let next = body;
+  if (setsPropDown(intent, next)) {
+    steps.push(`She sets her ${next.prop} aside.`);
+    next = { ...next, prop: "none", hands: "free", contact: "none" };
+  }
+  if (sitsUp(intent, next)) {
+    steps.push(SIT_UP_LEAD_IN);
+    next = { ...next, pose: "sitting" };
+  }
+  if (risesToFeet(intent, next)) {
+    steps.push(RISE_LEAD_IN);
+    next = { ...next, pose: "standing" };
+  }
+  return { steps, body: next };
+};
+
+// Joins the steps into one sentence: "She stands up..., then she turns...".
+const MAX_STEPS = 4;
 const joinSteps = (sentences: string[]): string =>
   sentences
-    .slice(0, 3)
+    .slice(0, MAX_STEPS)
     .map((sentence, index) =>
       index === 0
         ? sentence.replace(/\.$/, "")
-        : sentence.replace(/^She /, "she ").replace(/\.$/, ""),
+        : `${sentence.charAt(0).toLowerCase()}${sentence.slice(1)}`.replace(
+            /\.$/,
+            "",
+          ),
     )
     .join(", then ")
     .concat(".");
@@ -268,24 +495,38 @@ export const templateAction = (
   const text = correctActionTypos(requestText);
   if (MINOR_CUE_RE.test(text))
     return { sentence: REACT_ACTION, physical: false };
-  const wardrobeIntents = intents.filter(
-    (
-      intent,
-    ): intent is Extract<
-      BeatIntent,
-      { type: "removeGarment" | "addGarment" }
-    > =>
-      (intent.type === "removeGarment" || intent.type === "addGarment") &&
-      // Replaying a removal for a garment already off morphs skin into the garment's shape.
-      !isIntentSatisfied(intent, state),
-  );
   const steps: string[] = [];
-  if (wardrobeIntents.length > 0)
-    steps.push(wardrobeSentence(wardrobeIntents, state));
+  let current = state;
+  let wardrobeRun: WardrobeIntent[] = [];
+  let wardrobeFrom = state;
+  const flushWardrobe = () => {
+    if (wardrobeRun.length > 0)
+      steps.push(wardrobeSentence(wardrobeRun, wardrobeFrom));
+    wardrobeRun = [];
+  };
   for (const intent of intents) {
-    const sentence = intentSentence(intent, text, state);
-    if (sentence) steps.push(sentence);
+    const isWardrobe =
+      intent.type === "removeGarment" || intent.type === "addGarment";
+    // Replaying a removal for a garment already off morphs skin into the garment's shape.
+    if (isWardrobe && isIntentSatisfied(intent, current)) continue;
+    const lead = leadIns(intent, current.body);
+    if (!isWardrobe || lead.steps.length > 0) flushWardrobe();
+    steps.push(...lead.steps);
+    const from: LiveState = { ...current, body: lead.body };
+    if (isWardrobe) {
+      // Consecutive garments read as one undressing sentence, as the clip library strips one piece per beat.
+      if (wardrobeRun.length === 0) wardrobeFrom = from;
+      wardrobeRun.push(intent);
+    } else {
+      const sentence = intentSentence(intent, from, text);
+      if (sentence) steps.push(sentence);
+    }
+    // A hold changes nothing, as in planLongLiveRequest; planBeatIntent would free her hands.
+    if (intent.type === "hold") continue;
+    const plan = planBeatIntent(intent, from);
+    current = { ...current, wardrobe: plan.nextWardrobe, body: plan.nextBody };
   }
+  flushWardrobe();
   if (steps.length > 0) return { sentence: joinSteps(steps), physical: true };
   const bodyAction = bodyRequestAction(text, state);
   return bodyAction

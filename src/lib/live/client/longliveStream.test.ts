@@ -5,6 +5,9 @@ import {
   buildLongLiveSocketUrl,
   FramePacer,
   LONGLIVE_SETTLE_AFTER_MS,
+  LONGLIVE_WARDROBE_CHECK_AFTER_MS,
+  LONGLIVE_WARDROBE_CHECK_ATTEMPTS,
+  LONGLIVE_WARDROBE_CHECK_EVERY_MS,
   LongLiveSession,
   type LongLiveComposeInput,
   type LongLiveFrame,
@@ -13,6 +16,7 @@ import {
   type WebSocketLike,
 } from "@/lib/live/client/longliveStream";
 import type { RequestStatus } from "@/lib/live/client/director";
+import { LIVE_TUNABLES, type LiveState } from "@/lib/live/contract";
 
 type FakeFrame = PacedFrame & { id: number; closed: boolean };
 
@@ -250,6 +254,8 @@ const setup = () => {
     onMetrics: vi.fn(),
     onError: vi.fn(),
     onEnded: vi.fn(),
+    captureFrame: vi.fn(async () => new Blob(["jpeg"], { type: "image/jpeg" })),
+    observeWardrobe: vi.fn(),
   };
   const session = new LongLiveSession(deps);
   // Advances the clock and runs one animation frame, like a display refresh.
@@ -288,6 +294,7 @@ const setup = () => {
     decoded,
     canvas,
     composePrompt,
+    observeWardrobe: deps.observeWardrobe as ReturnType<typeof vi.fn>,
     advance,
     openSession,
     sendFrames,
@@ -526,5 +533,251 @@ describe("LongLiveSession", () => {
     await t.openSession();
     t.advance(3_600_000);
     expect(t.session.getMetricsWithCost().costUsd).toBeCloseTo(4, 5);
+  });
+
+  describe("wardrobe persistence", () => {
+    const braOff: LiveState = {
+      ...liveState,
+      wardrobe: {
+        ...liveState.wardrobe,
+        bra: { on: false, description: "pink bra" },
+        removedOrder: ["bra"],
+      },
+    };
+
+    // Plays "take your bra off" up to its settle point.
+    const playBraOff = async (t: ReturnType<typeof setup>) => {
+      const socket = await t.openSession();
+      t.session.attachCanvas(t.canvas);
+      t.composePrompt.mockImplementationOnce(async () => ({
+        prompt: "scene for bra off",
+        settlePrompt: "settle after bra off",
+        state: braOff,
+        reply: null,
+        wardrobeCheck: ["bra"],
+      }));
+      t.session.request("take your bra off", "chat");
+      await flush();
+      const requestId = t.statuses[0]?.[0] as string;
+      socket.serverText({ type: "promptApplied", id: requestId });
+      return { socket, requestId };
+    };
+
+    // Runs every vision poll, then lets the plain settle fire.
+    const pollThenSettle = async () => {
+      vi.advanceTimersByTime(LONGLIVE_WARDROBE_CHECK_AFTER_MS);
+      await flush();
+      for (let i = 1; i < LONGLIVE_WARDROBE_CHECK_ATTEMPTS; i += 1) {
+        vi.advanceTimersByTime(LONGLIVE_WARDROBE_CHECK_EVERY_MS);
+        await flush();
+      }
+      vi.advanceTimersByTime(
+        LONGLIVE_SETTLE_AFTER_MS -
+          LONGLIVE_WARDROBE_CHECK_AFTER_MS -
+          (LONGLIVE_WARDROBE_CHECK_ATTEMPTS - 1) *
+            LONGLIVE_WARDROBE_CHECK_EVERY_MS,
+      );
+      await flush();
+    };
+
+    it("confirms the change on the canvas frame, re-anchors, then settles naming what she wears", async () => {
+      const t = setup();
+      const { socket } = await playBraOff(t);
+      t.observeWardrobe.mockResolvedValue({
+        confirmed: true,
+        state: braOff,
+        settlePrompt: "settle, topless",
+      });
+      // Checked early, while the removal is still on screen, not at the 12 s settle.
+      vi.advanceTimersByTime(LONGLIVE_WARDROBE_CHECK_AFTER_MS);
+      await flush();
+      expect(t.deps.captureFrame).toHaveBeenCalledWith(t.canvas);
+      expect(t.observeWardrobe.mock.calls[0]?.[0]).toMatchObject({
+        garments: ["bra"],
+        state: braOff,
+        referenceImageUrl: "https://v3.fal.media/files/ref.jpg",
+      });
+      expect(socket.sent.slice(-2)).toEqual([
+        { type: "reanchor", id: expect.any(String) },
+        { type: "prompt", prompt: "settle, topless", id: expect.any(String) },
+      ]);
+      expect(t.deps.onLiveState).toHaveBeenLastCalledWith(braOff);
+      const sent = socket.sent.length;
+      vi.advanceTimersByTime(LONGLIVE_SETTLE_AFTER_MS);
+      await flush();
+      // The plain settle is cancelled, so the named one is the only settle.
+      expect(socket.sent).toHaveLength(sent);
+      t.session.request("wave at me", "chat");
+      await flush();
+      expect(t.composePrompt.mock.calls.at(-1)?.[0].wardrobeObserved).toBe(
+        true,
+      );
+    });
+
+    it("neither re-anchors nor asserts a change vision did not see", async () => {
+      const t = setup();
+      const { socket } = await playBraOff(t);
+      t.observeWardrobe.mockResolvedValue({
+        confirmed: false,
+        state: liveState,
+        settlePrompt: null,
+      });
+      await pollThenSettle();
+      expect(t.observeWardrobe).toHaveBeenCalledTimes(
+        LONGLIVE_WARDROBE_CHECK_ATTEMPTS,
+      );
+      expect(socket.sent.some((m) => m.type === "reanchor")).toBe(false);
+      expect(socket.sent.at(-1)).toMatchObject({
+        type: "prompt",
+        prompt: "settle after bra off",
+      });
+      // The reconciled state is what the next ask plans from.
+      expect(t.deps.onLiveState).toHaveBeenLastCalledWith(liveState);
+      t.session.request("wave at me", "chat");
+      await flush();
+      const next = t.composePrompt.mock.calls.at(-1)?.[0];
+      expect(next?.wardrobeObserved).toBe(false);
+      expect(next?.state).toEqual(liveState);
+    });
+
+    it("settles unchanged when the frame cannot be checked", async () => {
+      const t = setup();
+      const { socket } = await playBraOff(t);
+      t.observeWardrobe.mockRejectedValue(new Error("vision down"));
+      await pollThenSettle();
+      expect(socket.sent.some((m) => m.type === "reanchor")).toBe(false);
+      expect(socket.sent.at(-1)).toMatchObject({
+        prompt: "settle after bra off",
+      });
+    });
+
+    it("keeps polling until the removal shows, then settles named", async () => {
+      const t = setup();
+      const { socket } = await playBraOff(t);
+      const notYet = { confirmed: false, state: liveState, settlePrompt: null };
+      t.observeWardrobe.mockResolvedValueOnce(notYet).mockResolvedValueOnce({
+        confirmed: true,
+        state: braOff,
+        settlePrompt: "settle, topless",
+      });
+      vi.advanceTimersByTime(LONGLIVE_WARDROBE_CHECK_AFTER_MS);
+      await flush();
+      // A mid-removal miss neither reconciles nor settles yet.
+      expect(t.deps.onLiveState).not.toHaveBeenLastCalledWith(liveState);
+      expect(socket.sent.some((m) => m.type === "reanchor")).toBe(false);
+      vi.advanceTimersByTime(LONGLIVE_WARDROBE_CHECK_EVERY_MS);
+      await flush();
+      expect(socket.sent.slice(-2)).toEqual([
+        { type: "reanchor", id: expect.any(String) },
+        { type: "prompt", prompt: "settle, topless", id: expect.any(String) },
+      ]);
+    });
+
+    it("drops the check when a newer ask takes over while vision is reading", async () => {
+      const t = setup();
+      const { socket } = await playBraOff(t);
+      let resolve: (value: unknown) => void = () => undefined;
+      t.observeWardrobe.mockReturnValue(
+        new Promise((done) => {
+          resolve = done;
+        }),
+      );
+      vi.advanceTimersByTime(LONGLIVE_WARDROBE_CHECK_AFTER_MS);
+      await flush();
+      t.session.request("spin around", "chat");
+      await flush();
+      const second = t.statuses.at(-1)?.[0] as string;
+      socket.serverText({ type: "promptApplied", id: second });
+      const sentBefore = socket.sent.length;
+      resolve({ confirmed: true, state: braOff, settlePrompt: "settle" });
+      await flush();
+      expect(socket.sent).toHaveLength(sentBefore);
+    });
+
+    it("never checks an ask that changes no clothing", async () => {
+      const t = setup();
+      const socket = await t.openSession();
+      t.session.attachCanvas(t.canvas);
+      t.session.request("wave at me", "chat");
+      await flush();
+      socket.serverText({
+        type: "promptApplied",
+        id: t.statuses[0]?.[0] as string,
+      });
+      vi.advanceTimersByTime(LONGLIVE_SETTLE_AFTER_MS);
+      await flush();
+      expect(t.deps.captureFrame).not.toHaveBeenCalled();
+      expect(socket.sent.at(-1)).toMatchObject({
+        prompt: "settle after wave at me",
+      });
+    });
+
+    it("accepts the server's reanchored acknowledgement", async () => {
+      const t = setup();
+      const socket = await t.openSession();
+      socket.serverText({ type: "reanchored", id: "a1", atFrame: 97 });
+      expect(t.deps.onError).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("request parity with clip mode", () => {
+    it("passes the request-understanding setting and marks a paid ask", async () => {
+      const t = setup();
+      const opened = t.session.open({
+        creator,
+        state: liveState,
+        referenceImageUrl: "https://v3.fal.media/files/ref.jpg",
+        speechMode: "text",
+        startedAtMs: 0,
+        intentParser: "hybrid",
+      });
+      await flush();
+      const socket = t.sockets[0] as FakeSocket;
+      socket.serverOpen();
+      socket.serverText({ type: "ready", fps: 24 });
+      await opened;
+      t.session.request("wave at me", "chat", true);
+      await flush();
+      expect(t.composePrompt.mock.calls.at(-1)?.[0].intentParser).toBe(
+        "hybrid",
+      );
+      expect(t.deps.onTranscriptEntry).toHaveBeenCalledWith(
+        expect.objectContaining({ role: "fan", paid: true }),
+      );
+    });
+
+    it("checks in once after a quiet stretch, and a new ask resets it", async () => {
+      const t = setup();
+      const socket = await t.openSession();
+      vi.advanceTimersByTime(LIVE_TUNABLES.CHECK_IN_AFTER_IDLE_MS);
+      await flush();
+      const checkIn = t.composePrompt.mock.calls.at(-1)?.[0];
+      expect(checkIn?.checkIn).toBe(true);
+      expect(socket.sent.at(-1)).toMatchObject({
+        type: "prompt",
+        prompt: "opening scene",
+      });
+      vi.advanceTimersByTime(LONGLIVE_SETTLE_AFTER_MS);
+      expect(socket.sent.at(-1)).toMatchObject({ prompt: "settle" });
+      const composed = t.composePrompt.mock.calls.length;
+      vi.advanceTimersByTime(LIVE_TUNABLES.CHECK_IN_AFTER_IDLE_MS);
+      await flush();
+      expect(t.composePrompt.mock.calls).toHaveLength(composed);
+
+      t.session.request("wave at me", "chat");
+      await flush();
+      socket.serverText({
+        type: "promptApplied",
+        id: t.statuses[0]?.[0] as string,
+      });
+      vi.advanceTimersByTime(LONGLIVE_SETTLE_AFTER_MS);
+      socket.serverText({
+        type: "promptApplied",
+        id: (socket.sent.at(-1) as { id: string }).id,
+      });
+      vi.advanceTimersByTime(LIVE_TUNABLES.CHECK_IN_AFTER_IDLE_MS);
+      await flush();
+      expect(t.composePrompt.mock.calls.at(-1)?.[0].checkIn).toBe(true);
+    });
   });
 });

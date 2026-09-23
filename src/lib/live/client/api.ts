@@ -15,6 +15,8 @@ import type { ReferenceUploadResult } from "@/lib/live/client/useLiveSession";
 import type {
   LongLiveComposeInput,
   LongLiveComposed,
+  LongLiveObservation,
+  LongLiveObserveInput,
   LongLiveTicket,
 } from "@/lib/live/client/longliveStream";
 import { z } from "zod";
@@ -116,6 +118,7 @@ export const uploadReference = async (
   file: File,
   sceneId: SceneId,
   stage = true,
+  faceCrop = true,
 ): Promise<ReferenceUploadResult> => {
   // The server only accepts jpeg/png; HEIC and webp are rejected upfront rather than as a 400.
   if (file.type && file.type !== "image/jpeg" && file.type !== "image/png") {
@@ -129,6 +132,7 @@ export const uploadReference = async (
     contentType,
     sceneId,
     stage,
+    faceCrop,
   });
 };
 
@@ -149,6 +153,16 @@ export const composeLongLivePrompt = async (
   input: LongLiveComposeInput,
 ): Promise<LongLiveComposed> =>
   postJson<LongLiveComposed>("/api/live/longlivePrompt", input);
+
+// The frame goes up inline, like a reference photo, and is never stored.
+export const observeLongLiveWardrobe = async ({
+  frame,
+  ...input
+}: LongLiveObserveInput): Promise<LongLiveObservation> =>
+  postJson<LongLiveObservation>("/api/live/longliveObserve", {
+    ...input,
+    frameBase64: await readFileAsBase64(frame),
+  });
 
 // Fire-and-forget from the setup screen when LongLive is picked; the model load is the whole cold start.
 export const warmLongLive = async (): Promise<void> => {

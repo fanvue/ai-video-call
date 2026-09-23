@@ -7,9 +7,7 @@ import {
   LIVE_TUNABLES,
   stateFrameKey,
   swapModelFor,
-  type BeatIntent,
   type ClipRequest,
-  type IntentParser,
   type ClipResult,
   type ClipSwapReport,
   type FrameGuardReport,
@@ -20,9 +18,9 @@ import {
 } from "../contract";
 import { captureRoom } from "./captureRoom";
 import { guardFrame } from "./frameGuard";
-import { parseIntentsWithLlm } from "./parseIntents";
-import { planClip, resolveIntents, typingLeadSecFor } from "./planClip";
+import { planClip, typingLeadSecFor } from "./planClip";
 import { reconcilePose, reconcileWardrobe } from "./reconcileState";
+import { llmIntentsFor } from "./requestIntents";
 import { renderBackendFor } from "./renderClip";
 import { STAGE_ROOM_BY_SCENE } from "./sceneRooms";
 import {
@@ -40,8 +38,6 @@ const IDENTITY_ISSUE_RE = /identity drift/;
 const COLOR_ISSUE_RE = /^(top|bottom|bra|panties) color drifted/;
 
 const FRAME_BUDGET_MS = 15_000;
-// The parse sits in front of the render; past this the regex intents stand rather than delay the reply further.
-const INTENT_PARSE_BUDGET_MS = 2_500;
 const GUARD_BUDGET_MS = 8_000;
 // One vision read on the greeting; past this the greeting ships with its preset ROOM text rather than hold the first clip.
 const ROOM_CAPTURE_BUDGET_MS = 6_000;
@@ -265,35 +261,6 @@ const evaluateFrameChecks = ({
     .map(({ check }) => check.observed?.pose)
     .find((pose): pose is Pose => pose !== undefined);
   return { verdict: "approved", rejectReason: null, observedPose };
-};
-
-const hasCataloguedAction = (intents: BeatIntent[]): boolean =>
-  intents.some(
-    (intent) => intent.type !== "hold" && intent.type !== "verbatim",
-  );
-
-const llmIntentsFor = async (
-  text: string,
-  state: LiveState,
-  parser: IntentParser = "regex",
-): Promise<BeatIntent[] | undefined> => {
-  if (parser === "regex") return undefined;
-  if (
-    parser === "hybrid" &&
-    hasCataloguedAction(resolveIntents(text, state.wardrobe, state.body))
-  ) {
-    return undefined;
-  }
-  const started = Date.now();
-  const intents = await withTimeout(
-    parseIntentsWithLlm(text, state),
-    INTENT_PARSE_BUDGET_MS,
-    "parseIntents",
-  ).catch(() => null);
-  console.log(
-    `generateClip: intentParser=${parser} ms=${Date.now() - started} intents=${intents ? JSON.stringify(intents) : "fallback"}`,
-  );
-  return intents ?? undefined;
 };
 
 export const generateClip = async (

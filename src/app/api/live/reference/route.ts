@@ -22,6 +22,8 @@ const bodySchema = z.object({
   sceneId: sceneIdSchema.optional(),
   // Swap mode sets the scene in its reference-to-video greeting instead, so it skips the still.
   stage: z.boolean().optional(),
+  // LongLive streams from the whole seed, so it skips the crop rather than wake the swap GPUs it would queue behind.
+  faceCrop: z.boolean().optional(),
 });
 
 // She always starts a session in lingerie — top/bottom start off, bra/panties white, regardless of what capture reports.
@@ -101,6 +103,9 @@ export async function POST(request: Request) {
   };
   // Without a crop, chain clips stay on turbo rather than hand reference-to-video the whole photo.
   const cropIdentity = async (): Promise<string | undefined> => {
+    if (parsed.data.faceCrop === false) {
+      return undefined;
+    }
     try {
       return await swapServiceFaceCrop(
         `data:${contentType};base64,${imageBase64}`,

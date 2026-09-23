@@ -28,6 +28,8 @@ import {
   type LongLiveComposeInput,
   type LongLiveComposed,
   type LongLiveMetrics,
+  type LongLiveObservation,
+  type LongLiveObserveInput,
   type LongLiveStreamState,
   type LongLiveTicket,
   type WebSocketLike,
@@ -111,6 +113,7 @@ export type UseLiveSessionDeps = {
     file: File,
     sceneId: SceneId,
     stage?: boolean,
+    faceCrop?: boolean,
   ) => Promise<ReferenceUploadResult>;
   upscaleSeed?: (
     frameUrl: string,
@@ -130,6 +133,10 @@ export type UseLiveSessionDeps = {
   composeLongLivePrompt: (
     input: LongLiveComposeInput,
   ) => Promise<LongLiveComposed>;
+  // LongLive mode only; confirms a wardrobe change on a stream frame. Absent, changes are never re-anchored.
+  observeLongLiveWardrobe?: (
+    input: LongLiveObserveInput,
+  ) => Promise<LongLiveObservation>;
   // Swap mode only; starts the GPU container before the first clip needs it.
   warmSwap: () => Promise<void>;
   // Swap mode only: second phase of a clip that came back with swap.status "pending".
@@ -242,6 +249,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     file: File;
     sceneId: SceneId;
     stage: boolean;
+    faceCrop: boolean;
     promise: Promise<ReferenceUploadResult>;
   } | null>(null);
   const [prepareStatus, setPrepareStatus] = useState<PrepareStatus>("idle");
@@ -1104,13 +1112,14 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   const uploadReference = deps.uploadReference;
   const warmSwap = deps.warmSwap;
   const prepare = useCallback(
-    (file: File, sceneId: SceneId, stage = true) => {
+    (file: File, sceneId: SceneId, stage = true, faceCrop = true) => {
       const current = preparedReferenceRef.current;
       if (
         current &&
         current.file === file &&
         current.sceneId === sceneId &&
-        current.stage === stage
+        current.stage === stage &&
+        current.faceCrop === faceCrop
       ) {
         return;
       }
@@ -1118,8 +1127,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       if (!stage) {
         warmSwap().catch(() => undefined);
       }
-      const promise = uploadReference(file, sceneId, stage);
-      const entry = { file, sceneId, stage, promise };
+      const promise = uploadReference(file, sceneId, stage, faceCrop);
+      const entry = { file, sceneId, stage, faceCrop, promise };
       preparedReferenceRef.current = entry;
       setPrepareStatus("staging");
       setPreparedSeedUrl(null);
@@ -1190,14 +1199,16 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       player.reset();
       // Swap mode sets the scene inside its reference-to-video greeting, so it skips the 17 to 35 s still.
       const stage = options.backend !== "swap";
+      const faceCrop = options.backend !== "longlive";
       const prepared = preparedReferenceRef.current;
       const reference =
         prepared &&
         prepared.file === file &&
         prepared.sceneId === sceneId &&
-        prepared.stage === stage
+        prepared.stage === stage &&
+        prepared.faceCrop === faceCrop
           ? await prepared.promise
-          : await deps.uploadReference(file, sceneId, stage);
+          : await deps.uploadReference(file, sceneId, stage, faceCrop);
       preparedReferenceRef.current = null;
       setPrepareStatus("idle");
       setPreparedSeedUrl(null);
@@ -1249,6 +1260,11 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
           requestFrame: (callback) => requestAnimationFrame(callback),
           cancelFrame: (handle) => cancelAnimationFrame(handle),
           composePrompt: deps.composeLongLivePrompt,
+          captureFrame: (canvas) =>
+            new Promise((resolve) =>
+              canvas.toBlob(resolve, "image/jpeg", 0.85),
+            ),
+          observeWardrobe: deps.observeLongLiveWardrobe,
           onTranscriptEntry: (entry) =>
             setTranscript((prev) => [...prev, entry]),
           onRequestStatus: (requestId, requestStatus) =>
@@ -1303,6 +1319,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
           referenceImageUrl: reference.seedFrameUrl,
           speechMode: options.speechMode ?? "text",
           startedAtMs,
+          intentParser: options.intentParser,
         });
 
         if (tickIntervalRef.current) {
@@ -1625,8 +1642,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   const send = useCallback(
     (text: string, channel: InputChannel, paid?: boolean) => {
       if (modeRef.current === "longlive") {
-        // Like director, the stream is steered by prompt text only; tips carry no extra handling.
-        longliveSessionRef.current?.request(text, channel);
+        // As in clip mode, paid only marks the fan's line; the ask is understood like any other.
+        longliveSessionRef.current?.request(text, channel, paid);
         return;
       }
       if (modeRef.current === "director") {

@@ -7,8 +7,12 @@ vi.mock("@/lib/groq", () => ({
   createGroqChatCompletion: (...args: unknown[]) => create(...args),
 }));
 
-const { planLongLiveGreeting, planLongLiveRequest } =
-  await import("./longlivePrompt");
+const {
+  planLongLiveCheckIn,
+  planLongLiveGreeting,
+  planLongLiveRequest,
+  planLongLiveSettle,
+} = await import("./longlivePrompt");
 
 const wardrobe = (overrides: Partial<Wardrobe> = {}): Wardrobe => ({
   top: { on: true, description: "black ribbed tank top" },
@@ -51,7 +55,7 @@ const UNDRESS_WORDS =
 // What the old builder leaked into prompts: labels, negations, meta words the video model renders.
 const CAPS_LABEL = /\b[A-Z]{3,}\b/;
 const NEGATION = /\b(not|no|never|without)\b|n't\b/i;
-const META = /\b(zoom|pan|text|subtitles?|watermark|UI)\b/i;
+const META = /\b(zoom|pan|text|subtitles?|watermark|UI|webcam|livestream)\b/i;
 
 const wordCount = (text: string): number => text.split(/\s+/).length;
 
@@ -82,7 +86,7 @@ describe("planLongLiveGreeting", () => {
     expect(prompt).toContain("wearing her black ribbed tank top");
     expect(prompt).toContain("waves hello");
     expect(prompt).toContain("A tidy bedroom");
-    expect(prompt).toContain("Static webcam shot at eye level");
+    expect(prompt).toContain("Static shot at eye level");
     expect(nextState).toEqual(state());
   });
 
@@ -221,5 +225,91 @@ describe("planLongLiveRequest", () => {
     });
     const { prompt } = await planLongLiveRequest(creator, state(), "wave");
     expect(prompt).toContain("raises both arms above her head");
+  });
+
+  it("keeps the camera but drops the word webcam from a captured room", async () => {
+    const current = state({
+      surroundings: "A desk with a laptop webcam angle and a lamp.",
+    });
+    const { prompt } = await planLongLiveRequest(creator, current, "wave");
+    expect(prompt).toContain("a laptop camera angle");
+    expectCaption(prompt);
+  });
+
+  it("lists the garments a request changes, for the vision check", async () => {
+    const { wardrobeCheck } = await planLongLiveRequest(
+      creator,
+      state(),
+      "strip",
+    );
+    expect(wardrobeCheck.sort()).toEqual(["bottom", "bra", "panties", "top"]);
+    const wave = await planLongLiveRequest(creator, state(), "wave");
+    expect(wave.wardrobeCheck).toEqual([]);
+  });
+
+  it("names observed clothing on an ask that leaves it alone, never on one that changes it", async () => {
+    const wave = await planLongLiveRequest(creator, state(), "wave", {
+      wardrobeObserved: true,
+    });
+    expect(wave.prompt).toContain("wearing her black ribbed tank top");
+    expect(wave.settlePrompt).toContain("wearing her black ribbed tank top");
+    const strip = await planLongLiveRequest(
+      creator,
+      state(),
+      "take your top off",
+      {
+        wardrobeObserved: true,
+      },
+    );
+    expect(strip.prompt).not.toContain("wearing");
+    expect(strip.settlePrompt).not.toContain("wearing");
+  });
+});
+
+describe("planLongLiveSettle", () => {
+  const topless = state({
+    wardrobe: wardrobe({
+      top: { on: false, description: "black ribbed tank top" },
+      bottom: { on: false, description: "denim shorts" },
+      bra: { on: false, description: "black lace bra" },
+      removedOrder: ["top", "bottom", "bra"],
+    }),
+  });
+
+  it("names confirmed clothing positively", () => {
+    const prompt = planLongLiveSettle(creator, topless, true);
+    expect(prompt).toContain("topless, wearing only her black lace panties");
+    expectCaption(prompt);
+  });
+
+  it("says nothing about clothing that has not been seen", () => {
+    expect(planLongLiveSettle(creator, topless, false)).not.toMatch(
+      /wearing|topless/,
+    );
+  });
+
+  it("names her fully naked once nothing is on", () => {
+    const naked = state({
+      wardrobe: wardrobe({
+        top: { on: false, description: "black ribbed tank top" },
+        bottom: { on: false, description: "denim shorts" },
+        bra: { on: false, description: "black lace bra" },
+        panties: { on: false, description: "black lace panties" },
+        removedOrder: ["top", "bottom", "bra", "panties"],
+      }),
+    });
+    expect(planLongLiveSettle(creator, naked, true)).toContain(
+      "An adult woman with long wavy auburn hair, freckles, green eyes, slim build, fully naked.",
+    );
+  });
+});
+
+describe("planLongLiveCheckIn", () => {
+  it("looks back to the fan and changes nothing", () => {
+    const step = planLongLiveCheckIn(creator, state(), false);
+    expectCaption(step.prompt);
+    expect(step.prompt).toContain("looks back into the camera");
+    expect(step.nextState).toEqual(state());
+    expect(step.wardrobeCheck).toEqual([]);
   });
 });

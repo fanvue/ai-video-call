@@ -11,11 +11,15 @@ vi.mock("@/lib/groq", async (importOriginal) => ({
     .stripThinkBlock,
 }));
 vi.mock("@/lib/live/server/stageSeed", () => ({ stageSeed: vi.fn() }));
+vi.mock("@/lib/live/server/swapClip", () => ({
+  swapServiceFaceCrop: vi.fn(),
+}));
 
 const { uploadReferenceImageToFal } = await import("@/lib/fal/uploadImage");
 const { getCurrentUser } = await import("@/lib/fanvue");
 const { createGroqVisionCompletion } = await import("@/lib/groq");
 const { stageSeed } = await import("@/lib/live/server/stageSeed");
+const { swapServiceFaceCrop } = await import("@/lib/live/server/swapClip");
 const { POST } = await import("./route");
 
 const jsonBody = (body: unknown) =>
@@ -31,6 +35,10 @@ beforeEach(() => {
   );
   vi.mocked(stageSeed).mockReset();
   vi.mocked(stageSeed).mockResolvedValue(null);
+  vi.mocked(swapServiceFaceCrop).mockReset();
+  vi.mocked(swapServiceFaceCrop).mockResolvedValue(
+    "https://fal.example.com/face.jpg",
+  );
 });
 
 const captureOk = () =>
@@ -179,6 +187,33 @@ describe("POST /api/live/reference — staged seed", () => {
     expect(stageSeed).not.toHaveBeenCalled();
     expect(data.staged).toBe(false);
     expect(data.seedFrameUrl).toBe("https://fal.example.com/anchor.jpg");
+  });
+});
+
+describe("POST /api/live/reference — identity face crop", () => {
+  it("crops the face by default", async () => {
+    captureOk();
+    const response = await POST(
+      jsonBody({ imageBase64: "abcd", contentType: "image/jpeg" }),
+    );
+    const data = (await response.json()) as { identityFrameUrl?: string };
+    expect(swapServiceFaceCrop).toHaveBeenCalledOnce();
+    expect(data.identityFrameUrl).toBe("https://fal.example.com/face.jpg");
+  });
+
+  it("skips the crop when the client opts out, so the swap service stays asleep", async () => {
+    captureOk();
+    const response = await POST(
+      jsonBody({
+        imageBase64: "abcd",
+        contentType: "image/jpeg",
+        sceneId: "bedroom",
+        faceCrop: false,
+      }),
+    );
+    const data = (await response.json()) as { identityFrameUrl?: string };
+    expect(swapServiceFaceCrop).not.toHaveBeenCalled();
+    expect(data.identityFrameUrl).toBeUndefined();
   });
 });
 

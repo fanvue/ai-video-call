@@ -4,7 +4,9 @@ import { z } from "zod";
 import {
   LIVE_TUNABLES,
   type CreatorProfile,
+  type GarmentId,
   type InputChannel,
+  type IntentParser,
   type LiveState,
   type SpeechMode,
   type TranscriptEntry,
@@ -20,6 +22,10 @@ export const LONGLIVE_STREAM = { width: 480, height: 832, fps: 24 } as const;
 const OPEN_TIMEOUT_MS = 290_000;
 // Long enough for the asked action to play out before the scene settles back to an idle pose.
 export const LONGLIVE_SETTLE_AFTER_MS = 12_000;
+// Measured on Modal: a bra comes off 4 to 6 s after the prompt applies and is back on by about 7 s, so vision reads from 4 s in.
+export const LONGLIVE_WARDROBE_CHECK_AFTER_MS = 4_000;
+export const LONGLIVE_WARDROBE_CHECK_EVERY_MS = 1_500;
+export const LONGLIVE_WARDROBE_CHECK_ATTEMPTS = 4;
 // services/longlive closes with these for a bad ticket and a bad start message; retrying cannot fix either.
 const CLOSE_BAD_REQUEST = 4400;
 const CLOSE_UNAUTHORIZED = 4401;
@@ -170,6 +176,11 @@ const serverMessageSchema = z.discriminatedUnion("type", [
     decodeMs: z.number().optional(),
     queueFrames: z.number().optional(),
   }),
+  z.object({
+    type: z.literal("reanchored"),
+    id: z.string(),
+    atFrame: z.number().optional(),
+  }),
   z.object({ type: z.literal("error"), message: z.string().optional() }),
 ]);
 type ServerMessage = z.infer<typeof serverMessageSchema>;
@@ -202,6 +213,10 @@ export type LongLiveComposeInput = {
   requestText?: string;
   channel: InputChannel;
   speechMode: SpeechMode;
+  intentParser?: IntentParser;
+  // True once the clothing in `state` has been seen on the stream, so prompts may name it.
+  wardrobeObserved: boolean;
+  checkIn?: boolean;
 };
 
 export type LongLiveComposed = {
@@ -209,6 +224,22 @@ export type LongLiveComposed = {
   settlePrompt: string;
   state: LiveState;
   reply: string | null;
+  // Garments the prompt changes; confirmed by vision at the settle point.
+  wardrobeCheck?: GarmentId[];
+};
+
+export type LongLiveObserveInput = {
+  creator: CreatorProfile;
+  state: LiveState;
+  garments: GarmentId[];
+  frame: Blob;
+  referenceImageUrl: string;
+};
+
+export type LongLiveObservation = {
+  confirmed: boolean;
+  state: LiveState;
+  settlePrompt: string | null;
 };
 
 export type LongLiveStreamState =
@@ -241,6 +272,11 @@ export type LongLiveSessionDeps = {
   requestFrame: (callback: () => void) => number;
   cancelFrame: (handle: number) => void;
   composePrompt: (input: LongLiveComposeInput) => Promise<LongLiveComposed>;
+  // Both absent: wardrobe changes are never confirmed, so the stream is never re-anchored.
+  captureFrame?: (canvas: HTMLCanvasElement) => Promise<Blob | null>;
+  observeWardrobe?: (
+    input: LongLiveObserveInput,
+  ) => Promise<LongLiveObservation>;
   onTranscriptEntry: (entry: TranscriptEntry) => void;
   onRequestStatus: (requestId: string, status: RequestStatus) => void;
   onLiveState: (state: LiveState) => void;
@@ -258,6 +294,13 @@ export type LongLiveOpenInput = {
   referenceImageUrl: string;
   speechMode: SpeechMode;
   startedAtMs: number;
+  intentParser?: IntentParser;
+};
+
+type WardrobeCheck = {
+  garments: GarmentId[];
+  state: LiveState;
+  settlePrompt: string;
 };
 
 const FAILURE_LINES = [
@@ -281,7 +324,15 @@ export class LongLiveSession {
   private state: LiveState | null = null;
   private referenceImageUrl = "";
   private speechMode: SpeechMode = "text";
+  private intentParser: IntentParser | undefined;
   private startedAtMs = 0;
+  // The greeting's clothing is the reference's; a change is unseen until vision confirms it on the stream.
+  private wardrobeObserved = true;
+  // Bumped on every composed state, so a slow vision read never overwrites a newer request's state.
+  private stateVersion = 0;
+  private checkInTimer: ReturnType<typeof setTimeout> | null = null;
+  private wardrobeTimer: ReturnType<typeof setTimeout> | null = null;
+  private checkedInSinceRequest = false;
   private liveSinceMs: number | null = null;
   // What the stream is showing now; a reconnect starts from it so the scene carries on.
   private currentPrompt = "";
@@ -289,7 +340,11 @@ export class LongLiveSession {
   private idCounter = 0;
   private settleCounter = 0;
   // Requests sent but not yet superseded, oldest first, with the scene each one settles into.
-  private pending: { requestId: string; settlePrompt: string }[] = [];
+  private pending: {
+    requestId: string;
+    settlePrompt: string;
+    check: WardrobeCheck | null;
+  }[] = [];
   private playingRequestId: string | null = null;
   // The request whose prompt the latest start message carried, confirmed by that socket's ready.
   private startedWithRequestId: string | undefined;
@@ -373,6 +428,7 @@ export class LongLiveSession {
     this.referenceImageUrl = input.referenceImageUrl;
     this.speechMode = input.speechMode;
     this.startedAtMs = input.startedAtMs;
+    this.intentParser = input.intentParser;
 
     const opening = await this.deps.composePrompt({
       creator: input.creator,
@@ -380,6 +436,7 @@ export class LongLiveSession {
       transcript: [],
       channel: "chat",
       speechMode: input.speechMode,
+      wardrobeObserved: true,
     });
     if (this.closed) return;
     this.currentPrompt = opening.prompt;
@@ -522,6 +579,8 @@ export class LongLiveSession {
         this.everReady = true;
         if (this.liveSinceMs === null) this.liveSinceMs = this.deps.now();
         this.startMaxSessionTimer();
+        if (!this.checkInTimer && !this.checkedInSinceRequest)
+          this.armCheckIn();
         this.deps.onStreamState("live");
         // A start that carried a request's prompt (an ask sent while connecting, or a reconnect) puts that request on screen.
         this.promptTookEffect(this.startedWithRequestId);
@@ -554,6 +613,12 @@ export class LongLiveSession {
         this.emitMetrics();
         return;
       }
+      case "reanchored": {
+        this.deps.onDiagnostic?.(
+          `re-anchored ${message.id} at frame ${message.atFrame ?? "?"}`,
+        );
+        return;
+      }
       case "error": {
         this.serverErrored = true;
         this.deps.onError(message.message ?? "LongLive stream error");
@@ -580,19 +645,130 @@ export class LongLiveSession {
     this.pending = this.pending.slice(index + 1);
     this.playingRequestId = requestId;
     this.deps.onRequestStatus(requestId, "playing");
-    this.scheduleSettle(requestId, entry.settlePrompt);
+    this.scheduleSettle(requestId, entry.settlePrompt, entry.check);
   }
 
-  private scheduleSettle(requestId: string, settlePrompt: string): void {
+  private scheduleSettle(
+    requestId: string,
+    settlePrompt: string,
+    check: WardrobeCheck | null,
+  ): void {
     this.clearSettleTimer();
+    this.clearWardrobeTimer();
     this.settleTimer = setTimeout(() => {
       this.settleTimer = null;
       if (this.closed || this.playingRequestId !== requestId) return;
-      this.settleCounter += 1;
-      const id = `settle-${this.settleCounter}`;
-      this.settleIds.set(id, requestId);
-      this.sendPrompt(settlePrompt, id);
+      this.clearWardrobeTimer();
+      this.sendSettle(requestId, settlePrompt);
     }, LONGLIVE_SETTLE_AFTER_MS);
+    if (check) this.scheduleWardrobeCheck(requestId, check, 1);
+  }
+
+  private sendSettle(requestId: string, settlePrompt: string): void {
+    this.settleCounter += 1;
+    const id = `settle-${this.settleCounter}`;
+    this.settleIds.set(id, requestId);
+    this.sendPrompt(settlePrompt, id);
+  }
+
+  // The removal plays about 4 to 6 s in and the looping action redresses her soon after, so the 12 s settle is too late to see it.
+  private scheduleWardrobeCheck(
+    requestId: string,
+    check: WardrobeCheck,
+    attempt: number,
+  ): void {
+    const delay =
+      attempt === 1
+        ? LONGLIVE_WARDROBE_CHECK_AFTER_MS
+        : LONGLIVE_WARDROBE_CHECK_EVERY_MS;
+    this.wardrobeTimer = setTimeout(() => {
+      this.wardrobeTimer = null;
+      void this.checkWardrobe(requestId, check, attempt);
+    }, delay);
+  }
+
+  // A confirmed change ends the action at once: re-anchor, then settle naming what she now wears.
+  private async checkWardrobe(
+    requestId: string,
+    check: WardrobeCheck,
+    attempt: number,
+  ): Promise<void> {
+    if (this.closed || this.playingRequestId !== requestId) return;
+    const version = this.stateVersion;
+    const observation = await this.observe(check);
+    // A newer ask, or the plain settle already sent, owns the stream now.
+    if (
+      this.closed ||
+      this.playingRequestId !== requestId ||
+      this.settleTimer === null ||
+      version !== this.stateVersion
+    )
+      return;
+    const last = attempt >= LONGLIVE_WARDROBE_CHECK_ATTEMPTS;
+    this.deps.onDiagnostic?.(
+      `wardrobe ${check.garments.join(",")} check ${attempt}: ${observation ? (observation.confirmed ? "confirmed" : "not confirmed") : "skipped"}`,
+    );
+    if (observation?.confirmed) {
+      this.clearSettleTimer();
+      this.applyObservedState(observation.state);
+      this.wardrobeObserved = true;
+      this.sendReanchor();
+      this.sendSettle(
+        requestId,
+        observation.settlePrompt ?? check.settlePrompt,
+      );
+      return;
+    }
+    if (!last) {
+      this.scheduleWardrobeCheck(requestId, check, attempt + 1);
+      return;
+    }
+    // Mid-removal misses are expected; only the last read reconciles what she is wearing.
+    if (observation) this.applyObservedState(observation.state);
+  }
+
+  private applyObservedState(state: LiveState): void {
+    this.state = state;
+    this.deps.onLiveState(state);
+  }
+
+  private clearWardrobeTimer(): void {
+    if (this.wardrobeTimer) {
+      clearTimeout(this.wardrobeTimer);
+      this.wardrobeTimer = null;
+    }
+  }
+
+  private async observe(
+    check: WardrobeCheck,
+  ): Promise<LongLiveObservation | null> {
+    const { captureFrame, observeWardrobe } = this.deps;
+    const canvas = this.canvas;
+    const creator = this.creator;
+    if (!captureFrame || !observeWardrobe || !canvas || !creator) return null;
+    try {
+      const frame = await captureFrame(canvas);
+      if (!frame) return null;
+      return await observeWardrobe({
+        creator,
+        state: check.state,
+        garments: check.garments,
+        frame,
+        referenceImageUrl: this.referenceImageUrl,
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  // Pins the newest block beside the reference, so the confirmed clothing is held instead of drifting back.
+  private sendReanchor(): void {
+    const ws = this.ws;
+    if (ws && ws.readyState === WS_OPEN) {
+      ws.send(
+        JSON.stringify({ type: "reanchor", id: this.nextId("reanchor") }),
+      );
+    }
   }
 
   private clearSettleTimer(): void {
@@ -631,7 +807,7 @@ export class LongLiveSession {
     });
   }
 
-  request(text: string, channel: InputChannel): void {
+  request(text: string, channel: InputChannel, paid?: boolean): void {
     const trimmed = text.trim();
     if (!trimmed || this.closed || !this.creator) return;
     const entry: TranscriptEntry = {
@@ -640,7 +816,11 @@ export class LongLiveSession {
       channel,
       text: trimmed,
       atSec: this.elapsedSec(),
+      ...(paid !== undefined ? { paid } : {}),
     };
+    // Like the director, each fan ask restarts the quiet stretch a check-in waits for.
+    this.checkedInSinceRequest = false;
+    this.armCheckIn();
     this.transcript = [...this.transcript, entry];
     this.deps.onTranscriptEntry(entry);
     this.deps.onRequestStatus(entry.id, "queued");
@@ -667,6 +847,8 @@ export class LongLiveSession {
         requestText: text,
         channel,
         speechMode: this.speechMode,
+        intentParser: this.intentParser,
+        wardrobeObserved: this.wardrobeObserved,
       });
     } catch {
       this.deps.onRequestStatus(entry.id, "failed");
@@ -674,27 +856,104 @@ export class LongLiveSession {
       return;
     }
     if (this.closed) return;
-    this.state = composed.state;
-    this.deps.onLiveState(composed.state);
-    if (composed.reply) {
-      const replyEntry: TranscriptEntry = {
-        id: this.nextId("creator"),
-        role: "creator",
-        channel,
-        text: composed.reply,
-        atSec: this.elapsedSec(),
-      };
-      this.transcript = [...this.transcript, replyEntry];
-      this.deps.onTranscriptEntry(replyEntry);
-    }
+    this.applyComposedState(composed.state);
+    this.pushReply(composed.reply, channel);
+    const garments = composed.wardrobeCheck ?? [];
+    // An asked change is unseen until confirmed; until then prompts stop naming clothing at all.
+    if (garments.length > 0) this.wardrobeObserved = false;
     // A new ask replaces any pending settle; its own settle is scheduled once it takes effect.
     this.clearSettleTimer();
+    this.clearWardrobeTimer();
     this.pending = [
       ...this.pending,
-      { requestId: entry.id, settlePrompt: composed.settlePrompt },
+      {
+        requestId: entry.id,
+        settlePrompt: composed.settlePrompt,
+        check:
+          garments.length > 0
+            ? {
+                garments,
+                state: composed.state,
+                settlePrompt: composed.settlePrompt,
+              }
+            : null,
+      },
     ];
     this.deps.onRequestStatus(entry.id, "generating");
     this.sendPrompt(composed.prompt, entry.id);
+  }
+
+  private applyComposedState(state: LiveState): void {
+    this.state = state;
+    this.stateVersion += 1;
+    this.deps.onLiveState(state);
+  }
+
+  private pushReply(reply: string | null, channel: InputChannel): void {
+    if (!reply) return;
+    const replyEntry: TranscriptEntry = {
+      id: this.nextId("creator"),
+      role: "creator",
+      channel,
+      text: reply,
+      atSec: this.elapsedSec(),
+    };
+    this.transcript = [...this.transcript, replyEntry];
+    this.deps.onTranscriptEntry(replyEntry);
+  }
+
+  private armCheckIn(): void {
+    this.clearCheckInTimer();
+    if (this.closed) return;
+    this.checkInTimer = setTimeout(() => {
+      this.checkInTimer = null;
+      this.sendQueue = this.sendQueue.then(() => this.checkIn());
+    }, LIVE_TUNABLES.CHECK_IN_AFTER_IDLE_MS);
+  }
+
+  private clearCheckInTimer(): void {
+    if (this.checkInTimer) {
+      clearTimeout(this.checkInTimer);
+      this.checkInTimer = null;
+    }
+  }
+
+  // Clip mode's check-in: one per quiet stretch, never over an ask still playing.
+  private async checkIn(): Promise<void> {
+    const creator = this.creator;
+    const state = this.state;
+    if (!creator || !state || this.closed || this.checkedInSinceRequest) return;
+    if (this.pending.length > 0 || this.playingRequestId) {
+      this.armCheckIn();
+      return;
+    }
+    this.checkedInSinceRequest = true;
+    const channel = this.transcript.at(-1)?.channel ?? "chat";
+    let composed: LongLiveComposed;
+    try {
+      composed = await this.deps.composePrompt({
+        creator,
+        state,
+        transcript: this.transcript.slice(-LIVE_TUNABLES.TRANSCRIPT_WINDOW),
+        channel,
+        speechMode: this.speechMode,
+        wardrobeObserved: this.wardrobeObserved,
+        checkIn: true,
+      });
+    } catch {
+      return;
+    }
+    // An ask that arrived while composing owns the stream now.
+    if (this.closed || this.pending.length > 0 || this.playingRequestId) return;
+    this.pushReply(composed.reply, channel);
+    this.clearSettleTimer();
+    this.sendPrompt(composed.prompt, this.nextId("checkin"));
+    this.settleTimer = setTimeout(() => {
+      this.settleTimer = null;
+      if (this.closed) return;
+      this.settleCounter += 1;
+      this.sendPrompt(composed.settlePrompt, `settle-${this.settleCounter}`);
+    }, LONGLIVE_SETTLE_AFTER_MS);
   }
 
   private pushFailureLine(): void {
@@ -745,6 +1004,8 @@ export class LongLiveSession {
     this.closed = true;
     this.clearOpenTimer();
     this.clearSettleTimer();
+    this.clearCheckInTimer();
+    this.clearWardrobeTimer();
     if (this.maxSessionTimer) {
       clearTimeout(this.maxSessionTimer);
       this.maxSessionTimer = null;
