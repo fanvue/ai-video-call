@@ -60,7 +60,15 @@ image = (
         "git -C /root/LongLive checkout FETCH_HEAD",
         "rm -rf /root/LongLive/assets /root/LongLive/docs /root/LongLive/example",
     )
-    .env({"LONGLIVE_ALLOW_DATA_URI": "1" if ALLOW_DATA_URI else "0", "TOKENIZERS_PARALLELISM": "false"})
+    .env(
+        {
+            "LONGLIVE_ALLOW_DATA_URI": "1" if ALLOW_DATA_URI else "0",
+            "TOKENIZERS_PARALLELISM": "false",
+            "LONGLIVE_LORA_PATH": os.environ.get("LONGLIVE_LORA_PATH", ""),
+            "LONGLIVE_LORA_RANK": os.environ.get("LONGLIVE_LORA_RANK", "64"),
+            "LONGLIVE_LORA_ALPHA": os.environ.get("LONGLIVE_LORA_ALPHA", ""),
+        }
+    )
     .add_local_python_source("engine", "protocol")
 )
 
@@ -121,6 +129,7 @@ class StreamRun:
         handoff: queue.Queue = queue.Queue(maxsize=1)
         decoder = None
         try:
+            print(f"[longlive] start prompt: {start.prompt}", flush=True)
             engine.start(Image.open(io.BytesIO(reference)), start.prompt, start.width, start.height)
             self._emit_text(
                 {"type": "ready", "width": start.width, "height": start.height, "fps": start.fps, "loadMs": round(engine.load_ms)}
@@ -146,6 +155,7 @@ class StreamRun:
                     pending, self.pending = self.pending, None
                     reanchor, self.pending_reanchor = self.pending_reanchor, None
                 if pending is not None:
+                    print(f"[longlive] prompt {pending.id}: {pending.prompt}", flush=True)
                     at_frame = engine.switch_prompt(pending.prompt)
                     self._emit_text({"type": "promptApplied", "id": pending.id, "atFrame": at_frame})
                 if reanchor is not None:

@@ -69,9 +69,8 @@ export const SetupScreen = ({
   const [displayName, setDisplayName] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [voiceExperimental, setVoiceExperimental] = useState(false);
-  // Reference-to-video (single anchor image, periodic identity correction) held up better in
-  // testing than the image-to-video/guard-repair chain, so it's the default over turbo or director.
-  const [backend, setBackend] = useState<RenderBackend>("swap");
+  // LongLive is the default while the realtime model and its LoRA are under test.
+  const [backend, setBackend] = useState<RenderBackend>("longlive");
   const [swapProfile, setSwapProfile] = useState<SwapProfile>("default");
   const [intentParser, setIntentParser] = useState<IntentParser>("regex");
   const fileInputRef = useRef<HTMLInputElement>(null);
