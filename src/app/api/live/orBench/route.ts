@@ -197,6 +197,7 @@ const parserRow = async (model: string, c: ParserCase): Promise<Row> => {
         temperature: 0,
         jsonObject: true,
         timeoutMs: 15_000,
+        quiet: true,
       });
       raw = result.content;
       costUsd = result.costUsd;
@@ -230,6 +231,7 @@ const clipRow = async (model: string, c: ClipCase): Promise<Row> => {
       jsonObject: true,
       temperature: 0,
       timeoutMs: 60_000,
+      quiet: true,
       messages: [
         {
           role: "user",
@@ -305,8 +307,20 @@ const runSuite = async (suite: "parser" | "clip"): Promise<void> => {
         ),
   );
   const rows = rowsByModel.flat();
-  for (const row of rows) {
-    console.log(`live/orBench row suite=${suite} ${JSON.stringify(row)}`);
+  // One line per model: Vercel keeps only the first few hundred log lines of a request.
+  for (const modelRows of rowsByModel) {
+    console.log(
+      `live/orBench model suite=${suite} model=${modelRows[0]?.model ?? "none"} ${JSON.stringify(
+        modelRows.map((r) => ({
+          case: r.case,
+          pass: r.pass,
+          ms: r.ms,
+          costUsd: r.costUsd,
+          // Outputs only for misses, to keep the line short.
+          ...(r.pass ? {} : { output: r.output, error: r.error }),
+        })),
+      )}`,
+    );
   }
   const totalCostUsd = Number(
     rows.reduce((sum, r) => sum + r.costUsd, 0).toFixed(6),

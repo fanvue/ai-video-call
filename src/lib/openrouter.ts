@@ -58,12 +58,15 @@ export const createOpenRouterCompletion = async ({
   temperature,
   jsonObject,
   timeoutMs = 30_000,
+  quiet = false,
 }: {
   model: string;
   messages: OpenRouterMessage[];
   temperature?: number;
   jsonObject?: boolean;
   timeoutMs?: number;
+  // Batch callers log their own totals; Vercel caps log lines per request.
+  quiet?: boolean;
 }): Promise<OpenRouterResult> => {
   const apiKey = await assertOpenRouterBudget();
   const started = Date.now();
@@ -97,9 +100,11 @@ export const createOpenRouterCompletion = async ({
     );
   }
   const costUsd = body.usage?.cost ?? 0;
-  console.log(
-    `openrouter: model=${model} ms=${ms} costUsd=${costUsd.toFixed(6)}`,
-  );
+  if (!quiet) {
+    console.log(
+      `openrouter: model=${model} ms=${ms} costUsd=${costUsd.toFixed(6)}`,
+    );
+  }
   return {
     content: body.choices?.[0]?.message?.content?.trim() ?? "",
     costUsd,
