@@ -196,6 +196,7 @@ export const LiveStudio = () => {
           speechMode: values.speechMode,
           swapProfile: values.swapProfile,
           swapFaceLock: values.swapFaceLock,
+          swapHandMask: values.swapHandMask,
           intentParser: values.intentParser,
           faceRestore: values.faceRestore,
           personaId: values.personaId,

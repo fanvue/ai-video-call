@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/fanvue", () => ({ getCurrentUser: vi.fn() }));
 vi.mock("@/lib/live/server/swapClip", () => ({
   SWAP_BUDGET_MS: 150_000,
-  swapGreetingBudgetMsFor: (recipe?: string) =>
-    recipe === "longlive" ? 40_000 : 20_000,
+  swapGreetingBudgetMsFor: (recipe?: string, handMask?: boolean) =>
+    recipe === "longlive" ? 40_000 : handMask ? 33_000 : 20_000,
   swapFailureReason: (error: unknown) =>
     error instanceof DOMException && error.name === "TimeoutError"
       ? "timeout"
@@ -107,6 +107,7 @@ describe("POST /api/live/swap", () => {
     expect(Object.keys(args).sort()).toEqual(
       [
         "budgetMs",
+        "handMask",
         "jobKind",
         "personaId",
         "recipe",
@@ -161,6 +162,28 @@ describe("POST /api/live/swap", () => {
     await POST(jsonBody(body));
     expect(swapClip).toHaveBeenCalledWith(
       expect.objectContaining({ recipe: undefined }),
+    );
+  });
+
+  it("passes the Hand mask toggle through, off by default, and rejects a non-boolean", async () => {
+    vi.mocked(swapClip).mockRejectedValue(new Error("stop"));
+    await POST(jsonBody({ ...body, swapHandMask: true }));
+    expect(swapClip).toHaveBeenLastCalledWith(
+      expect.objectContaining({ handMask: true }),
+    );
+    await POST(jsonBody(body));
+    expect(swapClip).toHaveBeenLastCalledWith(
+      expect.objectContaining({ handMask: false }),
+    );
+    const rejected = await POST(jsonBody({ ...body, swapHandMask: "true" }));
+    expect(rejected.status).toBe(400);
+  });
+
+  it("gives a hand-masked greeting its longer budget", async () => {
+    vi.mocked(swapClip).mockRejectedValue(new Error("stop"));
+    await POST(jsonBody({ ...body, jobKind: "greeting", swapHandMask: true }));
+    expect(swapClip).toHaveBeenCalledWith(
+      expect.objectContaining({ budgetMs: 33_000, jobKind: "greeting" }),
     );
   });
 

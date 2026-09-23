@@ -324,6 +324,8 @@ export const clipRequestSchema = z.object({
   swapProfile: swapProfileSchema.optional(),
   // Face lock toggle under Advanced; see swapRecipeFor. Absent is the same as off.
   swapFaceLock: z.boolean().optional(),
+  // Hand mask toggle under Advanced: keeps a hand in front of the face on top of the swap. Absent is the same as off.
+  swapHandMask: z.boolean().optional(),
   // Swap mode's swap source, resolved against the persona manifest; absent, clips play unswapped.
   personaId: personaIdSchema.optional(),
   intentParser: intentParserSchema.optional(),
@@ -481,6 +483,8 @@ export const LIVE_TUNABLES = {
   // Stage an in-scene still (selected room, canon lingerie) from the upload before the greeting; the raw photo's clothes and room otherwise contradict the prompt and the first clip visibly morphs.
   STAGE_SEED: true,
   STAGE_SEED_BUDGET_MS: 30_000,
+  // The greeting's one vision read of its rendered room. Reads that land took about 1 to 1.5 s; in the two latest prod sessions every read ran into the old 6 s budget and the join waited the full 6 s for the preset ROOM text it kept anyway.
+  ROOM_CAPTURE_BUDGET_MS: 2_500,
   ABANDON_INFLIGHT_MS: 3_000,
   REST_AFTER_IDLE_MS: 20_000,
   CHECK_IN_AFTER_IDLE_MS: 90_000,

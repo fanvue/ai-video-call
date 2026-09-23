@@ -115,6 +115,8 @@ export type StartOptions = {
   swapProfile?: SwapProfile;
   // Swap mode only: Advanced's Face lock toggle, off by default; see swapRecipeFor.
   swapFaceLock?: boolean;
+  // Swap mode only: Advanced's Hand mask toggle, off by default.
+  swapHandMask?: boolean;
   intentParser?: IntentParser;
   // LongLive only: the server's second-GPU face restore, on unless turned off.
   faceRestore?: boolean;
@@ -165,6 +167,7 @@ export type UseLiveSessionDeps = {
     personaId: string | undefined,
     swapProfile?: SwapProfile,
     swapFaceLock?: boolean,
+    swapHandMask?: boolean,
   ) => Promise<{ videoUrl: string; costUsd: number; report: ClipSwapReport }>;
   // Optional: playback and connect events for the server log; tests leave it out.
   reportTelemetry?: (
@@ -1545,6 +1548,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
               options.swapPersonaId,
               options.swapProfile,
               options.swapFaceLock,
+              options.swapHandMask,
             )
         : null;
       const earlySwaps = runSwap ? createEarlySwaps(runSwap) : null;
@@ -1567,6 +1571,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         speechMode: options.speechMode ?? "text",
         swapProfile: options.swapProfile,
         swapFaceLock: options.swapFaceLock,
+        swapHandMask: options.swapHandMask,
         personaId: options.swapPersonaId,
         intentParser: options.intentParser,
         abandonDependents: (job) => {

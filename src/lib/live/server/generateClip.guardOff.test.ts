@@ -418,6 +418,15 @@ describe("generateClip on the swap backend", () => {
     ).toBeUndefined();
   });
 
+  it("passes the Hand mask to the clip swap", async () => {
+    swapClip.mockResolvedValue(swapped);
+    await generateClip({
+      ...swapRequest({ kind: "checkIn", channel: "chat" }),
+      swapHandMask: true,
+    });
+    expect(swapClip.mock.calls[0][0]).toMatchObject({ handMask: true });
+  });
+
   it("never touches the swap service on other backends", async () => {
     await generateClip(request({ kind: "greeting" }));
     expect(swapClip).not.toHaveBeenCalled();

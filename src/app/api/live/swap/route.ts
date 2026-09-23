@@ -35,6 +35,7 @@ const bodySchema = z.object({
   jobKind: z.enum(["greeting", "idle", "checkIn", "reply", "beat"]),
   swapProfile: swapProfileSchema.optional(),
   swapFaceLock: z.boolean().optional().default(false),
+  swapHandMask: z.boolean().optional().default(false),
 });
 
 // Second phase of the swap: the clip already came back from /api/live/clip unswapped with a swapped tail as the next seed; this finishes the clip itself before the client plays it. Fails open to the unswapped clip with a failed report.
@@ -50,8 +51,14 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
-  const { videoUrl, personaId, jobKind, swapProfile, swapFaceLock } =
-    parsed.data;
+  const {
+    videoUrl,
+    personaId,
+    jobKind,
+    swapProfile,
+    swapFaceLock,
+    swapHandMask,
+  } = parsed.data;
   const recipe = swapRecipeFor(swapFaceLock);
   const startedAt = Date.now();
   try {
@@ -60,11 +67,12 @@ export async function POST(request: Request) {
       personaId,
       budgetMs:
         jobKind === "greeting"
-          ? swapGreetingBudgetMsFor(recipe)
+          ? swapGreetingBudgetMsFor(recipe, swapHandMask)
           : SWAP_BUDGET_MS,
       jobKind,
       swapModel: swapModelFor(swapProfile),
       recipe,
+      handMask: swapHandMask,
     });
     return NextResponse.json({
       videoUrl: swapped.videoUrl,

@@ -27,7 +27,7 @@ class FakeSwapTailEngine:
     def read_tail_frame(self, video_path):
         return "raw-frame"
 
-    def swap_frame(self, frame, source_face, faces, restore, recipe):
+    def swap_frame(self, frame, source_face, faces, restore, recipe, occlusion=None):
         return "swapped-frame"
 
     def finish_seed(self, swapped):

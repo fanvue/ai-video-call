@@ -11,8 +11,13 @@ vi.mock("@/lib/fal/uploadImage", () => ({
   uploadToFal: (...args: unknown[]) => uploadToFal(...args),
 }));
 
-const { failedSwapReport, swapClip, swapServiceLastFrame, swapTail } =
-  await import("./swapClip");
+const {
+  failedSwapReport,
+  swapClip,
+  swapGreetingBudgetMsFor,
+  swapServiceLastFrame,
+  swapTail,
+} = await import("./swapClip");
 
 const serviceStats = {
   frames: 240,
@@ -142,6 +147,28 @@ describe("swapClip", () => {
     expect(JSON.parse(init.body as string)).not.toHaveProperty("recipe");
   });
 
+  it("sends the Hand mask to the service, and omits it when off so the service default governs", async () => {
+    fetchMock.mockResolvedValueOnce(swapped()).mockResolvedValueOnce(swapped());
+    uploadToFal.mockResolvedValue("https://fal.test/out");
+
+    await swapClip({
+      videoUrl: "https://fal.test/turbo.mp4",
+      personaId: "synth-persona-01",
+      handMask: true,
+    });
+    await swapClip({
+      videoUrl: "https://fal.test/turbo.mp4",
+      personaId: "synth-persona-01",
+      handMask: false,
+    });
+
+    const bodies = (fetchMock.mock.calls as [URL, RequestInit][]).map(
+      ([, init]) => JSON.parse(init.body as string) as Record<string, unknown>,
+    );
+    expect(bodies[0]).toMatchObject({ occlusion_mask: true });
+    expect(bodies[1]).not.toHaveProperty("occlusion_mask");
+  });
+
   it("refuses without a persona and never contacts the service or fetches a reference", async () => {
     for (const personaId of [undefined, ""]) {
       await expect(
@@ -243,6 +270,29 @@ describe("swapClip", () => {
       .mockResolvedValueOnce("https://fal.test/swap.mp4")
       .mockResolvedValueOnce("https://fal.test/last.jpg");
     await vi.advanceTimersByTimeAsync(22_000);
+    const outcome = await pending;
+    vi.useRealTimers();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(outcome.videoUrl).toBe("https://fal.test/swap.mp4");
+  });
+
+  it("does not hedge a hand-masked legacy swap at the plain 8s delay, only once its own 13s passes", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockImplementationOnce(() => new Promise(() => undefined));
+    const pending = swapClip({
+      videoUrl: "https://fal.test/turbo.mp4",
+      personaId: "synth-persona-01",
+      handMask: true,
+    });
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    fetchMock.mockResolvedValueOnce(swapped());
+    uploadToFal
+      .mockResolvedValueOnce("https://fal.test/swap.mp4")
+      .mockResolvedValueOnce("https://fal.test/last.jpg");
+    await vi.advanceTimersByTimeAsync(5_000);
     const outcome = await pending;
     vi.useRealTimers();
 
@@ -367,6 +417,38 @@ describe("swapTail", () => {
     });
   });
 
+  it("sends the Hand mask on the seed swap too", async () => {
+    fetchMock.mockResolvedValueOnce(tailResponse());
+    uploadToFal.mockResolvedValueOnce("https://fal.test/tail.png");
+
+    await swapTail({
+      videoUrl: "https://fal.test/turbo.mp4",
+      personaId: "synth-persona-01",
+      handMask: true,
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(JSON.parse(init.body as string)).toMatchObject({
+      occlusion_mask: true,
+    });
+  });
+
+  it("sends the session's tone reference so the service can lock the seed's face tone", async () => {
+    fetchMock.mockResolvedValueOnce(tailResponse());
+    uploadToFal.mockResolvedValueOnce("https://fal.test/tail.png");
+
+    await swapTail({
+      videoUrl: "https://fal.test/turbo.mp4",
+      personaId: "synth-persona-01",
+      toneReferenceUrl: "https://fal.test/first-seed.png",
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(JSON.parse(init.body as string)).toMatchObject({
+      tone_reference_url: "https://fal.test/first-seed.png",
+    });
+  });
+
   it("refuses without a persona and never contacts the service", async () => {
     await expect(
       swapTail({
@@ -375,6 +457,17 @@ describe("swapTail", () => {
       }),
     ).rejects.toThrow("No persona selected");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("swapGreetingBudgetMsFor", () => {
+  it("gives a hand-masked greeting more room than the plain recipe, and longlive at least its own", () => {
+    expect(swapGreetingBudgetMsFor(undefined)).toBe(20_000);
+    expect(swapGreetingBudgetMsFor(undefined, true)).toBe(33_000);
+    expect(swapGreetingBudgetMsFor("longlive")).toBe(40_000);
+    expect(swapGreetingBudgetMsFor("longlive", true)).toBeGreaterThanOrEqual(
+      swapGreetingBudgetMsFor("longlive"),
+    );
   });
 });
 

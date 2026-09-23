@@ -158,6 +158,7 @@ export const swapRenderedClip = async (
   personaId: string | undefined,
   swapProfile?: SwapProfile,
   swapFaceLock?: boolean,
+  swapHandMask?: boolean,
 ): Promise<SwapRenderedClipResult> => {
   const raw = await postJson<unknown>("/api/live/swap", {
     videoUrl: result.videoUrl,
@@ -165,6 +166,7 @@ export const swapRenderedClip = async (
     jobKind: result.jobKind,
     swapProfile,
     swapFaceLock,
+    swapHandMask,
   });
   return swapResultSchema.parse(raw);
 };

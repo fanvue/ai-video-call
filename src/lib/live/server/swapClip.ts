@@ -19,11 +19,23 @@ const SWAP_TIMING: Record<SwapRecipe, SwapTiming> = {
   // At 45.5 ms/frame a 15 s greeting is ~360 frames = 16.6 s plus download, so the legacy 20 s budget missed it and played unswapped; and the legacy 8 s hedge always fired before a longlive swap (11-13 s) came back, doubling GPU load on every clip.
   longlive: { hedgeMs: 30_000, greetingBudgetMs: 40_000 },
 };
-const timingFor = (recipe: SwapRecipe | undefined): SwapTiming =>
-  SWAP_TIMING[recipe ?? "legacy"];
+// Hand mask adds the xseg occluder, ~10 ms/frame on 6 turbo clips (A10G): legacy 15.5 -> 25.4, longlive 34.6 -> 45.5 ms/frame.
+const HAND_MASK_SWAP_TIMING: Record<SwapRecipe, SwapTiming> = {
+  // Legacy's numbers scaled by the 1.64x per-frame cost, so the hedge still waits out a healthy masked swap.
+  legacy: { hedgeMs: 13_000, greetingBudgetMs: 33_000 },
+  // 45.5 ms/frame is the rate longlive's own budgets were sized for, so it keeps them.
+  longlive: { hedgeMs: 30_000, greetingBudgetMs: 40_000 },
+};
+const timingFor = (
+  recipe: SwapRecipe | undefined,
+  handMask?: boolean,
+): SwapTiming =>
+  (handMask ? HAND_MASK_SWAP_TIMING : SWAP_TIMING)[recipe ?? "legacy"];
 // Kept as an export for callers that still choose the greeting budget from outside swapClip (route.ts, generateClip.ts).
-export const swapGreetingBudgetMsFor = (recipe: SwapRecipe | undefined) =>
-  timingFor(recipe).greetingBudgetMs;
+export const swapGreetingBudgetMsFor = (
+  recipe: SwapRecipe | undefined,
+  handMask?: boolean,
+) => timingFor(recipe, handMask).greetingBudgetMs;
 
 const swapServiceResponseSchema = z.object({
   video_base64: z.string().min(1),
@@ -82,6 +94,7 @@ export const swapClip = async ({
   jobKind = "unknown",
   swapModel,
   recipe,
+  handMask,
 }: {
   videoUrl: string;
   // The swap source is an allowlisted manifest persona only; the session's upload drives generation and never reaches the swap.
@@ -90,6 +103,8 @@ export const swapClip = async ({
   jobKind?: string;
   swapModel?: string;
   recipe?: SwapRecipe;
+  // Hand mask under Advanced; off leaves the service's own OCCLUSION_MASK default.
+  handMask?: boolean;
 }): Promise<SwapClipOutcome> => {
   if (!personaId) {
     throw new Error("No persona selected, the clip plays unswapped");
@@ -103,6 +118,7 @@ export const swapClip = async ({
     persona_id: personaId,
     ...(swapModel ? { model: swapModel } : {}),
     ...(recipe ? { recipe } : {}),
+    ...(handMask ? { occlusion_mask: true } : {}),
   });
   const controllers: AbortController[] = [];
   const attempt = async () => {
@@ -137,7 +153,7 @@ export const swapClip = async ({
       };
       const timer = setTimeout(
         () => launch("first not back yet"),
-        timingFor(recipe).hedgeMs,
+        timingFor(recipe, handMask).hedgeMs,
       );
       first.then(
         () => clearTimeout(timer),
@@ -271,6 +287,7 @@ const swapTailResponseSchema = z.object({
     enhance_ms: z.number().int().min(0).optional(),
     sharpness_before: z.number().nullable().optional(),
     sharpness_after: z.number().nullable().optional(),
+    tone_locked: z.boolean().optional(),
   }),
 });
 
@@ -282,6 +299,8 @@ export const swapTail = async ({
   budgetMs = SWAP_TAIL_BUDGET_MS,
   jobKind = "unknown",
   recipe,
+  toneReferenceUrl,
+  handMask,
 }: {
   videoUrl: string;
   // Same gate as swapClip: an allowlisted manifest persona only, never a session upload.
@@ -289,6 +308,10 @@ export const swapTail = async ({
   budgetMs?: number;
   jobKind?: string;
   recipe?: string;
+  // The session's first clip's seed: the service pulls this seed's face tone toward it so lighting stops drifting clip to clip.
+  toneReferenceUrl?: string;
+  // Same Hand mask as the clip swap, so the seed's face sits behind the hand like the clip did.
+  handMask?: boolean;
 }): Promise<{ lastFrameUrl: string; costUsd: number }> => {
   if (!personaId) {
     throw new Error("No persona selected, the clip plays unswapped");
@@ -307,6 +330,8 @@ export const swapTail = async ({
       video_url: videoUrl,
       persona_id: personaId,
       ...(recipe ? { recipe } : {}),
+      ...(toneReferenceUrl ? { tone_reference_url: toneReferenceUrl } : {}),
+      ...(handMask ? { occlusion_mask: true } : {}),
     }),
     signal: AbortSignal.timeout(budgetMs),
   });
@@ -325,7 +350,7 @@ export const swapTail = async ({
   );
   const { stats } = parsed;
   console.log(
-    `swapTail: kind=${jobKind} serviceMs=${stamp - startedAt} (swap ${stats.swap_ms}) rehostMs=${Date.now() - stamp} downloadMs=${stats.download_ms ?? 0} face=${stats.had_face} similarity=${stats.similarity_before}->${stats.similarity_after} sharpness=${stats.sharpness_before ?? "?"}->${stats.sharpness_after ?? "?"}`,
+    `swapTail: kind=${jobKind} serviceMs=${stamp - startedAt} (swap ${stats.swap_ms}) rehostMs=${Date.now() - stamp} downloadMs=${stats.download_ms ?? 0} face=${stats.had_face} toneLocked=${stats.tone_locked ?? false} similarity=${stats.similarity_before}->${stats.similarity_after} sharpness=${stats.sharpness_before ?? "?"}->${stats.sharpness_after ?? "?"}`,
   );
   return {
     lastFrameUrl,

@@ -1600,6 +1600,27 @@ describe("ClipPipeline", () => {
     );
   });
 
+  it("swap mode sends the Hand mask on every chain and idle render", async () => {
+    const requests: ClipRequest[] = [];
+    const queue = makeJobQueue();
+    const pipeline = trackedPipeline({
+      backend: "swap",
+      personaId: "synth-persona-01",
+      swapHandMask: true,
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        requests.push(req);
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS * 2);
+    expect(requests.map((req) => req.job.kind)).toContain("idle");
+    expect(requests.every((req) => req.swapHandMask === true)).toBe(true);
+  });
+
   it("swap mode keeps two idles in flight and two ready, since a filler takes longer to make than it plays", async () => {
     const requests: ClipRequest[] = [];
     const queue = makeJobQueue();
@@ -2078,7 +2099,11 @@ describe("ClipPipeline", () => {
     expect(finalizeOrder).toEqual(["reply", "checkIn"]);
 
     // The checkIn landing first must not jump the reply still swapping.
-    finalize.get("checkIn")?.resolve({ videoUrl: "https://example.com/checkin-swapped.mp4", costUsd: 0.004, report: { ...SWAPPED_REPORT } });
+    finalize.get("checkIn")?.resolve({
+      videoUrl: "https://example.com/checkin-swapped.mp4",
+      costUsd: 0.004,
+      report: { ...SWAPPED_REPORT },
+    });
     await vi.advanceTimersByTimeAsync(0);
     expect(pipeline.hasChainedReady()).toBe(false);
 
@@ -2247,7 +2272,8 @@ describe("ClipPipeline", () => {
     expect(
       events.some(
         (event) =>
-          event.type === "clipDiscarded" && event.result.clipId === bridge?.clipId,
+          event.type === "clipDiscarded" &&
+          event.result.clipId === bridge?.clipId,
       ),
     ).toBe(true);
   });

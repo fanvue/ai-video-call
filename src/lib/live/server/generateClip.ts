@@ -43,7 +43,7 @@ const COLOR_ISSUE_RE = /^(top|bottom|bra|panties) color drifted/;
 const FRAME_BUDGET_MS = 15_000;
 const GUARD_BUDGET_MS = 8_000;
 // One vision read on the greeting; past this the greeting ships with its preset ROOM text rather than hold the first clip.
-const ROOM_CAPTURE_BUDGET_MS = 6_000;
+const ROOM_CAPTURE_BUDGET_MS = LIVE_TUNABLES.ROOM_CAPTURE_BUDGET_MS;
 
 class StepTimeoutError extends Error {}
 
@@ -394,11 +394,12 @@ export const generateClip = async (
         personaId: request.personaId,
         budgetMs:
           job.kind === "greeting"
-            ? swapGreetingBudgetMsFor(recipe)
+            ? swapGreetingBudgetMsFor(recipe, request.swapHandMask)
             : SWAP_BUDGET_MS,
         jobKind: job.kind,
         swapModel: swapModelFor(request.swapProfile),
         recipe,
+        handMask: request.swapHandMask,
       });
       videoUrl = swapped.videoUrl;
       costUsd += swapped.costUsd;
@@ -458,6 +459,8 @@ export const generateClip = async (
                   personaId: request.personaId,
                   jobKind: job.kind,
                   recipe: swapRecipeFor(request.swapFaceLock),
+                  toneReferenceUrl: session.toneFrameUrl,
+                  handMask: request.swapHandMask,
                 })
                   .then((swapped) => {
                     costUsd += swapped.costUsd;
@@ -653,7 +656,11 @@ export const generateClip = async (
           captureRoom(seedFrameUrl),
           ROOM_CAPTURE_BUDGET_MS,
           "captureRoom",
-        ).catch(() => null)
+        ).catch((error: unknown) => {
+          // A timeout was silent before, which hid that prod's reads were all running out the budget.
+          console.warn("generateClip: room capture skipped", error);
+          return null;
+        })
       : Promise.resolve(null);
   const [replyOutcome, capturedRoom] = await Promise.all([
     replyTextPromise,

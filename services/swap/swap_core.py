@@ -38,11 +38,15 @@ TONE_LOCK_BLEND = 0.5
 SEED_FINISH = False
 # Off: whole-frame LAB stats are dominated by background and garment, so the lock shifted skin tone toward whatever filled the frame.
 SEED_TONE_LOCK = False
+# The face-only version: LAB moments of the aligned face ellipse, pulled TONE_LOCK_BLEND of the way back toward the session's first clip's face, so the seed's lighting and skin tone stop compounding without the background steering it.
+SEED_FACE_TONE_LOCK = True
 # Share of the Reinhard-matched patch kept over the raw swap: pulls the face toward the render's neck and skin without flattening its own shading.
 PATCH_COLOR_MATCH_BLEND = 0.6
 # EMA weight for the zero-phase landmark smoothing in swap_clip; per-frame detector jitter made the pasted patch shimmer.
-KPS_SMOOTH_ALPHA = 0.5
+# 0.7 over 0.5: on 6 turbo clips paste-placement wobble fell 0.595 -> 0.319 px with fast-frame error at the 0.68 px noise floor (max 3.1 px); 0.5 reached 1.2 px (max 6.0) on head turns.
+KPS_SMOOTH_ALPHA = 0.7
 # Off: on a 362-frame persona clip smoothing left output landmark wobble unchanged (0.565 vs 0.562 px) while holding the whole clip in memory and adding ~0.9 ms/frame.
+# Rechecked on 6 turbo clips (A10G): output wobble 0.597 -> 0.576 px and added face flicker -0.865 -> -0.885 grey levels at alpha 0.7, for +1.3 ms/frame; still off.
 KPS_SMOOTH = False
 # FaceFusion's HyperSwap 1a (256 px, same ArcFace w600k_r50 identity as buffalo_l); the bake-off candidate against inswapper_128.
 HYPERSWAP_URL = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.3.0/hyperswap_1a_256.onnx"
@@ -72,6 +76,14 @@ GFPGAN_SIZE = 512
 GFPGAN_BLEND = 0.6
 # LongLive's MOTION_KEEP: the full swap damped blinks and speech in its face A/B.
 MOTION_KEEP = 0.35
+# FaceFusion's xseg_1 occluder (DeepFaceLab XSeg, GPL-3.0, research-only like inswapper): a visible-face mask, so a hand or hair in front of the face stays on top of the swap.
+OCCLUDER_URL = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.1.0/xseg_1.onnx"
+OCCLUDER_SIZE = 256
+# Grows xseg's visible-face mask (px at OCCLUDER_SIZE) so only occluders are cut: its tight outline plus FaceFusion's post-process handed brows and jaw back to the render, ArcFace 0.914 -> 0.850; 24 px measured 0.914 with the hand still kept.
+OCCLUDER_GROW = 24
+# Off: xseg is ~19 ms per face on an A10G (6 turbo clips: legacy 15.5 -> 25.4, fp16 longlive 34.6 -> 45.5 ms/frame, ArcFace unchanged); it stops the face being pasted over a hand in front of it.
+# The default only: a request's occlusion_mask (the Hand mask toggle) overrides it per clip.
+OCCLUSION_MASK = False
 MAX_CLIP_FRAMES = 30 * 20
 # Typical turbo clip size, used only for the warm-up pass.
 INPUT_WIDTH = 542
@@ -137,6 +149,7 @@ class ClipSwapStats:
     sharpness_before: float | None = None
     sharpness_after: float | None = None
     recipe: str = FACE_RECIPE
+    occlusion_mask: bool = False
 
 
 # The default EXHAUSTIVE cuDNN search made the first clip on a fresh container ~8x slower than the second.
@@ -157,6 +170,7 @@ class SwapEngine:
         inswapper_fp16_path: str | None = None,
         onnx_swapper_paths: dict[str, str] | None = None,
         gfpgan_path: str | None = None,
+        occluder_path: str | None = None,
     ) -> None:
         import insightface
         import numpy as np
@@ -201,6 +215,14 @@ class SwapEngine:
             self.gfpgan_input = self.gfpgan.get_inputs()[0].name
             print("gfpgan providers:", self.gfpgan.get_providers())
         self.gfpgan_template = np.array(FFHQ_TEMPLATE, dtype=np.float32) * GFPGAN_SIZE
+        self.occluder = None
+        # Loaded whenever a path is given, since any request can turn the mask on; the default off costs only its VRAM and warm-up.
+        if occluder_path:
+            import onnxruntime
+
+            self.occluder = onnxruntime.InferenceSession(occluder_path, providers=PROVIDERS)
+            self.occluder_input = self.occluder.get_inputs()[0].name
+            print("occluder providers:", self.occluder.get_providers())
         # Persona source faces by (path, mtime, size), so a replaced file is embedded again.
         self.persona_faces: dict[tuple[str, float, int], Any] = {}
         self.persona_faces_lock = threading.Lock()
@@ -238,6 +260,8 @@ class SwapEngine:
             self.enhance_frame(blank)
         if self.gfpgan is not None:
             self.gfpgan.run(None, {self.gfpgan_input: np.zeros((1, 3, GFPGAN_SIZE, GFPGAN_SIZE), dtype=np.float32)})
+        if self.occluder is not None:
+            self.occluder.run(None, {self.occluder_input: np.zeros((1, OCCLUDER_SIZE, OCCLUDER_SIZE, 3), dtype=np.float32)})
         for swapper in self.onnx_swappers.values():
             feed = {
                 name: np.zeros((1, 512) if name == "source" else (1, 3, SWAP_SIZE, SWAP_SIZE), dtype=dtype)
@@ -247,6 +271,9 @@ class SwapEngine:
 
     def has_swap_model(self, model: str) -> bool:
         return model in ("inswapper", "inswapper_fp16") or model in self.onnx_swapper_paths
+
+    def has_occluder(self) -> bool:
+        return self.occluder is not None
 
     def has_recipe(self, recipe: str) -> bool:
         return recipe == "legacy" or (recipe == "longlive" and self.gfpgan is not None)
@@ -414,6 +441,50 @@ class SwapEngine:
         lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB).astype(np.float32).reshape(-1, 3)
         return lab.mean(axis=0), lab.std(axis=0)
 
+    # Aligned RESTORE_SIZE crop of the biggest face plus its frame-to-crop matrix, or (None, None) when it cannot be aligned.
+    def aligned_face_crop(self, frame, faces):
+        import cv2
+        import numpy as np
+
+        if not faces:
+            return None, None
+        face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+        matrix, _ = cv2.estimateAffinePartial2D(face.kps.astype(np.float32), self.template, method=cv2.LMEDS)
+        if matrix is None:
+            return None, None
+        crop = cv2.warpAffine(frame, matrix, (RESTORE_SIZE, RESTORE_SIZE), borderMode=cv2.BORDER_REPLICATE)
+        return crop, matrix
+
+    # LAB mean/std inside the face ellipse only: face_lab_stats' full crop still mixes in hair and background.
+    @staticmethod
+    def face_ellipse_stats(crop):
+        import cv2
+        import numpy as np
+
+        region = (face_ellipse_mask(crop.shape[0]) > 0.5).astype(np.uint8)
+        mean, std = cv2.meanStdDev(cv2.cvtColor(crop, cv2.COLOR_BGR2LAB), mask=region)
+        return mean.reshape(3).astype(np.float32), std.reshape(3).astype(np.float32)
+
+    # Reinhard-matches the face ellipse toward ref_stats and keeps TONE_LOCK_BLEND of it under the feathered face mask; returns (frame, locked).
+    def face_tone_lock(self, frame, faces, ref_stats):
+        import cv2
+        import numpy as np
+
+        crop, matrix = self.aligned_face_crop(frame, faces)
+        if crop is None or ref_stats is None:
+            return frame, False
+        ref_mean, ref_std = ref_stats
+        mean, std = self.face_ellipse_stats(crop)
+        # A flat channel (std ~0) keeps its spread and only shifts its mean.
+        scale = np.where(std < 1e-3, 1.0, ref_std / np.maximum(std, 1e-3)).astype(np.float32)
+        # The per-pixel transform runs on the frame itself, not a pasted crop: paste_patch's warp round trip cut face Laplacian 22 -> 17 on a seed the lock barely changed.
+        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB).astype(np.float32)
+        locked = cv2.cvtColor(np.clip((lab - mean) * scale + ref_mean, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR)
+        height, width = frame.shape[:2]
+        mask = cv2.warpAffine(face_ellipse_mask(RESTORE_SIZE), cv2.invertAffineTransform(matrix), (width, height))
+        alpha = (mask * TONE_LOCK_BLEND)[:, :, None]
+        return (locked.astype(np.float32) * alpha + frame.astype(np.float32) * (1.0 - alpha)).astype(np.uint8), True
+
     # Pulls a swapped/restored crop's LAB tone toward the reference photo's own, so per-clip restoration bias
     # (warmth, saturation) never compounds across a long session instead of resetting from the true upload each time.
     def color_lock(self, crop, ref_lab):
@@ -452,7 +523,7 @@ class SwapEngine:
         return paste_patch(frame, blended, matrix)
 
     # LongLive's face GPU pass: GFPGAN 1.4 on the aligned 512 FFHQ crop, GFPGAN_BLEND of it over the swapped face, pasted under the feathered ellipse.
-    def gfpgan_face(self, frame, face):
+    def gfpgan_face(self, frame, face, visible=None, visible_matrix=None):
         import cv2
         import numpy as np
 
@@ -464,7 +535,20 @@ class SwapEngine:
         output = self.gfpgan.run(None, {self.gfpgan_input: np.ascontiguousarray(tensor)})[0][0]
         restored = np.clip((output.transpose(1, 2, 0) + 1.0) * 127.5, 0, 255)[:, :, ::-1].astype(np.uint8)
         blended = cv2.addWeighted(restored, GFPGAN_BLEND, crop, 1.0 - GFPGAN_BLEND, 0)
-        return paste_patch(frame, blended, matrix)
+        # The occluder ran on the swap crop; carry its mask into this crop so GFPGAN does not repaint the hand the swap left alone.
+        if visible is not None:
+            visible = cv2.warpAffine(visible, chain_affine(matrix, visible_matrix), (GFPGAN_SIZE, GFPGAN_SIZE), borderValue=1.0)
+        return paste_patch(frame, blended, matrix, visible)
+
+    # Visible-face mask for the swap crop at `size`: the xseg occluder runs on the same alignment at OCCLUDER_SIZE.
+    def occlusion_mask(self, frame, matrix, size: int):
+        import cv2
+        import numpy as np
+
+        scaled = matrix * (OCCLUDER_SIZE / size)
+        crop = cv2.warpAffine(frame, scaled, (OCCLUDER_SIZE, OCCLUDER_SIZE), borderMode=cv2.BORDER_REPLICATE)
+        raw = self.occluder.run(None, {self.occluder_input: crop[None].astype(np.float32) / 255.0})[0][0, :, :, 0]
+        return visible_face_mask(raw, size)
 
     # The next clip's seed: the swapped last frame, restored only when the chain has already blurred it.
     def finish_seed(self, last_swapped):
@@ -523,19 +607,31 @@ class SwapEngine:
         return frame
 
     def swap_tail(
-        self, video_path: str, source_face, restore: bool = RESTORE_FRAMES, recipe: str = FACE_RECIPE
+        self,
+        video_path: str,
+        source_face,
+        restore: bool = RESTORE_FRAMES,
+        recipe: str = FACE_RECIPE,
+        tone_reference_stats=None,
+        occlusion_mask: bool | None = None,
     ) -> tuple[dict[str, Any], bytes]:
         started = time.perf_counter()
         frame = self.read_tail_frame(video_path)
         faces = self.detector.get(frame)
-        swapped = self.swap_frame(frame, source_face, faces, restore=restore, recipe=recipe)
+        swapped = self.swap_frame(frame, source_face, faces, restore=restore, recipe=recipe, occlusion=occlusion_mask)
         swap_ms = int((time.perf_counter() - started) * 1000)
+        tone_locked = False
+        if tone_reference_stats is not None and SEED_FACE_TONE_LOCK:
+            # The swap keeps the tail's landmarks, so the detection above still aligns the swapped face.
+            swapped, tone_locked = self.face_tone_lock(swapped, faces, tone_reference_stats)
         seed_frame, enhance_ms, enhanced, sharpness_before, sharpness_after = self.finish_seed(swapped)
         stats = {
             "swap_ms": swap_ms,
             "had_face": bool(faces),
             "similarity_before": self.similarity(frame, source_face),
             "similarity_after": self.similarity(swapped, source_face),
+            "tone_locked": tone_locked,
+            "occlusion_mask": occlusion_on(occlusion_mask),
             "enhanced": enhanced,
             "enhance_ms": enhance_ms,
             "sharpness_before": sharpness_before,
@@ -583,9 +679,11 @@ class SwapEngine:
         model: str = DEFAULT_SWAP_MODEL,
         restore: bool = True,
         recipe: str = FACE_RECIPE,
+        occlusion: bool | None = None,
     ):
         import cv2
 
+        masked = occlusion_on(occlusion) and self.occluder is not None
         out = frame
         for face in faces:
             started = time.perf_counter()
@@ -604,10 +702,11 @@ class SwapEngine:
                 patch = keep_motion(patch, original, MOTION_KEEP)
             else:
                 patch = match_patch_color(patch, original, face_ellipse_mask(size))
-            out = paste_patch(out, patch, matrix)
+            visible = self.occlusion_mask(frame, matrix, size) if masked else None
+            out = paste_patch(out, patch, matrix, visible)
             swapped_at = time.perf_counter()
             if recipe == "longlive":
-                out = self.gfpgan_face(out, face)
+                out = self.gfpgan_face(out, face, visible, matrix)
             elif restore and self.restorer is not None:
                 out = self.restore_face(out, face, source_face)
             if timings is not None:
@@ -634,6 +733,7 @@ class SwapEngine:
         restore: bool = RESTORE_FRAMES,
         workers: int = WORKERS,
         recipe: str = FACE_RECIPE,
+        occlusion_mask: bool | None = None,
     ) -> tuple[ClipSwapStats, bytes]:
         import cv2
 
@@ -678,7 +778,7 @@ class SwapEngine:
             local = {"swap": 0.0, "restore": 0.0}
             if faces is None:
                 faces = detect(frame)
-            swapped = self.swap_frame(frame, source_face, faces, local, model, restore, recipe)
+            swapped = self.swap_frame(frame, source_face, faces, local, model, restore, recipe, occlusion_mask)
             with timings_lock:
                 for key, value in local.items():
                     timings[key] += value
@@ -780,6 +880,7 @@ class SwapEngine:
             sharpness_before=sharpness_before,
             sharpness_after=sharpness_after,
             recipe=recipe,
+            occlusion_mask=occlusion_on(occlusion_mask) and self.occluder is not None,
         )
         return stats, self.encode_png(seed_frame)
 
@@ -924,14 +1025,15 @@ def match_patch_color(patch, original, mask, blend: float = PATCH_COLOR_MATCH_BL
     return cv2.addWeighted(matched, blend, patch, 1.0 - blend, 0)
 
 
-def paste_patch(frame, patch, matrix):
+def paste_patch(frame, patch, matrix, visible=None):
     # `matrix` maps frame -> patch. Blends the warped patch back with a feathered elliptical face mask, only
     # inside the frame region the patch lands on; the full-frame float blend was most of the per-frame cost.
+    # `visible` (patch-sized, 0..1) cuts occluders out of that mask.
     import cv2
     import numpy as np
 
     size = patch.shape[0]
-    mask = face_ellipse_mask(size)
+    mask = face_ellipse_mask(size) if visible is None else face_ellipse_mask(size) * visible
 
     inverse = cv2.invertAffineTransform(matrix)
     height, width = frame.shape[:2]
@@ -952,6 +1054,27 @@ def paste_patch(frame, patch, matrix):
     region = out[y0:y1, x0:x1].astype(np.float32)
     out[y0:y1, x0:x1] = (pasted * alpha + region * (1.0 - alpha)).astype(np.uint8)
     return out
+
+
+# FaceFusion's occluder post-process: resize to the crop, blur, then keep only the confident half so the cut edge is soft but a hand is fully excluded.
+def visible_face_mask(raw, size: int, grow: int = OCCLUDER_GROW):
+    import cv2
+    import numpy as np
+
+    raw = np.clip(raw, 0.0, 1.0).astype(np.float32)
+    if grow > 0:
+        raw = cv2.dilate(raw, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * grow + 1, 2 * grow + 1)))
+    mask = cv2.resize(raw, (size, size))
+    return (np.clip(cv2.GaussianBlur(mask, (0, 0), 5.0 * size / 128), 0.5, 1.0) - 0.5) * 2.0
+
+
+# `outer` after the inverse of `inner` (both 2x3, frame -> crop): maps inner's crop onto outer's.
+def chain_affine(outer, inner):
+    import cv2
+    import numpy as np
+
+    inverse = cv2.invertAffineTransform(inner)
+    return np.hstack([outer[:, :2] @ inverse[:, :2], (outer[:, :2] @ inverse[:, 2] + outer[:, 2])[:, None]])
 
 
 def token_allowed(supplied: str | None) -> bool:
@@ -980,7 +1103,11 @@ def persona_source_face(engine: SwapEngine, root: str | None, persona_id: object
     raise PersonaRejected(f"persona gate: {reason}")
 
 
-def check_swap_options(engine: SwapEngine, model: str, recipe: str) -> None:
+def occlusion_on(requested: bool | None) -> bool:
+    return OCCLUSION_MASK if requested is None else requested
+
+
+def check_swap_options(engine: SwapEngine, model: str, recipe: str, occlusion_mask: bool | None = None) -> None:
     if model not in SWAP_MODELS:
         raise ValueError(f"unknown swap model {model!r}")
     # Fail instead of silently swapping with inswapper under another model's name.
@@ -991,6 +1118,9 @@ def check_swap_options(engine: SwapEngine, model: str, recipe: str) -> None:
     # Same for a recipe whose restore model is not loaded.
     if not engine.has_recipe(recipe):
         raise ValueError(f"{recipe} recipe is not available on this engine")
+    # A requested hand mask with no occluder loaded would paste the face over the hand under the mask's name.
+    if occlusion_on(occlusion_mask) and not engine.has_occluder():
+        raise ValueError("occlusion mask is not available on this engine")
 
 
 def download(url: str, path: str) -> None:
@@ -1009,9 +1139,10 @@ def swap_clip_from_url(
     persona_id: object,
     model: str = DEFAULT_SWAP_MODEL,
     recipe: str = FACE_RECIPE,
+    occlusion_mask: bool | None = None,
 ) -> dict[str, Any]:
     # Gate before the download, so a refused persona costs nothing.
-    check_swap_options(engine, model, recipe)
+    check_swap_options(engine, model, recipe, occlusion_mask)
     source_face = persona_source_face(engine, persona_root, persona_id)
     with tempfile.TemporaryDirectory() as directory:
         source_path = os.path.join(directory, "source.mp4")
@@ -1019,11 +1150,14 @@ def swap_clip_from_url(
         download(video_url, source_path)
         download_ms = int((time.perf_counter() - started) * 1000)
         with open(source_path, "rb") as file:
-            result = swap_clip_with_face(engine, file.read(), source_face, model, {"recipe": recipe})
+            options: dict[str, Any] = {"recipe": recipe}
+            if occlusion_mask is not None:
+                options["occlusion_mask"] = occlusion_mask
+            result = swap_clip_with_face(engine, file.read(), source_face, model, options)
     result["stats"]["download_ms"] = download_ms
     stats = result["stats"]
     print(
-        f"swapClip: persona={persona_id} model={model} recipe={stats['recipe']} restored={stats['restored']} frames={stats['frames']} download_ms={download_ms} swap_ms={stats['swap_ms']} "
+        f"swapClip: persona={persona_id} model={model} recipe={stats['recipe']} occlusion_mask={occlusion_on(occlusion_mask)} restored={stats['restored']} frames={stats['frames']} download_ms={download_ms} swap_ms={stats['swap_ms']} "
         f"ms_per_frame={stats['ms_per_frame']} similarity={stats['similarity_before']}->{stats['similarity_after']} "
         f"enhance_ms={stats['enhance_ms']} sharpness={stats['sharpness_before']}->{stats['sharpness_after']}",
         flush=True,
@@ -1037,18 +1171,31 @@ def swap_tail_from_url(
     persona_root: str | None,
     persona_id: object,
     recipe: str = FACE_RECIPE,
+    # Colour stats only, never a swap source: the identity still comes from persona_source_face below.
+    tone_frame_url: str | None = None,
+    occlusion_mask: bool | None = None,
 ) -> dict[str, Any]:
-    check_swap_options(engine, DEFAULT_SWAP_MODEL, recipe)
+    check_swap_options(engine, DEFAULT_SWAP_MODEL, recipe, occlusion_mask)
     source_face = persona_source_face(engine, persona_root, persona_id)
+    reference_stats = None
+    if tone_frame_url and SEED_FACE_TONE_LOCK:
+        # Tone is a quality feature, not a guard: a reference that fails to load leaves the seed as swapped.
+        try:
+            reference_stats = tone_reference_stats(engine, tone_frame_url, face=True)
+        except Exception as error:  # noqa: BLE001
+            print(f"swapTail: tone reference failed: {error}", flush=True)
     with tempfile.TemporaryDirectory() as directory:
         source_path = os.path.join(directory, "source.mp4")
         started = time.perf_counter()
         download(video_url, source_path)
         download_ms = int((time.perf_counter() - started) * 1000)
-        stats, seed_png = engine.swap_tail(source_path, source_face, recipe=recipe)
+        stats, seed_png = engine.swap_tail(
+            source_path, source_face, recipe=recipe, tone_reference_stats=reference_stats, occlusion_mask=occlusion_mask
+        )
     stats["download_ms"] = download_ms
     print(
         f"swapTail: download_ms={download_ms} swap_ms={stats['swap_ms']} had_face={stats['had_face']} "
+        f"tone_locked={stats['tone_locked']} occlusion_mask={occlusion_on(occlusion_mask)} "
         f"similarity={stats['similarity_before']}->{stats['similarity_after']} "
         f"enhance_ms={stats['enhance_ms']} sharpness={stats['sharpness_before']}->{stats['sharpness_after']}",
         flush=True,
@@ -1061,20 +1208,28 @@ _tone_stats_cache: dict[str, Any] = {}
 _tone_stats_lock = threading.Lock()
 
 
-def tone_reference_stats(engine: SwapEngine, url: str):
+# face=True: the reference's face-ellipse moments (SEED_FACE_TONE_LOCK) instead of the whole frame's.
+def tone_reference_stats(engine: SwapEngine, url: str, face: bool = False):
+    key = (url, face)
     with _tone_stats_lock:
-        cached = _tone_stats_cache.get(url)
+        cached = _tone_stats_cache.get(key)
     if cached is not None:
         return cached
     with urllib.request.urlopen(url, timeout=30) as response:
         image = engine.decode_image(response.read())
     if image is None:
         raise ValueError("tone reference is not an image")
-    stats = engine.frame_lab_stats(image)
+    if face:
+        crop, _ = engine.aligned_face_crop(image, engine.detector.get(image))
+        if crop is None:
+            raise ValueError("tone reference has no face")
+        stats = engine.face_ellipse_stats(crop)
+    else:
+        stats = engine.frame_lab_stats(image)
     with _tone_stats_lock:
         if len(_tone_stats_cache) >= 16:
             _tone_stats_cache.clear()
-        _tone_stats_cache[url] = stats
+        _tone_stats_cache[key] = stats
     return stats
 
 
@@ -1096,6 +1251,12 @@ def last_frame_from_url(
             tone_locked = True
         except Exception as error:  # noqa: BLE001
             print(f"lastFrame: tone reference failed: {error}", flush=True)
+    elif tone_reference_url and SEED_FACE_TONE_LOCK:
+        try:
+            reference = tone_reference_stats(engine, tone_reference_url, face=True)
+            frame, tone_locked = engine.face_tone_lock(frame, engine.detector.get(frame), reference)
+        except Exception as error:  # noqa: BLE001
+            print(f"lastFrame: face tone reference failed: {error}", flush=True)
     seed_frame, enhance_ms, enhanced, sharpness_before, sharpness_after = engine.finish_seed(frame)
     total_ms = int((time.perf_counter() - started) * 1000)
     print(
@@ -1164,7 +1325,9 @@ def swap_clip_from_bytes(
     model: str = DEFAULT_SWAP_MODEL,
     options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    check_swap_options(engine, model, (options or {}).get("recipe", FACE_RECIPE))
+    check_swap_options(
+        engine, model, (options or {}).get("recipe", FACE_RECIPE), (options or {}).get("occlusion_mask")
+    )
     source_face = persona_source_face(engine, persona_root, persona_id)
     return swap_clip_with_face(engine, video, source_face, model, options)
 

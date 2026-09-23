@@ -37,6 +37,7 @@ export type SetupSubmit = {
   speechMode: SpeechMode;
   swapProfile: SwapProfile;
   swapFaceLock: boolean;
+  swapHandMask: boolean;
   intentParser: IntentParser;
   faceRestore: boolean;
   personaId?: string;
@@ -101,6 +102,7 @@ export const SetupScreen = ({
   const [backend, setBackend] = useState<RenderBackend>("swap");
   const [swapProfile, setSwapProfile] = useState<SwapProfile>("default");
   const [swapFaceLock, setSwapFaceLock] = useState(false);
+  const [swapHandMask, setSwapHandMask] = useState(false);
   const [intentParser, setIntentParser] = useState<IntentParser>("regex");
   const [faceRestore, setFaceRestore] = useState(true);
   const [personaSettings, setPersonaSettings] = useState(
@@ -404,6 +406,21 @@ export const SetupScreen = ({
                 </p>
               </div>
             ) : null}
+            {backend === "swap" ? (
+              <div className="flex flex-col gap-1">
+                <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
+                  <input
+                    type="checkbox"
+                    checked={swapHandMask}
+                    onChange={(event) => setSwapHandMask(event.target.checked)}
+                  />
+                  Hand mask
+                </label>
+                <p className="text-xs text-[var(--muted)]">
+                  Keeps hands in front of the face crisp, but swaps run slower
+                </p>
+              </div>
+            ) : null}
             {backend === "director" ? (
               <p className="text-xs text-[var(--muted)]">
                 fal&apos;s content policy rejects explicit requests; they show
@@ -517,6 +534,7 @@ export const SetupScreen = ({
             speechMode: voiceExperimental ? "native" : "text",
             swapProfile,
             swapFaceLock,
+            swapHandMask,
             intentParser,
             faceRestore,
             ...submittedPersona(personaSettings, backend),

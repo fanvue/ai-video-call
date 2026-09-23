@@ -244,7 +244,10 @@ describe("generateClip on the swap backend with the deferred clip swap", () => {
 
   it("never calls onRendered off the swap backend, where there is no second phase to start", async () => {
     const onRendered = vi.fn();
-    await generateClip(request({ kind: "checkIn", channel: "chat" }), onRendered);
+    await generateClip(
+      request({ kind: "checkIn", channel: "chat" }),
+      onRendered,
+    );
     expect(onRendered).not.toHaveBeenCalled();
   });
 });
@@ -286,7 +289,10 @@ describe("generateClip seeds a swap-mode chain clip from /swapTail", () => {
     const order: string[] = [];
     swapTail.mockImplementation(async () => {
       order.push("swapTail");
-      return { lastFrameUrl: "https://example.com/tail-swapped.png", costUsd: 0.01 };
+      return {
+        lastFrameUrl: "https://example.com/tail-swapped.png",
+        costUsd: 0.01,
+      };
     });
     await generateClip(personaRequest(reply), (videoUrl) =>
       order.push(`rendered ${videoUrl}`),
@@ -305,6 +311,37 @@ describe("generateClip seeds a swap-mode chain clip from /swapTail", () => {
     await generateClip({ ...personaRequest(reply), swapFaceLock: true });
     expect(swapTail).toHaveBeenCalledWith(
       expect.objectContaining({ recipe: "longlive" }),
+    );
+  });
+
+  it("passes the Hand mask to the seed swap too", async () => {
+    swapTail.mockResolvedValue({
+      lastFrameUrl: "https://example.com/tail-swapped.png",
+      costUsd: 0.01,
+    });
+    await generateClip({ ...personaRequest(reply), swapHandMask: true });
+    expect(swapTail).toHaveBeenCalledWith(
+      expect.objectContaining({ handMask: true }),
+    );
+  });
+
+  it("passes the session's first-clip tone frame to the seed swap", async () => {
+    swapTail.mockResolvedValue({
+      lastFrameUrl: "https://example.com/tail-swapped.png",
+      costUsd: 0.01,
+    });
+    const toned = personaRequest(reply);
+    await generateClip({
+      ...toned,
+      session: {
+        ...toned.session,
+        toneFrameUrl: "https://example.com/first.png",
+      },
+    });
+    expect(swapTail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toneReferenceUrl: "https://example.com/first.png",
+      }),
     );
   });
 

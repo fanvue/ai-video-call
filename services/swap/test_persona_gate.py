@@ -39,7 +39,7 @@ class FakeEngine:
         # Recorded so a test can check swap_tail_from_url reaches the engine with the recipe it was given.
         self.tail_calls = []
 
-    def swap_tail(self, video_path, source_face, recipe=swap_core.FACE_RECIPE):
+    def swap_tail(self, video_path, source_face, recipe=swap_core.FACE_RECIPE, tone_reference_stats=None, occlusion_mask=None):
         self.tail_calls.append((video_path, source_face, recipe))
         return (
             {
@@ -47,6 +47,7 @@ class FakeEngine:
                 "had_face": True,
                 "similarity_before": None,
                 "similarity_after": None,
+                "tone_locked": False,
                 "enhance_ms": 0,
                 "sharpness_before": None,
                 "sharpness_after": None,
