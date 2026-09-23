@@ -475,8 +475,8 @@ export const LIVE_TUNABLES = {
   // Second trigger alongside the interval, in chain clips. 1 = every chain clip carries the identity reference: production logs showed dual-reference renders no slower than single (~5s either way), and the face was visibly drifting by clip ~10 when it was periodic. See consumeIdentityReferenceDue.
   IDENTITY_REFERENCE_MAX_CHAIN_CLIPS: 1,
   TRANSCRIPT_WINDOW: 40,
-  // Spend cap: every session auto-ends here regardless of activity.
-  MAX_SESSION_MS: 180_000,
+  // Spend cap: every session auto-ends here regardless of activity. 5 min now that swap mode holds the face that long.
+  MAX_SESSION_MS: 300_000,
   // Cumulative render spend cap: the pipeline stops dispatching new jobs once reached.
   SESSION_COST_CAP_USD: 8,
   // Director (minimax/h3-max/director) bills per second of live stream, promo rate; list price is
