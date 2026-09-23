@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   composeDirectorPrompt,
+  composeLongLivePrompt,
+  fetchLongLiveTicket,
   fetchLucyToken,
   renderClip,
   reportTelemetry,
@@ -77,11 +79,13 @@ export const LiveStudio = () => {
     upscaleSeed,
     composeDirectorPrompt,
     fetchLucyToken,
+    fetchLongLiveTicket,
+    composeLongLivePrompt,
     warmSwap,
     swapRenderedClip,
     reportTelemetry,
   });
-  const { bindVideoA, bindVideoB } = videoRefs;
+  const { bindVideoA, bindVideoB, bindLongLiveCanvas } = videoRefs;
 
   const processedTipEventIdsRef = useRef<Set<string>>(new Set());
   const privateMeterIntervalRef = useRef<ReturnType<typeof setInterval> | null>(
@@ -342,6 +346,14 @@ export const LiveStudio = () => {
           disablePictureInPicture
           className="absolute inset-0 h-full w-full object-cover transition-[opacity,filter] duration-150"
         />
+        {session.backend === "longlive" ? (
+          // Paints the LongLive stream frame by frame over the unused video pair.
+          <canvas
+            ref={bindLongLiveCanvas}
+            aria-hidden="true"
+            className="absolute inset-0 h-full w-full bg-black object-cover"
+          />
+        ) : null}
 
         <div className="absolute inset-x-0 top-0 bg-gradient-to-b from-black/70 to-transparent">
           <TopBar
@@ -411,6 +423,8 @@ export const LiveStudio = () => {
               directorStreamState={session.directorStreamState}
               lucyMetrics={session.lucyMetrics}
               lucyStreamState={session.lucyStreamState}
+              longliveMetrics={session.longliveMetrics}
+              longliveStreamState={session.longliveStreamState}
             />
           </div>
         ) : null}

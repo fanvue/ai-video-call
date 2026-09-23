@@ -12,6 +12,11 @@ import {
   type TranscriptEntry,
 } from "@/lib/live/contract";
 import type { ReferenceUploadResult } from "@/lib/live/client/useLiveSession";
+import type {
+  LongLiveComposeInput,
+  LongLiveComposed,
+  LongLiveTicket,
+} from "@/lib/live/client/longliveStream";
 import { z } from "zod";
 
 const readFileAsBase64 = (file: Blob): Promise<string> =>
@@ -135,6 +140,15 @@ export const fetchLucyToken = async (): Promise<string> => {
   );
   return token;
 };
+
+// Mints a two-minute ticket for the LongLive socket; the signing secret stays on the server.
+export const fetchLongLiveTicket = async (): Promise<LongLiveTicket> =>
+  postJson<LongLiveTicket>("/api/live/longliveTicket", {});
+
+export const composeLongLivePrompt = async (
+  input: LongLiveComposeInput,
+): Promise<LongLiveComposed> =>
+  postJson<LongLiveComposed>("/api/live/longlivePrompt", input);
 
 // Fire-and-forget at session start in swap mode so the GPU container is loading while the first clip renders.
 export const warmSwap = async (): Promise<void> => {

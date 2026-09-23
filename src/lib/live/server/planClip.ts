@@ -101,7 +101,7 @@ const FRAMING_DESCRIPTION: Record<Body["framing"], string> = {
   torso: "close medium shot, framed from head to waist",
 };
 
-const cameraLockLine = (framing: Body["framing"]): string =>
+export const cameraLockLine = (framing: Body["framing"]): string =>
   `FIXED WEBCAM: static webcam, ${FRAMING_DESCRIPTION[framing]}, no zoom, no pan, no push-in, no cut, no camera movement of any kind.`;
 
 const ANATOMY_LOCK =
@@ -137,7 +137,7 @@ const speechLockLine = (speechMode: SpeechMode): string =>
     ? "SPEECH: she does not speak. Lips closed or relaxed, no mouthing words. Ambient room audio only, no dialogue."
     : SPEECH_RULES_NATIVE;
 
-const lookLockLine = (lookLock: string): string =>
+export const lookLockLine = (lookLock: string): string =>
   `LOOK LOCK: ${lookLock} Do not beautify, slim, age, or swap her. One person only.`;
 
 // Reference-to-video has no starting-frame param, only an identity reference, so it tends to reset pose/wardrobe to the reference image without this.
@@ -227,7 +227,7 @@ const bareRegions = (wardrobe: Wardrobe): string[] => {
 };
 
 // Positive-only: describes what she wears and what is bare, never names an absent garment.
-const describeState = (wardrobe: Wardrobe, body: Body): string => {
+export const describeState = (wardrobe: Wardrobe, body: Body): string => {
   const worn = GARMENT_ORDER.filter((id) => wardrobe[id].on);
   const bare = bareRegions(wardrobe);
   const clothing =
@@ -257,7 +257,7 @@ const GARMENT_HOLD_PHRASE: Record<GarmentId, string> = {
 };
 
 // Positive-only, like describeState: every worn garment is named as staying put, so a hold clip never mentions undressing.
-const wardrobeLockLine = (wardrobe: Wardrobe): string | null => {
+export const wardrobeLockLine = (wardrobe: Wardrobe): string | null => {
   const worn = GARMENT_ORDER.filter((id) => wardrobe[id].on);
   if (worn.length === 0) return null;
   const garments = worn

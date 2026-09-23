@@ -14,6 +14,10 @@ import type {
   LucyMetrics,
   LucyRealtimeState,
 } from "@/lib/live/client/lucyStream";
+import type {
+  LongLiveMetrics,
+  LongLiveStreamState,
+} from "@/lib/live/client/longliveStream";
 
 type StudioOverlayProps = {
   liveState: LiveState | null;
@@ -29,6 +33,9 @@ type StudioOverlayProps = {
   // Lucy-only; absent (null) outside lucy mode.
   lucyMetrics?: LucyMetrics | null;
   lucyStreamState?: LucyRealtimeState | null;
+  // LongLive-only; absent (null) outside longlive mode.
+  longliveMetrics?: LongLiveMetrics | null;
+  longliveStreamState?: LongLiveStreamState | null;
 };
 
 const similarity = (value: number | null): string =>
@@ -53,6 +60,8 @@ export const StudioOverlay = ({
   directorStreamState,
   lucyMetrics,
   lucyStreamState,
+  longliveMetrics,
+  longliveStreamState,
 }: StudioOverlayProps) => {
   const anchorAgeSec =
     anchorChangedAtMs !== null
@@ -80,6 +89,32 @@ export const StudioOverlay = ({
         <p className="m-0">
           Session p50/p95: {phases} · Spent $
           {directorMetrics.costUsd.toFixed(2)}
+        </p>
+      </div>
+    );
+  }
+
+  if (longliveMetrics) {
+    return (
+      <div className="flex flex-col gap-1 rounded-xl bg-black/60 px-3 py-2 text-[11px] text-white/80">
+        <p className="m-0">
+          LongLive stream: {longliveStreamState ?? "-"} · Gen{" "}
+          {longliveMetrics.genFps?.toFixed(1) ?? "-"} fps · Block{" "}
+          {longliveMetrics.blockMs ?? "-"}ms · Decode{" "}
+          {longliveMetrics.decodeMs ?? "-"}ms · Server queue{" "}
+          {longliveMetrics.serverQueueFrames ?? "-"}f
+        </p>
+        <p className="m-0">
+          Buffered {longliveMetrics.bufferedFrames}f · Rate{" "}
+          {longliveMetrics.playbackRate.toFixed(2)}x · Underruns{" "}
+          {longliveMetrics.underruns} · Dropped {longliveMetrics.droppedFrames}{" "}
+          · Reconnects {longliveMetrics.reconnects}
+        </p>
+        <p className="m-0">
+          Load {longliveMetrics.loadMs ?? "-"}ms · First frame{" "}
+          {longliveMetrics.firstFrameMs ?? "-"}ms · Painted{" "}
+          {longliveMetrics.framesPainted} · Spent $
+          {longliveMetrics.costUsd.toFixed(2)}
         </p>
       </div>
     );

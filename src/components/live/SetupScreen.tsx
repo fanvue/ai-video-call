@@ -218,6 +218,10 @@ export const SetupScreen = ({
                     label:
                       "Swap (recommended: identity lock per clip over Turbo)",
                   },
+                  {
+                    value: "longlive",
+                    label: "LongLive (realtime, open model)",
+                  },
                 ] as const
               ).map((option) => (
                 <label
@@ -290,6 +294,12 @@ export const SetupScreen = ({
               <p className="text-xs text-[var(--muted)]">
                 fal&apos;s content policy rejects explicit requests; they show
                 as failed asks.
+              </p>
+            ) : null}
+            {backend === "longlive" ? (
+              <p className="text-xs text-[var(--muted)]">
+                One uncut stream from our own H100, about $4/hr; first frame
+                about 10 s after a cold start.
               </p>
             ) : null}
           </div>

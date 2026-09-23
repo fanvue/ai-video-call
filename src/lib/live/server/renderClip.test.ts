@@ -149,4 +149,8 @@ describe("renderBackendFor", () => {
   it("throws for director — it never reaches the clip pipeline", () => {
     expect(() => renderBackendFor("director")).toThrow(/live-stream backend/);
   });
+
+  it("throws for longlive, which streams from its own GPU and renders no clips", () => {
+    expect(() => renderBackendFor("longlive")).toThrow(/live-stream backend/);
+  });
 });

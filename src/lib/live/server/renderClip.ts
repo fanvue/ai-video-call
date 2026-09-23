@@ -131,9 +131,9 @@ export const renderBackendFor = (
   }
   // Director is a live WebRTC stream, handled entirely client-side by DirectorSession; it must
   // never reach the clip pipeline — fail loud rather than silently rendering a turbo/reference clip.
-  if (backend === "director") {
+  if (backend === "director" || backend === "longlive") {
     throw new Error(
-      "renderBackendFor: 'director' is a live-stream backend, not a clip backend",
+      `renderBackendFor: '${backend}' is a live-stream backend, not a clip backend`,
     );
   }
   // Lucy (client/lucyStream.ts, live) and Swap (server/swapClip.ts, per clip) both post-process

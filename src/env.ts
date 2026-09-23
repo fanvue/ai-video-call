@@ -25,6 +25,9 @@ export const env = createEnv({
     OPENROUTER_API_KEY: z.string().min(1).optional(),
     // One-off token for running /api/live/orBench without a browser session; removed after each bench.
     BENCH_TOKEN: z.string().min(32).optional(),
+    // LongLive realtime service (services/longlive); either unset makes the ticket route answer 503.
+    LONGLIVE_TOKEN: z.string().min(32).optional(),
+    LONGLIVE_URL: z.url().optional(),
   },
   runtimeEnv: {
     OAUTH_CLIENT_ID: process.env.OAUTH_CLIENT_ID,
@@ -45,6 +48,8 @@ export const env = createEnv({
     SWAP_TOKEN: process.env.SWAP_TOKEN,
     OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
     BENCH_TOKEN: process.env.BENCH_TOKEN,
+    LONGLIVE_TOKEN: process.env.LONGLIVE_TOKEN,
+    LONGLIVE_URL: process.env.LONGLIVE_URL,
   },
   emptyStringAsUndefined: true,
 });

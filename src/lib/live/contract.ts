@@ -227,12 +227,14 @@ export type ClipJobKind = ClipJob["kind"];
 
 // "director" and "lucy" are live WebRTC streams, not clip-render backends; see directorStream.ts / lucyStream.ts.
 // "swap" is our self-hosted per-clip identity swap over the turbo pipeline's output; see server/swapClip.ts.
+// "longlive" is one uncut stream generated live on our own Modal GPU; see longliveStream.ts.
 export const renderBackendSchema = z.enum([
   "turbo",
   "reference",
   "director",
   "lucy",
   "swap",
+  "longlive",
 ]);
 export type RenderBackend = z.infer<typeof renderBackendSchema>;
 
@@ -461,4 +463,6 @@ export const LIVE_TUNABLES = {
   LUCY_COST_PER_SEC_USD: 0.02,
   // Swap runs on our own Modal L40S at $1.95/hr; charged per clip on the service's reported swap time.
   SWAP_COST_PER_SEC_USD: 1.95 / 3600,
+  // LongLive holds one Modal H100 (about $4/hr) for as long as its socket is open.
+  LONGLIVE_COST_PER_SEC_USD: 4 / 3600,
 } as const;
