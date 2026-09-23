@@ -2,6 +2,9 @@
 # Deploy: cd services/longlive && ../../.venv-fal/bin/modal deploy modal_app.py
 
 import asyncio
+import base64
+import binascii
+import hashlib
 import io
 import json
 import os
@@ -9,8 +12,12 @@ import queue
 import threading
 import time
 
+from datetime import datetime, timezone
+
 import modal
 
+from frame_codec import RoiCodec
+from persona import add_registered, list_personas, registered_entry, resolve_persona
 from protocol import (
     CLOSE_BAD_REQUEST,
     MAX_IMAGE_BYTES,
@@ -24,12 +31,18 @@ from protocol import (
     is_data_uri,
     pack_frame,
     parse_client_message,
+    verify_register_token,
     verify_ticket,
 )
-from restore_stage import MAX_INFLIGHT, RestoreStage, RestoreTicket
+from restore_stage import MAX_INFLIGHT, RESTORE_TIMEOUT_S, RestoreStage, RestoreTicket
 
-app = modal.App("ai-video-longlive")
+# Dev deploys set their own name so they never replace the live app.
+app = modal.App(os.environ.get("LONGLIVE_APP_NAME", "ai-video-longlive"))
 weights = modal.Volume.from_name("longlive-weights")
+# The only place swap source faces come from: manifest.json plus images, added by hand or through the gated register route.
+personas_volume = modal.Volume.from_name("persona-faces", create_if_missing=True)
+PERSONA_ROOT = "/personas"
+REGISTER_TYPES = {"image/jpeg": (".jpg", b"\xff\xd8\xff"), "image/png": (".png", b"\x89PNG\r\n\x1a\n")}
 
 LONGLIVE_COMMIT = "6b36d20ec6f7958d29d11a704dfa64611a9f2572"
 SESSION_CAP_S = 20 * 60
@@ -72,7 +85,7 @@ image = (
             "LONGLIVE_LORA_ALPHA": os.environ.get("LONGLIVE_LORA_ALPHA", ""),
         }
     )
-    .add_local_python_source("engine", "protocol", "restore_stage")
+    .add_local_python_source("engine", "frame_codec", "persona", "protocol", "restore_stage")
 )
 
 # Same first layers as the LongLive image so they come from cache; torch is only there for the CUDA/cuDNN libs onnxruntime-gpu loads.
@@ -88,7 +101,11 @@ restore_image = (
         "wget -q -O /models/gfpgan_1.4.onnx https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/gfpgan_1.4.onnx",
         "python -c \"from insightface.utils.storage import ensure_available; ensure_available('models', 'buffalo_l', root='/models/insightface')\"",
     )
-    .add_local_python_source("face_restore", "protocol", "restore_stage")
+    # Same public facefusion-assets release; the persona swap measured in the face A/B.
+    .run_commands(
+        "wget -q -O /models/inswapper_128_fp16.onnx https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/inswapper_128_fp16.onnx",
+    )
+    .add_local_python_source("face_restore", "frame_codec", "persona", "protocol", "restore_stage")
 )
 
 
@@ -120,9 +137,11 @@ class StreamRun:
         start: StartMessage,
         loop: asyncio.AbstractEventLoop,
         restore: RestoreStage | None = None,
+        face_pass: "FacePass | None" = None,
     ):
         self.engine = engine
         self.restore = restore
+        self.face_pass = face_pass
         self.websocket = websocket
         self.start = start
         self.loop = loop
@@ -269,9 +288,14 @@ class StreamRun:
             restore_stats = {
                 "restored": outcome.restored,
                 "restoreMs": None if outcome.round_trip_ms is None else round(outcome.round_trip_ms),
+                # GPU-side time for the block, so the round trip splits into compute and transport.
+                "restoreComputeMs": None if outcome.compute_ms is None else round(outcome.compute_ms),
                 "restoreLagMs": round(self.restore_lag_s * 1000),
                 "restoreFailOpen": self.restore.fail_open,
+                "restoreCancelled": self.restore.cancelled,
                 "restoreOff": self.restore.tripped,
+                "personaSwapped": outcome.swapped,
+                "personaLocked": self.face_pass is not None and self.face_pass.persona_id is not None,
             }
         with self.queued_lock:
             self.queued_frames += len(jpegs)
@@ -339,6 +363,28 @@ class StreamRun:
             self._finish(error.code, error.message)
 
 
+class FacePass:
+    """One session's second-GPU options; the persona drops to None, and the swap with it, if the GPU side cannot load it."""
+
+    def __init__(self, restorer, persona_id: str | None, restore: bool):
+        self.restorer = restorer
+        self.persona_id = persona_id
+        self.restore = restore
+
+    def warm(self):
+        result = self.restorer.warm(self.persona_id)
+        if self.persona_id is not None and not (isinstance(result, dict) and result.get("persona") is True):
+            reason = result.get("reason") if isinstance(result, dict) else None
+            print(f"[longlive] persona {self.persona_id} unavailable on the face GPU ({reason}), no swap this session", flush=True)
+            self.persona_id = None
+            if not self.restore:
+                raise RuntimeError("persona unavailable and face restore off")
+        return result
+
+    def spawn(self, frames: list[bytes]):
+        return self.restorer.spawn(frames, self.persona_id, self.restore)
+
+
 def _warm_in_background(restorer) -> None:
     def run() -> None:
         try:
@@ -349,11 +395,72 @@ def _warm_in_background(restorer) -> None:
     threading.Thread(target=run, daemon=True).start()
 
 
-def build_api(engine, session_lock: asyncio.Lock, restorer=None):
-    from fastapi import FastAPI, WebSocket
+def build_api(engine, session_lock: asyncio.Lock, restorer=None, personas=None, face_codec=RoiCodec):
+    from fastapi import FastAPI, Request, WebSocket
+    from fastapi.responses import JSONResponse
     from starlette.websockets import WebSocketDisconnect
 
     api = FastAPI()
+
+    def fresh_personas():
+        # Picks up entries an engineer added with `modal volume put` since this container started.
+        try:
+            personas.reload()
+        except Exception as error:  # noqa: BLE001 - a stale view still fails closed on anything it cannot resolve.
+            print(f"[longlive] persona volume reload failed: {error!r}", flush=True)
+
+    @api.get("/personas")
+    async def persona_list(ticket: str | None = None):
+        try:
+            verify_ticket(ticket, os.environ.get("LONGLIVE_TOKEN"), time.time())
+        except ProtocolError as error:
+            return JSONResponse({"error": error.message}, status_code=401)
+        if personas is None:
+            return {"personas": []}
+        await asyncio.to_thread(fresh_personas)
+        # Ids and notes only: never the images, file names or rights metadata.
+        return {"personas": await asyncio.to_thread(list_personas, personas.root)}
+
+    @api.post("/personas/register")
+    async def persona_register(request: Request):
+        if personas is None:
+            return JSONResponse({"error": "persona store not configured"}, status_code=503)
+        try:
+            body = await request.json()
+        except ValueError:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be an object"}, status_code=400)
+        try:
+            claims = verify_register_token(body.get("token"), os.environ.get("LONGLIVE_TOKEN"), time.time())
+        except ProtocolError as error:
+            return JSONResponse({"error": error.message}, status_code=401)
+        kind = REGISTER_TYPES.get(body.get("contentType"))
+        encoded = body.get("imageBase64")
+        if kind is None or not isinstance(encoded, str) or len(encoded) > MAX_IMAGE_BYTES * 4 // 3 + 4:
+            return JSONResponse({"error": "imageBase64 and a jpeg or png contentType required"}, status_code=400)
+        try:
+            image = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError):
+            return JSONResponse({"error": "imageBase64 is not base64"}, status_code=400)
+        extension, magic = kind
+        if not image.startswith(magic) or len(image) > MAX_IMAGE_BYTES:
+            return JSONResponse({"error": "image does not match its contentType or is too large"}, status_code=400)
+        sha256 = hashlib.sha256(image).hexdigest()
+        # The token names one image; it cannot be replayed to register a different one.
+        if sha256 != claims["sha256"]:
+            return JSONResponse({"error": "token does not match the image"}, status_code=401)
+        entry = registered_entry(sha256, extension, claims["uid"], datetime.now(timezone.utc).isoformat(timespec="seconds"))
+
+        def write() -> bool:
+            fresh_personas()
+            created = add_registered(personas.root, entry, image)
+            if created:
+                personas.commit()
+            return created
+
+        created = await asyncio.to_thread(write)
+        return {"id": entry["id"], "created": created}
 
     @api.get("/health")
     async def health() -> dict:
@@ -398,9 +505,24 @@ def build_api(engine, session_lock: asyncio.Lock, restorer=None):
                 await websocket.close(code=CLOSE_BAD_REQUEST)
                 return
 
-            # Warm-up starts here so the restore GPU boots in parallel with the model's first block; frames go out unrestored until it answers.
-            restore = RestoreStage(restorer.restore_block, restorer.warm) if restorer is not None and first.face_restore else None
-            run = StreamRun(engine, websocket, first, asyncio.get_running_loop(), restore)
+            persona_id = None
+            if first.persona_id is not None:
+                # Fail closed: an id the manifest does not vouch for means no swap, never a swap from the stream's reference.
+                found, reason = (None, "no persona store")
+                if personas is not None:
+                    await asyncio.to_thread(fresh_personas)
+                    found, reason = await asyncio.to_thread(resolve_persona, personas.root, first.persona_id)
+                if found is None:
+                    print(f"[longlive] persona swap off for this session: {reason}", flush=True)
+                else:
+                    persona_id = found.id
+            face_pass = None
+            restore = None
+            if restorer is not None and (first.face_restore or persona_id is not None):
+                face_pass = FacePass(restorer, persona_id, first.face_restore)
+                # Warm-up starts here so the restore GPU boots in parallel with the model's first block; frames go out unrestored until it answers.
+                restore = RestoreStage(face_pass.spawn, face_pass.warm, codec=face_codec())
+            run = StreamRun(engine, websocket, first, asyncio.get_running_loop(), restore, face_pass)
             receiver = asyncio.create_task(run.receive_loop())
             generator = asyncio.create_task(asyncio.to_thread(run.generate, reference))
             try:
@@ -431,6 +553,7 @@ def build_api(engine, session_lock: asyncio.Lock, restorer=None):
     min_containers=0,
     scaledown_window=120,
     timeout=120,
+    volumes={PERSONA_ROOT: personas_volume},
 )
 # Two blocks in flight plus warm-up pings; ORT sessions are thread-safe, so concurrent inputs share one loaded model.
 @modal.concurrent(max_inputs=MAX_INFLIGHT + 2)
@@ -446,23 +569,55 @@ class FaceRestore:
 
         started = time.perf_counter()
         self.restorer = FaceRestorer()
-        # One GFPGAN and one detector pass, so first-call cuDNN costs never land on a live block.
-        import numpy as np
-
-        self.restorer.gfp.run(None, {self.restorer.gfp_input: np.zeros((1, 3, 512, 512), np.float32)})
-        self.restorer.det.get(np.full((832, 480, 3), 128, np.uint8))
+        # Every pool thread runs detector, swap and GFPGAN once, so first-call cuDNN costs never land on a live block.
+        self.restorer.warm_workers()
+        self.persona_lock = threading.Lock()
         print(f"[restore] loaded in {time.perf_counter() - started:.1f}s", flush=True)
 
-    @modal.method()
-    def warm(self) -> bool:
-        return True
+    def _load_persona(self, persona_id: str) -> tuple[bool, str]:
+        from face_restore import PersonaUnavailable
+
+        # Only the manifest can name a swap source; nothing the stream sent is ever embedded.
+        with self.persona_lock:
+            try:
+                personas_volume.reload()
+            except Exception as error:  # noqa: BLE001 - a stale view still fails closed on anything it cannot resolve.
+                print(f"[restore] persona volume reload failed: {error!r}", flush=True)
+            found, reason = resolve_persona(PERSONA_ROOT, persona_id)
+            if found is None:
+                return False, reason
+            try:
+                self.restorer.load_persona(found)
+            except PersonaUnavailable as error:
+                return False, str(error)
+            return True, ""
 
     @modal.method()
-    def restore(self, jpegs: list[bytes]) -> list[bytes | None]:
+    def warm(self, persona_id: str | None = None) -> dict:
+        if persona_id is None:
+            return {"ok": True, "persona": None}
+        loaded, reason = self._load_persona(persona_id)
+        if not loaded:
+            print(f"[restore] persona swap off: {reason}", flush=True)
+        return {"ok": True, "persona": loaded, "reason": reason or None}
+
+    @modal.method()
+    def process(self, request: dict) -> dict:
         started = time.perf_counter()
-        out = self.restorer.restore_block(jpegs)
-        print(f"[restore] {len(jpegs)} frames in {(time.perf_counter() - started) * 1000:.0f} ms, {sum(o is None for o in out)} without a face", flush=True)
-        return out
+        # A block that already sat past its budget in the queue is dropped: the caller has sent it unrestored.
+        if time.time() - float(request.get("sentAt", 0)) > float(request.get("budgetMs", 0)) / 1000:
+            print("[restore] dropped an expired block", flush=True)
+            return {"expired": True}
+        persona_id = request.get("personaId")
+        source = self.restorer.persona_face(persona_id)
+        if persona_id and source is None and self._load_persona(persona_id)[0]:
+            source = self.restorer.persona_face(persona_id)
+        frames = request["frames"]
+        out = self.restorer.process_block(frames, source, bool(request.get("restore", True)))
+        compute_ms = (time.perf_counter() - started) * 1000
+        swapped = sum(o is not None for o in out) if source is not None else 0
+        print(f"[restore] {len(frames)} frames in {compute_ms:.0f} ms, {sum(o is None for o in out)} unchanged, {swapped} swapped", flush=True)
+        return {"frames": out, "computeMs": compute_ms, "swapped": swapped}
 
 
 class RemoteRestorer:
@@ -471,11 +626,25 @@ class RemoteRestorer:
     def __init__(self):
         self.service = FaceRestore()
 
-    def warm(self) -> bool:
-        return self.service.warm.remote()
+    def warm(self, persona_id: str | None = None) -> dict:
+        return self.service.warm.remote(persona_id)
 
-    def restore_block(self, jpegs: list[bytes]) -> list[bytes | None]:
-        return self.service.restore.remote(jpegs)
+    def spawn(self, frames: list[bytes], persona_id: str | None, restore: bool):
+        # spawn, not remote: the returned FunctionCall can be cancelled once the block is late.
+        request = {"frames": frames, "personaId": persona_id, "restore": restore, "sentAt": time.time(), "budgetMs": RESTORE_TIMEOUT_S * 1000}
+        return self.service.process.spawn(request)
+
+
+class PersonaStore:
+    """The persona-faces volume as the stream service mounts it."""
+
+    root = PERSONA_ROOT
+
+    def reload(self) -> None:
+        personas_volume.reload()
+
+    def commit(self) -> None:
+        personas_volume.commit()
 
 
 @app.cls(
@@ -483,7 +652,7 @@ class RemoteRestorer:
     gpu="H100",
     cpu=8,
     memory=65536,
-    volumes={"/weights": weights},
+    volumes={"/weights": weights, PERSONA_ROOT: personas_volume},
     secrets=[modal.Secret.from_name("longlive-token")],
     # One H100 at most: the account caps at 2 concurrent GPUs and each session needs a whole card.
     max_containers=1,
@@ -507,4 +676,4 @@ class LongLiveService:
 
     @modal.asgi_app()
     def serve(self):
-        return build_api(self.engine, self.session_lock, RemoteRestorer())
+        return build_api(self.engine, self.session_lock, RemoteRestorer(), PersonaStore())

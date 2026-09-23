@@ -2,9 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
+  DEFAULT_PERSONA_ID,
   INTENT_PARSER_LABELS,
   SWAP_PROFILES,
   type IntentParser,
+  type PersonaOption,
   type RenderBackend,
   type SceneId,
   type SpeechMode,
@@ -28,6 +30,7 @@ export type SetupSubmit = {
   swapProfile: SwapProfile;
   intentParser: IntentParser;
   faceRestore: boolean;
+  personaId?: string;
 };
 
 type SetupScreenProps = {
@@ -40,6 +43,11 @@ type SetupScreenProps = {
     faceCrop: boolean,
   ) => void;
   onWarmLongLive?: () => void;
+  loadPersonas?: () => Promise<{
+    personas: PersonaOption[];
+    canRegister: boolean;
+  }>;
+  onRegisterPersona?: (file: File) => Promise<{ id: string }>;
   preparation?: { status: PrepareStatus; seedUrl: string | null };
   onSubmit: (values: SetupSubmit) => void;
 };
@@ -61,6 +69,8 @@ export const SetupScreen = ({
   error,
   onPrepare,
   onWarmLongLive,
+  loadPersonas,
+  onRegisterPersona,
   preparation,
   onSubmit,
 }: SetupScreenProps) => {
@@ -75,6 +85,12 @@ export const SetupScreen = ({
   const [swapProfile, setSwapProfile] = useState<SwapProfile>("default");
   const [intentParser, setIntentParser] = useState<IntentParser>("regex");
   const [faceRestore, setFaceRestore] = useState(true);
+  // "" is the Off option; the seed persona stays selectable while a cold listing is still loading.
+  const [personaId, setPersonaId] = useState(DEFAULT_PERSONA_ID);
+  const [personas, setPersonas] = useState<PersonaOption[]>([]);
+  const [canRegister, setCanRegister] = useState(false);
+  const [attested, setAttested] = useState(false);
+  const [registerStatus, setRegisterStatus] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Staging is the slow part of the join (20 to 35 s), so it runs here and the call starts only once it has settled.
@@ -103,6 +119,49 @@ export const SetupScreen = ({
       onWarmLongLive?.();
     }
   }, [backend, onWarmLongLive]);
+
+  useEffect(() => {
+    if (backend !== "longlive" || !loadPersonas) {
+      return;
+    }
+    let cancelled = false;
+    loadPersonas()
+      .then((listing) => {
+        if (cancelled) return;
+        setPersonas(listing.personas);
+        setCanRegister(listing.canRegister);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [backend, loadPersonas]);
+
+  const personaOptions = personas.some(({ id }) => id === DEFAULT_PERSONA_ID)
+    ? personas
+    : [{ id: DEFAULT_PERSONA_ID, note: "" }, ...personas];
+
+  const registerUpload = () => {
+    if (!file || !attested || !onRegisterPersona) {
+      return;
+    }
+    setRegisterStatus("Registering…");
+    onRegisterPersona(file)
+      .then(({ id }) => {
+        setPersonas((current) =>
+          current.some((persona) => persona.id === id)
+            ? current
+            : [...current, { id, note: "Registered upload" }],
+        );
+        setPersonaId(id);
+        setRegisterStatus(`Registered as ${id}`);
+      })
+      .catch((e: unknown) =>
+        setRegisterStatus(
+          e instanceof Error ? e.message : "Registration failed",
+        ),
+      );
+  };
 
   return (
     <div className="mx-auto flex min-h-dvh w-full max-w-sm flex-col justify-center gap-6 px-4 py-8">
@@ -322,10 +381,48 @@ export const SetupScreen = ({
               </label>
             ) : null}
             {backend === "longlive" ? (
+              <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
+                Persona face lock
+                <select
+                  value={personaId}
+                  onChange={(event) => setPersonaId(event.target.value)}
+                  className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] p-2 text-[var(--foreground)]"
+                >
+                  <option value="">Off</option>
+                  {personaOptions.map(({ id, note }) => (
+                    <option key={id} value={id}>
+                      {note ? `${id} (${note})` : id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            {backend === "longlive" && canRegister && onRegisterPersona ? (
+              <div className="flex flex-col gap-2 text-xs text-[var(--muted)]">
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={attested}
+                    onChange={(event) => setAttested(event.target.checked)}
+                  />
+                  This is a Fanvue-owned AI creator likeness, not a real person
+                </label>
+                <button
+                  type="button"
+                  disabled={!file || !attested}
+                  onClick={registerUpload}
+                  className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] p-2 text-[var(--foreground)] disabled:text-[var(--muted)]"
+                >
+                  Register this photo as a persona
+                </button>
+                {registerStatus ? <p>{registerStatus}</p> : null}
+              </div>
+            ) : null}
+            {backend === "longlive" ? (
               <p className="text-xs text-[var(--muted)]">
                 One uncut stream from our own H100, about $4/hr, plus about
-                $2/hr for face restore on a second GPU; first frame about 10 s
-                after a cold start.
+                $2/hr for face restore or the persona face lock on a second GPU;
+                first frame about 10 s after a cold start.
               </p>
             ) : null}
           </div>
@@ -348,6 +445,7 @@ export const SetupScreen = ({
             swapProfile,
             intentParser,
             faceRestore,
+            ...(backend === "longlive" && personaId ? { personaId } : {}),
           });
         }}
         className={

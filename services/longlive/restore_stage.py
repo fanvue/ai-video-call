@@ -1,19 +1,36 @@
-# Per-session client for the second-GPU face restore. Cosmetic only: every failure path returns the block's original frames. No GPU imports so tests run anywhere.
+# Per-session client for the second-GPU face pass (persona swap and restore). Cosmetic only: every failure path returns the block's original frames. No GPU imports so tests run anywhere.
 from __future__ import annotations
 
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
-from dataclasses import dataclass
-from typing import Callable
+from dataclasses import dataclass, field
+from typing import Any, Callable
 
-# A block is 32 frames, 1.33 s at 24 fps: a round trip past this would start eating the client's jitter buffer.
-RESTORE_TIMEOUT_S = 1.2
+# A block is 32 frames, 1.33 s at 24 fps; generation leads by the measured lag, so a 2 s budget still keeps the client's jitter buffer.
+RESTORE_TIMEOUT_S = 2.0
+# Budget kept back from the remote wait for compositing the reply onto the originals.
+COMPOSE_RESERVE_S = 0.2
 # Consecutive failures before the session stops calling; a cold or broken restore GPU should cost at most this many timeouts.
 MAX_CONSECUTIVE_FAILURES = 3
 # Two blocks in flight so the round trip overlaps the next block's decode instead of adding to it.
 MAX_INFLIGHT = 2
+
+
+class PassthroughCodec:
+    """Sends the frames as they are; a reply frame is replacement JPEG bytes, or None to keep the original."""
+
+    def pack(self, jpegs: list[bytes]):
+        return jpegs, None
+
+    def unpack(self, jpegs: list[bytes], state, replies: list) -> list[bytes]:
+        if not all(reply is None or isinstance(reply, bytes) for reply in replies):
+            raise ValueError("passthrough replies must be bytes or None")
+        return [original if reply is None else reply for original, reply in zip(jpegs, replies)]
+
+    def close(self) -> None:
+        pass
 
 
 @dataclass
@@ -21,6 +38,11 @@ class RestoreTicket:
     jpegs: list[bytes]
     future: Future | None
     submitted_at: float
+    deadline: float
+    call: Any = None
+    abandoned: bool = False
+    cancel_sent: bool = False
+    lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 @dataclass
@@ -28,19 +50,24 @@ class RestoreOutcome:
     jpegs: list[bytes]
     restored: bool
     round_trip_ms: float | None
+    compute_ms: float | None = None
+    swapped: int = 0
 
 
 class RestoreStage:
     def __init__(
         self,
-        restore_block: Callable[[list[bytes]], list[bytes | None]],
+        spawn: Callable[[list[bytes]], Any],
         warm: Callable[[], object] | None = None,
         *,
+        codec=None,
         timeout_s: float = RESTORE_TIMEOUT_S,
         max_failures: int = MAX_CONSECUTIVE_FAILURES,
         log: Callable[[str], None] = lambda line: print(line, flush=True),
     ):
-        self._restore_block = restore_block
+        # `spawn(frames)` starts the remote call and returns a handle with get(timeout=) and cancel(), like a Modal FunctionCall.
+        self._spawn = spawn
+        self._codec = codec or PassthroughCodec()
         self._timeout_s = timeout_s
         self._max_failures = max_failures
         self._log = log
@@ -51,6 +78,7 @@ class RestoreStage:
         self.fail_open = 0
         self.skipped_warming = 0
         self.restored_blocks = 0
+        self.cancelled = 0
         # Blocks before the restore GPU is up go out unrestored and do not count as failures.
         self._warm: Future | None = self._pool.submit(warm) if warm is not None else None
 
@@ -69,34 +97,77 @@ class RestoreStage:
         return True
 
     def submit(self, jpegs: list[bytes]) -> RestoreTicket:
-        future = None
+        now = time.monotonic()
+        ticket = RestoreTicket(list(jpegs), None, now, now + self._timeout_s)
         if not self.tripped:
             if self._ready():
-                future = self._pool.submit(self._restore_block, jpegs)
+                ticket.future = self._pool.submit(self._round_trip, ticket)
             elif not self.tripped:
                 self.skipped_warming += 1
-        return RestoreTicket(jpegs, future, time.monotonic())
+        return ticket
+
+    def _cancel(self, ticket: RestoreTicket) -> None:
+        # future.cancel() cannot stop a call already running remotely; the handle's cancel does, so late blocks never pile up on the GPU.
+        with ticket.lock:
+            call = ticket.call
+            if call is None or ticket.cancel_sent:
+                return
+            ticket.cancel_sent = True
+        try:
+            call.cancel()
+        except Exception as error:  # noqa: BLE001 - a failed cancel only means the GPU finishes a block nobody reads.
+            self._log(f"[longlive] face restore cancel failed: {error!r}")
+        with self._lock:
+            self.cancelled += 1
+
+    def _round_trip(self, ticket: RestoreTicket):
+        frames, state = self._codec.pack(ticket.jpegs)
+        call = self._spawn(frames)
+        with ticket.lock:
+            ticket.call = call
+            abandoned = ticket.abandoned
+        if abandoned:
+            self._cancel(ticket)
+            raise FutureTimeout("abandoned before the call started")
+        wait = ticket.deadline - COMPOSE_RESERVE_S - time.monotonic()
+        try:
+            if wait <= 0:
+                raise FutureTimeout("no budget left after spawn")
+            reply = call.get(timeout=wait)
+        except Exception:
+            self._cancel(ticket)
+            raise
+        if not isinstance(reply, dict) or reply.get("expired"):
+            raise ValueError("restore reply expired or malformed")
+        replies = reply.get("frames")
+        if not isinstance(replies, list) or len(replies) != len(ticket.jpegs):
+            raise ValueError(f"restore returned {len(replies) if isinstance(replies, list) else type(replies).__name__} frames for {len(ticket.jpegs)}")
+        compute_ms = reply.get("computeMs")
+        swapped = reply.get("swapped", 0)
+        return self._codec.unpack(ticket.jpegs, state, replies), compute_ms, swapped if isinstance(swapped, int) else 0
 
     def collect(self, ticket: RestoreTicket) -> RestoreOutcome:
         """Waits at most until the ticket's deadline; any error, timeout or malformed reply sends the originals."""
         if ticket.future is None:
             return RestoreOutcome(ticket.jpegs, False, None)
-        remaining = ticket.submitted_at + self._timeout_s - time.monotonic()
+        remaining = ticket.deadline - time.monotonic()
         try:
-            result = ticket.future.result(timeout=max(remaining, 0.0))
-            if not isinstance(result, list) or len(result) != len(ticket.jpegs):
-                raise ValueError(f"restore returned {len(result) if isinstance(result, list) else type(result).__name__} frames for {len(ticket.jpegs)}")
+            jpegs, compute_ms, swapped = ticket.future.result(timeout=max(remaining, 0.0))
+            if len(jpegs) != len(ticket.jpegs):
+                raise ValueError(f"composited {len(jpegs)} frames for {len(ticket.jpegs)}")
         except FutureTimeout:
-            ticket.future.cancel()
+            with ticket.lock:
+                ticket.abandoned = True
+            if not ticket.future.done():
+                self._cancel(ticket)
             return self._failed(ticket, f"timed out after {self._timeout_s:.1f}s")
         except Exception as error:  # noqa: BLE001 - restore is cosmetic; any failure sends the block unrestored.
             return self._failed(ticket, repr(error))
         with self._lock:
             self.consecutive_failures = 0
             self.restored_blocks += 1
-        # None means no face in that frame: the original bytes go out untouched.
-        jpegs = [original if restored is None else restored for original, restored in zip(ticket.jpegs, result)]
-        return RestoreOutcome(jpegs, True, (time.monotonic() - ticket.submitted_at) * 1000)
+        compute = float(compute_ms) if isinstance(compute_ms, (int, float)) and not isinstance(compute_ms, bool) else None
+        return RestoreOutcome(jpegs, True, (time.monotonic() - ticket.submitted_at) * 1000, compute, swapped)
 
     def _failed(self, ticket: RestoreTicket, reason: str) -> RestoreOutcome:
         with self._lock:
@@ -112,3 +183,4 @@ class RestoreStage:
 
     def close(self) -> None:
         self._pool.shutdown(wait=False, cancel_futures=True)
+        self._codec.close()

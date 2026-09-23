@@ -347,6 +347,36 @@ describe("LongLiveSession", () => {
     expect(socket.sent[0]).toMatchObject({ type: "start", faceRestore: false });
   });
 
+  it("sends only the persona id for the face lock and bills the face GPU with restore off", async () => {
+    const t = setup();
+    const opened = t.session.open({
+      creator,
+      state: liveState,
+      referenceImageUrl: "https://v3.fal.media/files/ref.jpg",
+      speechMode: "text",
+      startedAtMs: 0,
+      faceRestore: false,
+      personaId: "synth-persona-01",
+    });
+    await flush();
+    const socket = t.sockets[0] as FakeSocket;
+    socket.serverOpen();
+    socket.serverText({ type: "ready", width: 480, height: 832, fps: 16 });
+    await opened;
+    expect(socket.sent[0]).toEqual({
+      type: "start",
+      referenceImageUrl: "https://v3.fal.media/files/ref.jpg",
+      prompt: "opening scene",
+      width: 480,
+      height: 832,
+      fps: 24,
+      faceRestore: false,
+      personaId: "synth-persona-01",
+    });
+    t.advance(3_600_000);
+    expect(t.session.getMetricsWithCost().costUsd).toBeCloseTo(5.95, 5);
+  });
+
   it("decodes binary frames and paints them onto the canvas at the stream fps", async () => {
     const t = setup();
     const socket = await t.openSession();

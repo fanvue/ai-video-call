@@ -6,6 +6,8 @@ import {
   type ClipResult,
   type CreatorProfile,
   type InputChannel,
+  personaOptionSchema,
+  type PersonaOption,
   type SceneId,
   type SpeechMode,
   type SwapProfile,
@@ -167,6 +169,42 @@ export const observeLongLiveWardrobe = async ({
 // Fire-and-forget from the setup screen when LongLive is picked; the model load is the whole cold start.
 export const warmLongLive = async (): Promise<void> => {
   await postJson<{ warm: boolean }>("/api/live/longliveWarm", {});
+};
+
+const personaListingSchema = z.object({
+  personas: z.array(personaOptionSchema),
+  canRegister: z.boolean(),
+});
+
+export type PersonaListing = z.infer<typeof personaListingSchema>;
+
+export const fetchPersonas = async (): Promise<PersonaListing> => {
+  const res = await fetch("/api/live/personas");
+  const parsed = personaListingSchema.safeParse(
+    await res.json().catch(() => null),
+  );
+  if (!res.ok || !parsed.success) {
+    throw new Error(`Could not load personas (${res.status})`);
+  }
+  return parsed.data;
+};
+
+// The attestation is required server side; the checkbox only gates the button.
+export const registerPersona = async (
+  file: File,
+): Promise<{ id: PersonaOption["id"]; created: boolean }> => {
+  if (file.type && file.type !== "image/jpeg" && file.type !== "image/png") {
+    throw new Error("Please use a JPEG or PNG photo.");
+  }
+  const upload = await shrinkForUpload(file);
+  return postJson<{ id: string; created: boolean }>(
+    "/api/live/personaRegister",
+    {
+      imageBase64: await readFileAsBase64(upload),
+      contentType: upload.type === "image/png" ? "image/png" : "image/jpeg",
+      attested: true,
+    },
+  );
 };
 
 // Fire-and-forget at session start in swap mode so the GPU container is loading while the first clip renders.

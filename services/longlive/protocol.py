@@ -5,9 +5,12 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import struct
 from dataclasses import dataclass
 from urllib.parse import urlsplit
+
+from persona import is_valid_persona_id
 
 CLOSE_BAD_TICKET = 4401
 CLOSE_BAD_REQUEST = 4400
@@ -23,6 +26,8 @@ MAX_DIMENSION = 1280
 MAX_PIXELS = 704 * 1280
 MIN_FPS = 8
 MAX_FPS = 30
+# Purpose-bound so a browser's stream ticket can never register a persona, and a registration token can never open a stream.
+REGISTER_PURPOSE = "persona-register"
 
 _EXACT_HOSTS = {"fal.media", "v3.fal.media", "v3b.fal.media"}
 _GCS_HOST = "storage.googleapis.com"
@@ -45,6 +50,8 @@ class StartMessage:
     fps: int
     # Cosmetic second-GPU GFPGAN pass; on unless the client opts out.
     face_restore: bool = True
+    # Allowlisted persona whose face the second GPU swaps in; None means no swap.
+    persona_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -101,6 +108,31 @@ def verify_ticket(ticket: str | None, secret: str | None, now: float) -> str:
     if exp <= now:
         raise ProtocolError(CLOSE_BAD_TICKET, "ticket expired")
     return sid
+
+
+def verify_register_token(token: object, secret: str | None, now: float) -> dict:
+    """Returns {"uid", "sha256"} from a server-minted persona registration token, or raises ProtocolError(4401)."""
+    if not secret or len(secret) < MIN_SECRET_CHARS:
+        raise ProtocolError(CLOSE_BAD_TICKET, "server not configured")
+    if not isinstance(token, str) or token.count(".") != 1:
+        raise ProtocolError(CLOSE_BAD_TICKET, "bad token")
+    payload_part, signature_part = token.split(".")
+    try:
+        signature = _b64url_decode(signature_part)
+        payload = json.loads(_b64url_decode(payload_part))
+    except (ValueError, UnicodeDecodeError):
+        raise ProtocolError(CLOSE_BAD_TICKET, "bad token") from None
+    expected = hmac.new(secret.encode(), payload_part.encode("ascii"), hashlib.sha256).digest()
+    if not hmac.compare_digest(signature, expected) or not isinstance(payload, dict):
+        raise ProtocolError(CLOSE_BAD_TICKET, "bad token")
+    exp, uid, sha256 = payload.get("exp"), payload.get("uid"), payload.get("sha256")
+    if payload.get("purpose") != REGISTER_PURPOSE or isinstance(exp, bool) or not isinstance(exp, (int, float)):
+        raise ProtocolError(CLOSE_BAD_TICKET, "bad token")
+    if not isinstance(uid, str) or not uid or len(uid) > 128 or not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256):
+        raise ProtocolError(CLOSE_BAD_TICKET, "bad token")
+    if exp <= now:
+        raise ProtocolError(CLOSE_BAD_TICKET, "token expired")
+    return {"uid": uid, "sha256": sha256}
 
 
 def is_allowed_image_url(url: str) -> bool:
@@ -184,6 +216,10 @@ def parse_client_message(
         face_restore = message.get("faceRestore", True)
         if not isinstance(face_restore, bool):
             raise ProtocolError(CLOSE_BAD_REQUEST, "faceRestore must be a boolean")
+        persona_id = message.get("personaId")
+        # The id only names an allowlisted face; it never carries one.
+        if persona_id is not None and not is_valid_persona_id(persona_id):
+            raise ProtocolError(CLOSE_BAD_REQUEST, "personaId must be 1 to 64 of a-z, 0-9 and -")
         return StartMessage(
             reference_image_url=url,
             prompt=_prompt_text(message.get("prompt")),
@@ -191,6 +227,7 @@ def parse_client_message(
             height=height,
             fps=fps,
             face_restore=face_restore,
+            persona_id=persona_id,
         )
     raise ProtocolError(CLOSE_BAD_REQUEST, "unknown message type")
 

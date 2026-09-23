@@ -107,6 +107,8 @@ export type StartOptions = {
   intentParser?: IntentParser;
   // LongLive only: the server's second-GPU face restore, on unless turned off.
   faceRestore?: boolean;
+  // LongLive only: a manifest persona id for the face lock.
+  personaId?: string;
 };
 
 export type UseLiveSessionDeps = {
@@ -1323,6 +1325,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
           startedAtMs,
           intentParser: options.intentParser,
           faceRestore: options.faceRestore,
+          personaId: options.personaId,
         });
 
         if (tickIntervalRef.current) {

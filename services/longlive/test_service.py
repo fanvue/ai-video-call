@@ -1,9 +1,13 @@
 # WebSocket contract test against a fake engine, no GPU. Needs fastapi + modal (the .venv-fal has both).
 # Run: cd services/longlive && ../../.venv-fal/bin/python -m unittest -v test_service
 import asyncio
+import base64
+import hashlib
 import json
 import os
+import shutil
 import struct
+import tempfile
 import threading
 import time
 import unittest
@@ -17,6 +21,7 @@ try:
 
     import modal_app
     from protocol import sign_ticket
+    from restore_stage import PassthroughCodec
 except ImportError as error:  # pragma: no cover - plain-python runs only get test_protocol.
     modal_app = None
     SKIP_REASON = f"needs fastapi + modal: {error}"
@@ -82,21 +87,51 @@ class FakeEngine:
         self.stopped.set()
 
 
+class FakeCall:
+    def __init__(self, result=None, error=None):
+        self.result, self.error = result, error
+
+    def get(self, timeout=None):
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+    def cancel(self):
+        pass
+
+
 class FakeRestorer:
-    def __init__(self, fail: bool = False):
+    def __init__(self, fail: bool = False, persona_ok: bool = True):
         self.fail = fail
+        self.persona_ok = persona_ok
         self.calls = 0
         self.warms = 0
+        # Every argument the face GPU was handed, so a test can prove the stream's reference never reaches it.
+        self.seen: list = []
 
-    def warm(self):
+    def warm(self, persona_id=None):
         self.warms += 1
-        return True
+        self.seen.append(("warm", persona_id))
+        return {"ok": True, "persona": None if persona_id is None else self.persona_ok}
 
-    def restore_block(self, jpegs):
+    def spawn(self, frames, persona_id, restore):
         self.calls += 1
+        self.seen.append(("spawn", list(frames), persona_id, restore))
         if self.fail:
-            raise RuntimeError("restore GPU down")
-        return [b"\xff\xd8restored" for _ in jpegs]
+            return FakeCall(error=RuntimeError("restore GPU down"))
+        return FakeCall({"frames": [b"\xff\xd8restored" for _ in frames], "computeMs": 7.0, "swapped": len(frames) if persona_id else 0})
+
+
+class DirPersonas:
+    def __init__(self, root):
+        self.root = root
+        self.commits = 0
+
+    def reload(self):
+        pass
+
+    def commit(self):
+        self.commits += 1
 
 
 def png_data_uri() -> str:
@@ -207,8 +242,19 @@ class ServiceTest(unittest.TestCase):
             ws.send_text(json.dumps({"type": "reanchor"}))
             self.assertEqual(self.close_code(ws), 4400)
 
-    def stream_with_restorer(self, restorer, frame_target, **start):
-        client = TestClient(modal_app.build_api(self.engine, asyncio.Lock(), restorer))
+    def personas(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root)
+        with open(os.path.join(root, "synth-persona-01.jpg"), "wb") as handle:
+            handle.write(b"\xff\xd8\xff persona")
+        entry = {"id": "synth-persona-01", "file": "synth-persona-01.jpg", "synthetic": True, "rightsHolder": "Fanvue", "addedBy": "eng", "addedAt": "2026-09-23", "note": "Seed"}
+        unvouched = {**entry, "id": "no-rights", "rightsHolder": ""}
+        with open(os.path.join(root, "manifest.json"), "w") as handle:
+            json.dump([entry, unvouched], handle)
+        return DirPersonas(root)
+
+    def stream_with_restorer(self, restorer, frame_target, personas=None, **start):
+        client = TestClient(modal_app.build_api(self.engine, asyncio.Lock(), restorer, personas, face_codec=PassthroughCodec))
         self.engine.block_s = 0.1
         frames, texts = [], []
         with client.websocket_connect(f"/ws?ticket={self.ticket()}") as ws:
@@ -248,6 +294,90 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual((restorer.warms, restorer.calls), (0, 0))
         self.assertTrue(all(jpeg == b"\xff\xd8jpeg" for _, jpeg in frames))
         self.assertNotIn("restored", stats[0])
+
+    def test_allowlisted_persona_is_swapped_and_the_reference_never_reaches_the_face_gpu(self):
+        restorer = FakeRestorer()
+        reference = png_data_uri()
+        frames, stats = self.stream_with_restorer(restorer, 29 + 32 * 2, self.personas(), personaId="synth-persona-01", referenceImageUrl=reference)
+        self.assertEqual(restorer.seen[0], ("warm", "synth-persona-01"))
+        spawns = [call for call in restorer.seen if call[0] == "spawn"]
+        self.assertTrue(spawns and all(call[2] == "synth-persona-01" for call in spawns))
+        raw_reference = base64.b64decode(reference.split(",", 1)[1])
+        for call in restorer.seen:
+            flat = repr(call).encode()
+            self.assertNotIn(reference.encode()[:80], flat)
+            self.assertFalse(any(isinstance(arg, list) and raw_reference in arg for arg in call))
+        self.assertTrue(stats[-1]["personaLocked"])
+        self.assertGreater(stats[-1]["personaSwapped"], 0)
+        self.assertEqual(stats[-1]["restoreComputeMs"], 7)
+
+    def test_unknown_or_unvouched_persona_runs_without_a_swap(self):
+        for persona_id in ["someone-else", "no-rights"]:
+            restorer = FakeRestorer()
+            frames, stats = self.stream_with_restorer(restorer, 29 + 32, self.personas(), personaId=persona_id)
+            self.assertEqual(restorer.seen[0], ("warm", None))
+            self.assertTrue(all(call[2] is None for call in restorer.seen if call[0] == "spawn"))
+            self.assertFalse(stats[-1]["personaLocked"])
+            self.assertEqual(stats[-1]["personaSwapped"], 0)
+
+    def test_unknown_persona_with_restore_off_never_calls_the_face_gpu(self):
+        restorer = FakeRestorer()
+        frames, stats = self.stream_with_restorer(restorer, 29 + 32, self.personas(), personaId="someone-else", faceRestore=False)
+        self.assertEqual((restorer.warms, restorer.calls), (0, 0))
+        self.assertTrue(all(jpeg == b"\xff\xd8jpeg" for _, jpeg in frames))
+
+    def test_persona_the_face_gpu_cannot_load_turns_the_swap_off(self):
+        restorer = FakeRestorer(persona_ok=False)
+        frames, stats = self.stream_with_restorer(restorer, 29 + 32 * 3, self.personas(), personaId="synth-persona-01")
+        self.assertTrue(all(call[2] is None for call in restorer.seen if call[0] == "spawn"))
+        self.assertFalse(stats[-1]["personaLocked"])
+
+    def test_no_persona_store_means_no_swap(self):
+        restorer = FakeRestorer()
+        self.stream_with_restorer(restorer, 29 + 32, None, personaId="synth-persona-01")
+        self.assertEqual(restorer.seen[0], ("warm", None))
+
+    def test_persona_listing_needs_a_ticket_and_shows_ids_and_notes_only(self):
+        client = TestClient(modal_app.build_api(self.engine, asyncio.Lock(), None, self.personas()))
+        self.assertEqual(client.get("/personas").status_code, 401)
+        self.assertEqual(client.get(f"/personas?ticket={self.ticket(secret='z' * 64)}").status_code, 401)
+        response = client.get(f"/personas?ticket={self.ticket()}")
+        self.assertEqual(response.json(), {"personas": [{"id": "synth-persona-01", "note": "Seed"}]})
+        self.assertNotIn("rightsHolder", response.text)
+        self.assertNotIn(".jpg", response.text)
+
+    def register_body(self, image=b"\xff\xd8\xff new upload", **token_overrides):
+        claims = {"purpose": "persona-register", "uid": "user-uuid-1", "sha256": hashlib.sha256(image).hexdigest(), "exp": int(time.time()) + 60}
+        claims.update(token_overrides)
+        return {"token": sign_ticket(claims, SECRET), "imageBase64": base64.b64encode(image).decode(), "contentType": "image/jpeg"}
+
+    def test_register_writes_a_vouched_entry_once(self):
+        personas = self.personas()
+        client = TestClient(modal_app.build_api(self.engine, asyncio.Lock(), None, personas))
+        image = b"\xff\xd8\xff new upload"
+        response = client.post("/personas/register", json=self.register_body(image))
+        sha = hashlib.sha256(image).hexdigest()
+        self.assertEqual(response.json(), {"id": f"upload-{sha[:12]}", "created": True})
+        self.assertEqual(client.post("/personas/register", json=self.register_body(image)).json()["created"], False)
+        self.assertEqual(personas.commits, 1)
+        with open(os.path.join(personas.root, "manifest.json")) as handle:
+            entry = json.load(handle)[-1]
+        self.assertEqual(entry["addedBy"], "user-uuid-1")
+        self.assertEqual((entry["synthetic"], entry["attested"], entry["rightsHolder"], entry["sha256"]), (True, True, "Fanvue", sha))
+        listed = client.get(f"/personas?ticket={self.ticket()}").json()["personas"]
+        self.assertIn(f"upload-{sha[:12]}", [p["id"] for p in listed])
+
+    def test_register_refuses_stream_tickets_mismatched_images_and_bad_types(self):
+        client = TestClient(modal_app.build_api(self.engine, asyncio.Lock(), None, self.personas()))
+        body = self.register_body()
+        self.assertEqual(client.post("/personas/register", json={**body, "token": self.ticket()}).status_code, 401)
+        self.assertEqual(client.post("/personas/register", json={**body, "imageBase64": base64.b64encode(b"\xff\xd8\xff other").decode()}).status_code, 401)
+        self.assertEqual(client.post("/personas/register", json={**body, "contentType": "image/gif"}).status_code, 400)
+        self.assertEqual(client.post("/personas/register", json={**body, "contentType": "image/png"}).status_code, 400)
+        self.assertEqual(client.post("/personas/register", json=self.register_body(exp=int(time.time()) - 5)).status_code, 401)
+        self.assertEqual(client.post("/personas/register", json=[]).status_code, 400)
+        no_store = TestClient(modal_app.build_api(self.engine, asyncio.Lock(), None, None))
+        self.assertEqual(no_store.post("/personas/register", json=body).status_code, 503)
 
     def test_health_warms_the_restore_gpu(self):
         restorer = FakeRestorer()

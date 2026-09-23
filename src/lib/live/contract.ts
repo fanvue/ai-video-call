@@ -250,6 +250,15 @@ export const INTENT_PARSER_LABELS: Record<IntentParser, string> = {
   llm: "LLM reads every request",
 };
 
+// LongLive persona face lock: the id names an allowlisted synthetic persona in the server's manifest, never an image.
+export const personaIdSchema = z.string().regex(/^[a-z0-9-]{1,64}$/);
+export const DEFAULT_PERSONA_ID = "synth-persona-01";
+export const personaOptionSchema = z.object({
+  id: personaIdSchema,
+  note: z.string().max(200),
+});
+export type PersonaOption = z.infer<typeof personaOptionSchema>;
+
 // Swap-mode test profiles picked under Advanced, so a trial config sits beside the default instead of replacing it. swapModel is the Modal service's model name.
 export const swapProfileSchema = z.enum(["default", "hyperswap_1c", "ghost_1"]);
 export type SwapProfile = z.infer<typeof swapProfileSchema>;

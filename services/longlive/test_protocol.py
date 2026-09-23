@@ -17,6 +17,7 @@ from protocol import (
     pack_frame,
     parse_client_message,
     sign_ticket,
+    verify_register_token,
     verify_ticket,
 )
 
@@ -150,6 +151,14 @@ class MessageTest(unittest.TestCase):
         for value in [0, 1, "false", None, [], {}]:
             self.assert_bad(self.start(faceRestore=value))
 
+    def test_persona_id_is_optional_and_strictly_shaped(self):
+        self.assertIsNone(parse_client_message(self.start()).persona_id)
+        self.assertIsNone(parse_client_message(self.start(personaId=None)).persona_id)
+        self.assertEqual(parse_client_message(self.start(personaId="synth-persona-01")).persona_id, "synth-persona-01")
+        self.assertEqual(parse_client_message(self.start(personaId="x" * 64)).persona_id, "x" * 64)
+        for value in ["", "x" * 65, "Synth", "a_b", "a/b", "../etc", "a\n", "https://v3.fal.media/f.jpg", 5, True, [], {}]:
+            self.assert_bad(self.start(personaId=value))
+
     def test_data_uri_needs_explicit_opt_in(self):
         text = self.start(referenceImageUrl="data:image/png;base64,iVBORw0KGgo=")
         self.assert_bad(text)
@@ -172,6 +181,47 @@ class MessageTest(unittest.TestCase):
 
     def test_pack_frame(self):
         self.assertEqual(pack_frame(258, b"\xff\xd8"), b"\x00\x00\x01\x02\xff\xd8")
+
+
+class RegisterTokenTest(unittest.TestCase):
+    SHA = "ab" * 32
+
+    def token(self, **overrides):
+        payload = {"purpose": "persona-register", "uid": "user-uuid-1", "sha256": self.SHA, "exp": NOW + 60}
+        payload.update(overrides)
+        return sign_ticket({k: v for k, v in payload.items() if v is not None}, SECRET)
+
+    def test_round_trip(self):
+        self.assertEqual(verify_register_token(self.token(), SECRET, NOW), {"uid": "user-uuid-1", "sha256": self.SHA})
+
+    def test_rejects_wrong_purpose_expiry_secret_and_fields(self):
+        bad = [
+            self.token(purpose="stream"),
+            self.token(purpose=None),
+            self.token(exp=NOW - 1),
+            self.token(uid=""),
+            self.token(uid=None),
+            self.token(sha256="AB" * 32),
+            self.token(sha256="ab"),
+            sign_ticket({"purpose": "persona-register", "uid": "u", "sha256": self.SHA, "exp": NOW + 60}, "z" * 64),
+            "garbage",
+            None,
+        ]
+        for token in bad:
+            with self.assertRaises(ProtocolError) as raised:
+                verify_register_token(token, SECRET, NOW)
+            self.assertEqual(raised.exception.code, CLOSE_BAD_TICKET)
+
+    def test_stream_tickets_and_register_tokens_are_not_interchangeable(self):
+        with self.assertRaises(ProtocolError):
+            verify_register_token(sign_ticket({"sid": "browser", "exp": NOW + 60}, SECRET), SECRET, NOW)
+        with self.assertRaises(ProtocolError):
+            verify_ticket(self.token(), SECRET, NOW)
+
+    def test_unset_secret_fails_closed(self):
+        for secret in [None, "", "short"]:
+            with self.assertRaises(ProtocolError):
+                verify_register_token(self.token(), secret, NOW)
 
 
 if __name__ == "__main__":
