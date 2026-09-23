@@ -11,6 +11,12 @@ from PIL import Image
 
 REPO = os.environ.get("LONGLIVE_REPO", "/root/LongLive")
 WEIGHTS = os.environ.get("LONGLIVE_WEIGHTS", "/weights")
+# Off by default: unset (or empty), the engine behaves exactly as before this LoRA support was added.
+LORA_PATH = os.environ.get("LONGLIVE_LORA_PATH") or None
+LORA_RANK = int(os.environ.get("LONGLIVE_LORA_RANK") or "64")
+# Alpha isn't recoverable from the checkpoint itself; defaults to rank per common convention, tune via env for adherence testing.
+LORA_ALPHA = int(os.environ.get("LONGLIVE_LORA_ALPHA") or LORA_RANK)
+LORA_DROPOUT = float(os.environ.get("LONGLIVE_LORA_DROPOUT") or "0.0")
 LATENT_CHANNELS = 48
 # Wan2.2 VAE: 16x spatial, 4x temporal; the first latent frame decodes to one pixel frame.
 SPATIAL_STRIDE = 16
@@ -135,6 +141,8 @@ class LongLiveEngine:
         torch.set_grad_enabled(False)
         pipe = CausalDiffusionInferencePipeline(config, device=self.device)
         load_generator_checkpoint(pipe.generator, config.generator_ckpt)
+        if LORA_PATH:
+            self._merge_lora(pipe, LORA_PATH)
         pipe = pipe.to(device=self.device, dtype=torch.bfloat16)
         pipe.generator.model.eval().requires_grad_(False)
         if opts.fp8:
@@ -153,6 +161,32 @@ class LongLiveEngine:
         self._configured_seq_length: int | None = None
         self._state: _SessionState | None = None
         self.load_ms = (time.perf_counter() - started) * 1000
+
+    def _merge_lora(self, pipe, lora_path: str) -> None:
+        # Merges weight += (alpha/rank) * B @ A directly, bypassing peft.get_peft_model(): its torchao
+        # dispatch check requires torchao>=0.16.0 but this image pins 0.13.0 for the FP8 quant path.
+        from safetensors.torch import load_file
+
+        raw_state = load_file(lora_path)
+        modules = dict(pipe.generator.model.named_modules())
+        scale = LORA_ALPHA / LORA_RANK
+        merged = set()
+        for key, lora_a in raw_state.items():
+            if not key.endswith(".lora_A.weight"):
+                continue
+            module_path = key.removeprefix("diffusion_model.")[: -len(".lora_A.weight")]
+            b_key = key.replace(".lora_A.weight", ".lora_B.weight")
+            if b_key not in raw_state:
+                raise RuntimeError(f"LoRA checkpoint missing paired lora_B for {key}")
+            module = modules.get(module_path)
+            if not isinstance(module, torch.nn.Linear):
+                raise RuntimeError(f"LoRA checkpoint targets unknown Linear module: {module_path}")
+            delta = (raw_state[b_key].float() @ lora_a.float()) * scale
+            module.weight.data.add_(delta.to(dtype=module.weight.dtype, device=module.weight.device))
+            merged.add(module_path)
+        if not merged:
+            raise RuntimeError(f"LoRA checkpoint at {lora_path} contained no usable lora_A/B pairs")
+        print(f"[longlive] merged LoRA from {lora_path} ({len(merged)} modules, rank={LORA_RANK}, alpha={LORA_ALPHA})", flush=True)
 
     def encode_prompt(self, prompt: str) -> dict:
         embeds = self.pipe.text_encoder(text_prompts=[prompt])

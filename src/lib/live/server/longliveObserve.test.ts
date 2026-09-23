@@ -101,6 +101,7 @@ describe("observeLongLiveWardrobe", () => {
     });
     expect(await observe()).toEqual({
       confirmed: false,
+      seen: false,
       state: expected,
       settlePrompt: null,
     });

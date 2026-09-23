@@ -159,7 +159,8 @@ export const ChatPanel = ({
           WebkitMaskImage:
             "linear-gradient(to bottom, transparent, black 24px)",
         }}
-        className="flex max-h-48 flex-col gap-1.5 overflow-y-auto text-sm"
+        // shrink-0: truncated rows have min-height 0, so without it they squash onto each other instead of scrolling.
+        className="flex max-h-48 flex-col gap-1.5 overflow-y-auto overscroll-contain text-sm *:shrink-0"
       >
         {feed.map((item) => {
           if (item.kind === "joinLeave") {
