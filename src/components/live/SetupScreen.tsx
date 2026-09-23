@@ -380,7 +380,7 @@ export const SetupScreen = ({
                 Face restore (LongLive)
               </label>
             ) : null}
-            {backend === "longlive" ? (
+            {backend === "longlive" || backend === "swap" ? (
               <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
                 Persona face lock
                 <select
@@ -445,7 +445,9 @@ export const SetupScreen = ({
             swapProfile,
             intentParser,
             faceRestore,
-            ...(backend === "longlive" && personaId ? { personaId } : {}),
+            ...((backend === "longlive" || backend === "swap") && personaId
+              ? { personaId }
+              : {}),
           });
         }}
         className={

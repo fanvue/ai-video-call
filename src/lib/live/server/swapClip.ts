@@ -35,35 +35,6 @@ export type SwapClipOutcome = {
   costUsd: number;
 };
 
-// The reference is the same anchor for every clip of a session, so fetch it once per warm lambda.
-const referenceCache = new Map<string, Promise<string>>();
-
-const fetchAsDataUri = (url: string): Promise<string> => {
-  const cached = referenceCache.get(url);
-  if (cached) {
-    return cached;
-  }
-  const pending = fetchReference(url).catch((error: unknown) => {
-    referenceCache.delete(url);
-    throw error;
-  });
-  if (referenceCache.size >= 16) {
-    referenceCache.delete(referenceCache.keys().next().value as string);
-  }
-  referenceCache.set(url, pending);
-  return pending;
-};
-
-const fetchReference = async (url: string): Promise<string> => {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`reference fetch failed (${response.status})`);
-  }
-  const contentType = response.headers.get("content-type") ?? "image/jpeg";
-  const bytes = Buffer.from(await response.arrayBuffer());
-  return `data:${contentType};base64,${bytes.toString("base64")}`;
-};
-
 // Sends a rendered turbo clip through the self-hosted swap service (services/swap) and rehosts
 // the swapped mp4 and its last frame on fal storage so the client and the next render can fetch them.
 const RETRYABLE_SWAP_STATUSES = new Set([408, 500, 502, 503, 504]);
@@ -81,24 +52,28 @@ class SwapServiceError extends Error {
 
 export const swapClip = async ({
   videoUrl,
-  referenceImageUrl,
+  personaId,
   budgetMs = SWAP_BUDGET_MS,
   jobKind = "unknown",
   swapModel,
 }: {
   videoUrl: string;
-  referenceImageUrl: string;
+  // The swap source is an allowlisted manifest persona only; the session's upload drives generation and never reaches the swap.
+  personaId: string | undefined;
   budgetMs?: number;
   jobKind?: string;
   swapModel?: string;
 }): Promise<SwapClipOutcome> => {
+  if (!personaId) {
+    throw new Error("No persona selected, the clip plays unswapped");
+  }
   if (!env.SWAP_SERVICE_URL || !env.SWAP_TOKEN) {
     throw new Error("Swap service is not configured");
   }
   const startedAt = Date.now();
   const body = JSON.stringify({
     video_url: videoUrl,
-    reference_image: await fetchAsDataUri(referenceImageUrl),
+    persona_id: personaId,
     ...(swapModel ? { model: swapModel } : {}),
   });
   const controllers: AbortController[] = [];

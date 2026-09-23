@@ -1565,6 +1565,28 @@ describe("ClipPipeline", () => {
     expect(seedsByRequest.r3).toBe(firstStripped);
   });
 
+  it("swap mode sends the session's persona id on every chain and idle render", async () => {
+    const requests: ClipRequest[] = [];
+    const queue = makeJobQueue();
+    const pipeline = trackedPipeline({
+      backend: "swap",
+      personaId: "synth-persona-01",
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        requests.push(req);
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS * 2);
+    expect(requests.map((req) => req.job.kind)).toContain("idle");
+    expect(requests.every((req) => req.personaId === "synth-persona-01")).toBe(
+      true,
+    );
+  });
+
   it("swap mode keeps two idles in flight and two ready, since a filler takes longer to make than it plays", async () => {
     const requests: ClipRequest[] = [];
     const queue = makeJobQueue();

@@ -20,7 +20,7 @@ from swap_core import (
 
 class SwapClipRequest(BaseModel):
     video_url: str
-    reference_image: str
+    persona_id: str | None = None
 
 
 class SwapApp(fal.App, keep_alive=120, min_concurrency=0, max_concurrency=2):
@@ -41,6 +41,7 @@ class SwapApp(fal.App, keep_alive=120, min_concurrency=0, max_concurrency=2):
         if not token_allowed(bearer_token(authorization)):
             raise HTTPException(status_code=403, detail="unauthorized")
         try:
-            return swap_clip_from_url(self.engine, body.video_url, body.reference_image)
+            # No persona volume on fal yet, so the gate refuses every swap here (422) until one is mounted.
+            return swap_clip_from_url(self.engine, body.video_url, None, body.persona_id)
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error

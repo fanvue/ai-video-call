@@ -37,6 +37,7 @@ export type ClipPipelineOptions = {
   backend?: RenderBackend;
   speechMode?: SpeechMode;
   swapProfile?: SwapProfile;
+  personaId?: string;
   intentParser?: IntentParser;
   // Called with a chain job that failed past retry, so the caller (director) can drop only that
   // request's own queued follow-ups instead of the whole queue.
@@ -97,6 +98,7 @@ export class ClipPipeline {
   private backend: RenderBackend;
   private speechMode: SpeechMode;
   private readonly swapProfile?: SwapProfile;
+  private readonly personaId?: string;
   private readonly intentParser?: IntentParser;
 
   private getSnapshot: SnapshotSource | null = null;
@@ -162,6 +164,7 @@ export class ClipPipeline {
     this.backend = options.backend ?? "turbo";
     this.speechMode = options.speechMode ?? "text";
     this.swapProfile = options.swapProfile;
+    this.personaId = options.personaId;
     this.intentParser = options.intentParser;
   }
 
@@ -655,6 +658,7 @@ export class ClipPipeline {
       backend: this.backend,
       speechMode: this.speechMode,
       swapProfile: this.swapProfile,
+      personaId: this.personaId,
       intentParser: this.intentParser,
       useIdentityReference,
     };
@@ -855,6 +859,7 @@ export class ClipPipeline {
       backend: this.backend === "swap" ? "swap" : "turbo",
       speechMode: this.speechMode,
       swapProfile: this.swapProfile,
+      personaId: this.personaId,
       useIdentityReference: false,
     };
     this.trackIdleInflight(anchorAtSubmit.frameUrl, 1);

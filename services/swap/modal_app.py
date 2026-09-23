@@ -1,13 +1,22 @@
 # Modal host for the Swap service, used for the POC while fal serverless access is pending.
 # Deploy: .venv-fal/bin/modal deploy services/swap/modal_app.py
+import sys
+import threading
+import time
+from pathlib import Path
+
 import modal
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
-from swap_core import (
+# The persona allowlist is LongLive's persona.py, imported rather than copied so both swaps share one gate.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "longlive"))
+
+from swap_core import (  # noqa: E402
     CROSSFACE_GHOST_URL,
     DEFAULT_SWAP_MODEL,
     ENHANCER_URL,
+    GFPGAN_URL,
     GHOST_1_URL,
     HYPERSWAP_1C_URL,
     HYPERSWAP_URL,
@@ -29,6 +38,11 @@ from swap_core import (
 )
 
 app = modal.App("ai-video-swap")
+# Read-only: registration stays on LongLive's gated route; a missing volume fails the deploy instead of leaving an empty allowlist.
+personas_volume = modal.Volume.from_name("persona-faces").read_only()
+PERSONA_ROOT = "/personas"
+# Picks up `modal volume put` and registered personas without a reload on every clip.
+PERSONA_RELOAD_S = 30.0
 
 # onnxruntime-gpu needs the CUDA 12 + cuDNN 9 runtime libraries on the image or it silently falls back to CPU.
 image = (
@@ -53,16 +67,18 @@ image = (
         f"wget -q -O /models/hyperswap_1c_256.onnx {HYPERSWAP_1C_URL}",
         f"wget -q -O /models/ghost_1_256.onnx {GHOST_1_URL}",
         f"wget -q -O /models/crossface_ghost.onnx {CROSSFACE_GHOST_URL}",
+        f"wget -q -O /models/gfpgan_1.4.onnx {GFPGAN_URL}",
         # insightface otherwise downloads the 275MB buffalo_l pack on every cold start.
         "python -c \"from insightface.utils.storage import ensure_available; ensure_available('models', 'buffalo_l', root='/root/.insightface')\"",
     )
-    .add_local_python_source("swap_core")
+    .add_local_python_source("swap_core", "persona")
 )
 
 
 class SwapClipRequest(BaseModel):
     video_url: str
-    reference_image: str
+    # The swap source is a manifest persona; an uploaded reference sent here is ignored, never swapped in.
+    persona_id: str | None = None
     model: str = DEFAULT_SWAP_MODEL
 
 
@@ -82,6 +98,7 @@ class LastFrameRequest(BaseModel):
     # Detection, paste-back and the x264 encode are CPU work; Modal's default fractional core starves them.
     cpu=8,
     secrets=[modal.Secret.from_name("ai-video-swap-token")],
+    volumes={PERSONA_ROOT: personas_volume},
     # Swaps arrive every few seconds during a call, so a minute without one means the call ended; shorter idle billing after each session, and the upload warm-up covers the next cold start (~11 s).
     scaledown_window=60,
     # A join burst needs up to 4 real swaps in flight; one per container beats 3 sharing one GPU.
@@ -108,27 +125,40 @@ class SwapService:
                 "ghost_1": "/models/ghost_1_256.onnx",
                 "crossface_ghost": "/models/crossface_ghost.onnx",
             },
+            gfpgan_path="/models/gfpgan_1.4.onnx",
         )
+        self.persona_lock = threading.Lock()
+        self.personas_reloaded_at = 0.0
+
+    def fresh_personas(self) -> str:
+        with self.persona_lock:
+            if time.monotonic() - self.personas_reloaded_at >= PERSONA_RELOAD_S:
+                try:
+                    personas_volume.reload()
+                    self.personas_reloaded_at = time.monotonic()
+                except Exception as error:  # noqa: BLE001 - a stale view still fails closed on anything it cannot resolve.
+                    print(f"swap: persona volume reload failed: {error!r}", flush=True)
+        return PERSONA_ROOT
 
     # Modal-authenticated path for smoke tests and the swapper bake-off from a laptop, so no clip needs a public URL; its defaults match the web path.
     @modal.method()
     def swap_clip_bytes(
-        self, video: bytes, reference_image: str, model: str = DEFAULT_SWAP_MODEL, options: dict | None = None
+        self, video: bytes, persona_id: str, model: str = DEFAULT_SWAP_MODEL, options: dict | None = None
     ) -> dict:
-        return swap_clip_from_bytes(self.engine, video, reference_image, model, options)
+        return swap_clip_from_bytes(self.engine, video, self.fresh_personas(), persona_id, model, options)
 
     # Sequential per-network latency on one real frame, to see which stage bounds the per-frame cost.
     @modal.method()
-    def profile_bytes(self, video: bytes, reference_image: str, runs: int = 30) -> dict:
-        return profile_networks(self.engine, video, reference_image, runs)
+    def profile_bytes(self, video: bytes, persona_id: str, runs: int = 30) -> dict:
+        return profile_networks(self.engine, video, self.fresh_personas(), persona_id, runs)
 
     @modal.method()
     def face_crop_bytes(self, reference_image: str) -> dict:
         return face_crop_from_data_uri(self.engine, reference_image)
 
     @modal.method()
-    def swap_tail_bytes(self, video: bytes, reference_image: str) -> dict:
-        return swap_tail_from_bytes(self.engine, video, reference_image)
+    def swap_tail_bytes(self, video: bytes, persona_id: str) -> dict:
+        return swap_tail_from_bytes(self.engine, video, self.fresh_personas(), persona_id)
 
     @modal.asgi_app()
     def web(self):
@@ -168,7 +198,7 @@ class SwapService:
             if not token_allowed(bearer_token(authorization)):
                 raise HTTPException(status_code=403, detail="unauthorized")
             try:
-                return swap_tail_from_url(engine, body.video_url, body.reference_image)
+                return swap_tail_from_url(engine, body.video_url, self.fresh_personas(), body.persona_id)
             except ValueError as error:
                 raise HTTPException(status_code=422, detail=str(error)) from error
 
@@ -182,7 +212,7 @@ class SwapService:
             if body.model not in SWAP_MODELS:
                 raise HTTPException(status_code=422, detail=f"unknown swap model {body.model!r}")
             try:
-                return swap_clip_from_url(engine, body.video_url, body.reference_image, body.model)
+                return swap_clip_from_url(engine, body.video_url, self.fresh_personas(), body.persona_id, body.model)
             except ValueError as error:
                 raise HTTPException(status_code=422, detail=str(error)) from error
 

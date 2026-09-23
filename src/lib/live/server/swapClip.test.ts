@@ -45,37 +45,34 @@ describe("swapClip", () => {
     vi.unstubAllGlobals();
   });
 
-  it("posts the clip and reference to the service with the bearer token, rehosts both outputs on fal and prices the reported swap time", async () => {
-    fetchMock
-      .mockResolvedValueOnce(
-        new Response(new Uint8Array([1, 2, 3]), {
-          headers: { "content-type": "image/png" },
-        }),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse({
-          video_base64: Buffer.from("video").toString("base64"),
-          last_frame_base64: Buffer.from("frame").toString("base64"),
-          stats: serviceStats,
-        }),
-      );
+  const swapped = () =>
+    jsonResponse({
+      video_base64: Buffer.from("video").toString("base64"),
+      last_frame_base64: Buffer.from("frame").toString("base64"),
+      stats: serviceStats,
+    });
+
+  it("posts the clip and the persona id to the service with the bearer token, rehosts both outputs on fal and prices the reported swap time", async () => {
+    fetchMock.mockResolvedValueOnce(swapped());
     uploadToFal
       .mockResolvedValueOnce("https://fal.test/swap.mp4")
       .mockResolvedValueOnce("https://fal.test/last.jpg");
 
     const outcome = await swapClip({
       videoUrl: "https://fal.test/turbo.mp4",
-      referenceImageUrl: "https://fal.test/reference.png",
+      personaId: "synth-persona-01",
     });
 
-    const [url, init] = fetchMock.mock.calls[1] as [URL, RequestInit];
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
     expect(url.toString()).toBe("https://swap.test/swapClip");
     expect((init.headers as Record<string, string>).Authorization).toBe(
       "Bearer 0123456789abcdef0123456789abcdef",
     );
+    // The upload never reaches the swap: the body names the persona and nothing else identifies a face.
     expect(JSON.parse(init.body as string)).toEqual({
       video_url: "https://fal.test/turbo.mp4",
-      reference_image: `data:image/png;base64,${Buffer.from([1, 2, 3]).toString("base64")}`,
+      persona_id: "synth-persona-01",
     });
     expect(uploadToFal.mock.calls[0][2]).toBe("video/mp4");
     expect(uploadToFal.mock.calls[1][1]).toMatch(/-last\.png$/);
@@ -95,33 +92,31 @@ describe("swapClip", () => {
   });
 
   it("sends a test profile's swap model to the service", async () => {
-    fetchMock
-      .mockResolvedValueOnce(
-        new Response(new Uint8Array([1, 2, 3]), {
-          headers: { "content-type": "image/png" },
-        }),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse({
-          video_base64: Buffer.from("video").toString("base64"),
-          last_frame_base64: Buffer.from("frame").toString("base64"),
-          stats: serviceStats,
-        }),
-      );
+    fetchMock.mockResolvedValueOnce(swapped());
     uploadToFal
       .mockResolvedValueOnce("https://fal.test/swap.mp4")
       .mockResolvedValueOnce("https://fal.test/last.jpg");
 
     await swapClip({
       videoUrl: "https://fal.test/turbo.mp4",
-      referenceImageUrl: "https://fal.test/reference-profile.png",
+      personaId: "synth-persona-01",
       swapModel: "hyperswap_1c",
     });
 
-    const [, init] = fetchMock.mock.calls[1] as [URL, RequestInit];
+    const [, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
     expect(JSON.parse(init.body as string)).toMatchObject({
       model: "hyperswap_1c",
     });
+  });
+
+  it("refuses without a persona and never contacts the service or fetches a reference", async () => {
+    for (const personaId of [undefined, ""]) {
+      await expect(
+        swapClip({ videoUrl: "https://fal.test/turbo.mp4", personaId }),
+      ).rejects.toThrow("No persona selected");
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(uploadToFal).not.toHaveBeenCalled();
   });
 
   it("throws before contacting the service when it is not configured", async () => {
@@ -129,55 +124,46 @@ describe("swapClip", () => {
     await expect(
       swapClip({
         videoUrl: "https://fal.test/turbo.mp4",
-        referenceImageUrl: "https://fal.test/reference.png",
+        personaId: "synth-persona-01",
       }),
     ).rejects.toThrow("not configured");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("surfaces a service rejection with its status and detail", async () => {
-    fetchMock
-      .mockResolvedValueOnce(new Response(new Uint8Array([1])))
-      .mockResolvedValueOnce(
-        jsonResponse(
-          { detail: "reference must contain exactly one face" },
-          422,
-        ),
-      );
-    // A reference URL the earlier test has not cached, so the first mocked fetch is the reference.
+  it("surfaces the persona gate's refusal with its status and reason, without retrying", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        { detail: "persona gate: synth-persona-99: not in manifest" },
+        422,
+      ),
+    );
     await expect(
       swapClip({
         videoUrl: "https://fal.test/turbo.mp4",
-        referenceImageUrl: "https://fal.test/reference-two-faces.png",
+        personaId: "synth-persona-99",
       }),
-    ).rejects.toThrow(/422.*exactly one face/);
+    ).rejects.toThrow(/422.*not in manifest/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(uploadToFal).not.toHaveBeenCalled();
   });
 
-  it("retries once when the service drops the input with a 408, and not on a 422", async () => {
+  it("retries once when the service drops the input with a 408", async () => {
     fetchMock
-      .mockResolvedValueOnce(new Response(new Uint8Array([1])))
       .mockResolvedValueOnce(new Response("Missing request", { status: 408 }))
-      .mockResolvedValueOnce(
-        jsonResponse({
-          video_base64: Buffer.from("video").toString("base64"),
-          last_frame_base64: Buffer.from("frame").toString("base64"),
-          stats: serviceStats,
-        }),
-      );
+      .mockResolvedValueOnce(swapped());
     uploadToFal
       .mockResolvedValueOnce("https://fal.test/swap.mp4")
       .mockResolvedValueOnce("https://fal.test/last.jpg");
 
     const outcome = await swapClip({
       videoUrl: "https://fal.test/turbo.mp4",
-      referenceImageUrl: "https://fal.test/reference-retry.png",
+      personaId: "synth-persona-01",
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(outcome.report.status).toBe("swapped");
-    expect(fetchMock.mock.calls[2][1].body).toBe(
-      fetchMock.mock.calls[1][1].body,
+    expect(fetchMock.mock.calls[1][1].body).toBe(
+      fetchMock.mock.calls[0][1].body,
     );
   });
 
@@ -185,47 +171,39 @@ describe("swapClip", () => {
     vi.useFakeTimers();
     let hungSignal: AbortSignal | undefined;
     fetchMock
-      .mockResolvedValueOnce(new Response(new Uint8Array([1])))
       .mockImplementationOnce((_url: URL, init: RequestInit) => {
         hungSignal = init.signal ?? undefined;
         return new Promise(() => undefined);
       })
-      .mockResolvedValueOnce(
-        jsonResponse({
-          video_base64: Buffer.from("video").toString("base64"),
-          last_frame_base64: Buffer.from("frame").toString("base64"),
-          stats: serviceStats,
-        }),
-      );
+      .mockResolvedValueOnce(swapped());
     uploadToFal
       .mockResolvedValueOnce("https://fal.test/swap.mp4")
       .mockResolvedValueOnce("https://fal.test/last.jpg");
 
     const pending = swapClip({
       videoUrl: "https://fal.test/turbo.mp4",
-      referenceImageUrl: "https://fal.test/reference-hung.png",
+      personaId: "synth-persona-01",
     });
     await vi.advanceTimersByTimeAsync(8_000);
     const outcome = await pending;
     vi.useRealTimers();
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(outcome.videoUrl).toBe("https://fal.test/swap.mp4");
     expect(hungSignal?.aborted).toBe(true);
   });
 
   it("gives up after a second 408", async () => {
     fetchMock
-      .mockResolvedValueOnce(new Response(new Uint8Array([1])))
       .mockResolvedValueOnce(new Response("Missing request", { status: 408 }))
       .mockResolvedValueOnce(new Response("Missing request", { status: 408 }));
     await expect(
       swapClip({
         videoUrl: "https://fal.test/turbo.mp4",
-        referenceImageUrl: "https://fal.test/reference-retry-twice.png",
+        personaId: "synth-persona-01",
       }),
     ).rejects.toThrow(/408/);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
 

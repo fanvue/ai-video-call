@@ -251,6 +251,7 @@ describe("generateClip on the swap backend", () => {
   const swapRequest = (job: ClipRequest["job"]): ClipRequest => ({
     ...request(job),
     backend: "swap",
+    personaId: "synth-persona-01",
   });
   const swapped = {
     videoUrl: "https://example.com/swapped.mp4",
@@ -276,7 +277,7 @@ describe("generateClip on the swap backend", () => {
     );
     expect(swapClip).toHaveBeenCalledWith({
       videoUrl: "https://example.com/clip.mp4",
-      referenceImageUrl: session.anchorFrameUrl,
+      personaId: "synth-persona-01",
       budgetMs: 150_000,
       jobKind: "checkIn",
     });
@@ -357,6 +358,17 @@ describe("generateClip on the swap backend", () => {
       status: "failed",
       reason: "Swap service responded 503",
     });
+  });
+
+  it("hands the swap the request's persona id, never the session's upload", async () => {
+    swapClip.mockResolvedValue(swapped);
+    await generateClip({
+      ...swapRequest({ kind: "checkIn", channel: "chat" }),
+      personaId: undefined,
+    });
+    const [args] = swapClip.mock.calls[0] as [Record<string, unknown>];
+    expect(args.personaId).toBeUndefined();
+    expect(Object.values(args)).not.toContain(session.anchorFrameUrl);
   });
 
   it("never touches the swap service on other backends", async () => {

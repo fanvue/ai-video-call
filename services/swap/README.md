@@ -16,6 +16,20 @@ Smoke test: `.venv-fal/bin/python scratchpad/swap_clip_smoke.py <clip.mp4> <refe
 
 Measured 2026-09-22 on a 101-frame 542x988 24fps clip: A10G sequential 49 ms/frame; three frames in flight 36 ms/frame; L40S with three in flight 16 ms/frame (detect 13, swap 13, restore 20 of thread time), so a 10s turbo clip costs about 4 to 5s of GPU time. Cold start was 60 to 85s while insightface fetched the buffalo_l pack at boot; baking it into the image brings it to about 15s. The app still pings `/health` twice when a swap session starts (two containers, since idle fillers and replies swap concurrently), and the greeting only waits 25s for its swap so a cold container never blocks the join (the first clip then plays unswapped and is reported as `failed`). Identity: ArcFace cosine to the reference went from -0.04 (a different persona) to 0.86 after the swap. GPEN-512 was 140 ms/frame for no visible gain on a 480P face, hence GPEN-256.
 
+## Swap source and face recipe (2026-09-23)
+
+The swap source is a manifest persona only. `/swapClip` and `/swapTail` take `persona_id`, resolve it with LongLive's `services/longlive/persona.py` against the `persona-faces` volume (mounted read-only, reloaded at most every 30 s) and refuse anything else with a 422 `persona gate: <reason>`. The upload never reaches the swap. Tests: `cd services/swap && ../../.venv-fal/bin/python -m unittest -v test_persona_gate`.
+
+`FACE_RECIPE` picks the per-frame recipe: `legacy` (Reinhard colour match, no restore) or `longlive` (LongLive's MOTION_KEEP 0.35, no colour match, GFPGAN 1.4 at 0.6 on the 512 face crop). Measured on turbo480, crop480a and scene6_11s (277/277/264 frames, A10G, 3 workers, synth-persona-01), mean of the three:
+
+| recipe | ArcFace to persona | frame-to-frame ID | face-neck abs dL | eye amp vs raw | mouth amp vs raw | ms/frame |
+| ------ | ------------------ | ----------------- | ---------------- | -------------- | ---------------- | -------- |
+| raw    | 0.600              | 0.972             | 15.05            | 1.00           | 1.00             |          |
+| legacy | **0.910**          | **0.985**         | 14.51            | 0.90           | 0.84             | **14.0** |
+| longlive | 0.878            | 0.982             | 14.91            | 0.84           | 0.88             | 45.4     |
+
+Legacy stays the default. The longlive recipe's LongLive gains came from a stream with no colour match and a weaker raw face; on turbo clips it gives up identity, leaves neck tone unchanged and triples the per-frame cost (GFPGAN is ~21 of ~45 ms). The crop sheets show slightly smoother skin and no visible seam difference.
+
 ## fal (target host)
 
 ### Deploy (a human runs this, no login automation)

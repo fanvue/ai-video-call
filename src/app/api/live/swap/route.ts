@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getCurrentUser } from "@/lib/fanvue";
-import { swapModelFor, swapProfileSchema } from "@/lib/live/contract";
+import {
+  personaIdSchema,
+  swapModelFor,
+  swapProfileSchema,
+} from "@/lib/live/contract";
 import {
   failedSwapReport,
   SWAP_BUDGET_MS,
@@ -24,7 +28,8 @@ const falUrl = z
 
 const bodySchema = z.object({
   videoUrl: falUrl,
-  referenceImageUrl: falUrl,
+  // The swap source; absent, the clip plays unswapped. The upload is never a swap source.
+  personaId: personaIdSchema.optional(),
   jobKind: z.enum(["greeting", "idle", "checkIn", "reply", "beat"]),
   swapProfile: swapProfileSchema.optional(),
 });
@@ -42,12 +47,12 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
-  const { videoUrl, referenceImageUrl, jobKind, swapProfile } = parsed.data;
+  const { videoUrl, personaId, jobKind, swapProfile } = parsed.data;
   const startedAt = Date.now();
   try {
     const swapped = await swapClip({
       videoUrl,
-      referenceImageUrl,
+      personaId,
       budgetMs:
         jobKind === "greeting" ? SWAP_GREETING_BUDGET_MS : SWAP_BUDGET_MS,
       jobKind,

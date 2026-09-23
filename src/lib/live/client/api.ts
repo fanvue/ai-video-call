@@ -96,12 +96,12 @@ export type SwapRenderedClipResult = z.infer<typeof swapResultSchema>;
 // Second phase of a swap-mode clip: finishes the face swap of a clip that came back with swap.status "pending".
 export const swapRenderedClip = async (
   result: ClipResult,
-  referenceImageUrl: string,
+  personaId: string | undefined,
   swapProfile?: SwapProfile,
 ): Promise<SwapRenderedClipResult> => {
   const raw = await postJson<unknown>("/api/live/swap", {
     videoUrl: result.videoUrl,
-    referenceImageUrl,
+    personaId,
     jobKind: result.jobKind,
     swapProfile,
   });

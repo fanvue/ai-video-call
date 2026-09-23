@@ -310,6 +310,8 @@ export const clipRequestSchema = z.object({
   backend: renderBackendSchema.default("turbo"),
   speechMode: speechModeSchema.default("text"),
   swapProfile: swapProfileSchema.optional(),
+  // Swap mode's swap source, resolved against the persona manifest; absent, clips play unswapped.
+  personaId: personaIdSchema.optional(),
   intentParser: intentParserSchema.optional(),
   // Gates the reference backend's dual (identity + current-frame) reference; see consumeIdentityReferenceDue.
   useIdentityReference: z.boolean().default(false),

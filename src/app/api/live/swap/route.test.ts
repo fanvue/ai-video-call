@@ -24,7 +24,7 @@ const { POST } = await import("./route");
 
 const body = {
   videoUrl: "https://v3.fal.media/files/clip.mp4",
-  referenceImageUrl: "https://v3b.fal.media/files/anchor.jpg",
+  personaId: "synth-persona-01",
   jobKind: "reply",
 };
 const jsonBody = (value: unknown) =>
@@ -79,11 +79,55 @@ describe("POST /api/live/swap", () => {
       report: { status: string };
     };
     expect(swapClip).toHaveBeenCalledWith(
-      expect.objectContaining({ budgetMs: 150_000, jobKind: "reply" }),
+      expect.objectContaining({
+        budgetMs: 150_000,
+        jobKind: "reply",
+        personaId: "synth-persona-01",
+      }),
     );
     expect(data.videoUrl).toBe("https://v3.fal.media/files/swapped.mp4");
     expect(data.lastFrameUrl).toBe("https://v3.fal.media/files/last.jpg");
     expect(data.report.status).toBe("swapped");
+  });
+
+  it("never passes an uploaded reference to the swap, even when the client sends one", async () => {
+    vi.mocked(swapClip).mockRejectedValue(new Error("stop"));
+    await POST(
+      jsonBody({
+        ...body,
+        referenceImageUrl: "https://v3b.fal.media/files/anchor.jpg",
+      }),
+    );
+    const [args] = vi.mocked(swapClip).mock.calls[0];
+    expect(Object.keys(args).sort()).toEqual(
+      ["budgetMs", "jobKind", "personaId", "swapModel", "videoUrl"].sort(),
+    );
+    expect(JSON.stringify(args)).not.toContain("anchor.jpg");
+  });
+
+  it("rejects a malformed persona id before any swap", async () => {
+    for (const personaId of ["../manifest", "Synth", "a".repeat(65), 7]) {
+      const response = await POST(jsonBody({ ...body, personaId }));
+      expect(response.status).toBe(400);
+    }
+    expect(swapClip).not.toHaveBeenCalled();
+  });
+
+  it("plays unswapped with the reason when no persona is selected", async () => {
+    vi.mocked(swapClip).mockRejectedValue(
+      new Error("No persona selected, the clip plays unswapped"),
+    );
+    const response = await POST(jsonBody({ ...body, personaId: undefined }));
+    const data = (await response.json()) as {
+      videoUrl: string;
+      report: { status: string; reason: string };
+    };
+    expect(swapClip).toHaveBeenCalledWith(
+      expect.objectContaining({ personaId: undefined }),
+    );
+    expect(data.videoUrl).toBe(body.videoUrl);
+    expect(data.report).toMatchObject({ status: "failed" });
+    expect(data.report.reason).toMatch(/No persona selected/);
   });
 
   it("maps the session's swap profile to its model and rejects unknown profiles", async () => {

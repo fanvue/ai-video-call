@@ -61,6 +61,17 @@ RESTORE_BLEND = 0.5
 RESTORE_FRAMES = False
 # Off: it forced the upload's lighting onto every scene, so the face read as a lighter pasted mask against the neck. The drift it was added for came from seeding the chain with swapped frames, fixed at the source in generateClip.
 COLOR_LOCK_BLEND = 0.0
+# "longlive" is LongLive's persona recipe: part of the generated eyes and mouth kept through the swap, no colour match, GFPGAN 1.4 over the face. "legacy" is the Reinhard-matched swap with no per-frame restore.
+FACE_RECIPES = ("legacy", "longlive")
+# Legacy stays default: on 3 turbo clips (A10G, synth-persona-01) longlive lost ArcFace 0.910 -> 0.878 and frame stability 0.985 -> 0.982, left neck tone flat, and cost 45 vs 14 ms/frame.
+FACE_RECIPE = "legacy"
+# Same public facefusion-assets export LongLive's face GPU runs.
+GFPGAN_URL = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/gfpgan_1.4.onnx"
+GFPGAN_SIZE = 512
+# LongLive's SWAP_RESTORE_BLEND: full strength reads waxy.
+GFPGAN_BLEND = 0.6
+# LongLive's MOTION_KEEP: the full swap damped blinks and speech in its face A/B.
+MOTION_KEEP = 0.35
 MAX_CLIP_FRAMES = 30 * 20
 # Typical turbo clip size, used only for the warm-up pass.
 INPUT_WIDTH = 542
@@ -125,10 +136,15 @@ class ClipSwapStats:
     enhance_ms: int = 0
     sharpness_before: float | None = None
     sharpness_after: float | None = None
+    recipe: str = FACE_RECIPE
 
 
 # The default EXHAUSTIVE cuDNN search made the first clip on a fresh container ~8x slower than the second.
 PROVIDERS = [("CUDAExecutionProvider", {"cudnn_conv_algo_search": "HEURISTIC"})]
+
+
+class PersonaRejected(ValueError):
+    pass
 
 
 class SwapEngine:
@@ -140,6 +156,7 @@ class SwapEngine:
         hyperswap_path: str | None = None,
         inswapper_fp16_path: str | None = None,
         onnx_swapper_paths: dict[str, str] | None = None,
+        gfpgan_path: str | None = None,
     ) -> None:
         import insightface
         import numpy as np
@@ -176,6 +193,17 @@ class SwapEngine:
             # RestoreFormer++'s export carries internal feature-map outputs after the restored image; only output 0 is the image.
             self.restorer_output = self.restorer.get_outputs()[0].name
             print("restorer providers:", self.restorer.get_providers())
+        self.gfpgan = None
+        if gfpgan_path:
+            import onnxruntime
+
+            self.gfpgan = onnxruntime.InferenceSession(gfpgan_path, providers=PROVIDERS)
+            self.gfpgan_input = self.gfpgan.get_inputs()[0].name
+            print("gfpgan providers:", self.gfpgan.get_providers())
+        self.gfpgan_template = np.array(FFHQ_TEMPLATE, dtype=np.float32) * GFPGAN_SIZE
+        # Persona source faces by (path, mtime, size), so a replaced file is embedded again.
+        self.persona_faces: dict[tuple[str, float, int], Any] = {}
+        self.persona_faces_lock = threading.Lock()
         self.enhancer = None
         if enhancer_path and SEED_FINISH:
             import onnxruntime
@@ -208,6 +236,8 @@ class SwapEngine:
             self.restorer.run([self.restorer_output], {self.restorer_input: tensor})
         if self.enhancer is not None:
             self.enhance_frame(blank)
+        if self.gfpgan is not None:
+            self.gfpgan.run(None, {self.gfpgan_input: np.zeros((1, 3, GFPGAN_SIZE, GFPGAN_SIZE), dtype=np.float32)})
         for swapper in self.onnx_swappers.values():
             feed = {
                 name: np.zeros((1, 512) if name == "source" else (1, 3, SWAP_SIZE, SWAP_SIZE), dtype=dtype)
@@ -217,6 +247,9 @@ class SwapEngine:
 
     def has_swap_model(self, model: str) -> bool:
         return model in ("inswapper", "inswapper_fp16") or model in self.onnx_swapper_paths
+
+    def has_recipe(self, recipe: str) -> bool:
+        return recipe == "legacy" or (recipe == "longlive" and self.gfpgan is not None)
 
     def onnx_swapper(self, model: str) -> dict[str, Any]:
         import numpy as np
@@ -326,11 +359,29 @@ class SwapEngine:
             raise RuntimeError("png encode failed")
         return buffer.tobytes()
 
-    def reference_face(self, data_uri: str):
-        header, _, payload = data_uri.partition(",")
-        if not header.startswith("data:image/"):
-            raise ValueError("reference must be an image data URI")
-        image = self.decode_image(base64.b64decode(payload))
+    # The swap source comes from an allowlisted persona file only (persona_source_face), never from a session upload.
+    def persona_face(self, persona):
+        stat = os.stat(persona.path)
+        key = (persona.path, stat.st_mtime, stat.st_size)
+        with self.persona_faces_lock:
+            cached = self.persona_faces.get(key)
+        if cached is not None:
+            return cached
+        with open(persona.path, "rb") as file:
+            image = self.decode_image(file.read())
+        if image is None:
+            raise PersonaRejected(f"{persona.id}: image unreadable")
+        try:
+            face = self.source_face_from_image(image)
+        except ValueError as error:
+            raise PersonaRejected(f"{persona.id}: {error}") from error
+        with self.persona_faces_lock:
+            if len(self.persona_faces) >= 16:
+                self.persona_faces.clear()
+            self.persona_faces[key] = face
+        return face
+
+    def source_face_from_image(self, image):
         faces = self.identity.get(image)
         if not faces:
             # The detector misses a face that fills the whole photo; give it some border to work with.
@@ -400,6 +451,21 @@ class SwapEngine:
         blended = cv2.addWeighted(locked, COLOR_LOCK_BLEND, blended, 1.0 - COLOR_LOCK_BLEND, 0)
         return paste_patch(frame, blended, matrix)
 
+    # LongLive's face GPU pass: GFPGAN 1.4 on the aligned 512 FFHQ crop, GFPGAN_BLEND of it over the swapped face, pasted under the feathered ellipse.
+    def gfpgan_face(self, frame, face):
+        import cv2
+        import numpy as np
+
+        matrix, _ = cv2.estimateAffinePartial2D(face.kps.astype(np.float32), self.gfpgan_template, method=cv2.LMEDS)
+        if matrix is None:
+            return frame
+        crop = cv2.warpAffine(frame, matrix, (GFPGAN_SIZE, GFPGAN_SIZE), borderMode=cv2.BORDER_REPLICATE)
+        tensor = (crop[:, :, ::-1].astype(np.float32) / 127.5 - 1.0).transpose(2, 0, 1)[None]
+        output = self.gfpgan.run(None, {self.gfpgan_input: np.ascontiguousarray(tensor)})[0][0]
+        restored = np.clip((output.transpose(1, 2, 0) + 1.0) * 127.5, 0, 255)[:, :, ::-1].astype(np.uint8)
+        blended = cv2.addWeighted(restored, GFPGAN_BLEND, crop, 1.0 - GFPGAN_BLEND, 0)
+        return paste_patch(frame, blended, matrix)
+
     # The next clip's seed: the swapped last frame, restored only when the chain has already blurred it.
     def finish_seed(self, last_swapped):
         enhance_ms = 0
@@ -456,11 +522,13 @@ class SwapEngine:
             raise ValueError("the clip had no frames")
         return frame
 
-    def swap_tail(self, video_path: str, source_face, restore: bool = RESTORE_FRAMES) -> tuple[dict[str, Any], bytes]:
+    def swap_tail(
+        self, video_path: str, source_face, restore: bool = RESTORE_FRAMES, recipe: str = FACE_RECIPE
+    ) -> tuple[dict[str, Any], bytes]:
         started = time.perf_counter()
         frame = self.read_tail_frame(video_path)
         faces = self.detector.get(frame)
-        swapped = self.swap_frame(frame, source_face, faces, restore=restore)
+        swapped = self.swap_frame(frame, source_face, faces, restore=restore, recipe=recipe)
         swap_ms = int((time.perf_counter() - started) * 1000)
         seed_frame, enhance_ms, enhanced, sharpness_before, sharpness_after = self.finish_seed(swapped)
         stats = {
@@ -513,6 +581,7 @@ class SwapEngine:
         timings: dict[str, float] | None = None,
         model: str = DEFAULT_SWAP_MODEL,
         restore: bool = True,
+        recipe: str = FACE_RECIPE,
     ):
         import cv2
 
@@ -529,10 +598,16 @@ class SwapEngine:
                 patch, matrix = swapper.get(out, face, source_face, paste_back=False)
             size = patch.shape[0]
             original = cv2.warpAffine(frame, matrix, (size, size), borderMode=cv2.BORDER_REPLICATE)
-            patch = match_patch_color(patch, original, face_ellipse_mask(size))
+            if recipe == "longlive":
+                # The motion mask sits on ArcFace-128 eye and mouth positions; GHOST's 112 template puts them a few pixels off, still inside the soft ellipses.
+                patch = keep_motion(patch, original, MOTION_KEEP)
+            else:
+                patch = match_patch_color(patch, original, face_ellipse_mask(size))
             out = paste_patch(out, patch, matrix)
             swapped_at = time.perf_counter()
-            if restore and self.restorer is not None:
+            if recipe == "longlive":
+                out = self.gfpgan_face(out, face)
+            elif restore and self.restorer is not None:
                 out = self.restore_face(out, face, source_face)
             if timings is not None:
                 timings["swap"] += swapped_at - started
@@ -557,6 +632,7 @@ class SwapEngine:
         detect_every: int = 1,
         restore: bool = RESTORE_FRAMES,
         workers: int = WORKERS,
+        recipe: str = FACE_RECIPE,
     ) -> tuple[ClipSwapStats, bytes]:
         import cv2
 
@@ -601,7 +677,7 @@ class SwapEngine:
             local = {"swap": 0.0, "restore": 0.0}
             if faces is None:
                 faces = detect(frame)
-            swapped = self.swap_frame(frame, source_face, faces, local, model, restore)
+            swapped = self.swap_frame(frame, source_face, faces, local, model, restore, recipe)
             with timings_lock:
                 for key, value in local.items():
                     timings[key] += value
@@ -694,7 +770,7 @@ class SwapEngine:
             ms_per_frame=round(swap_ms / frames, 1),
             similarity_before=self.similarity(last_frame, source_face),
             similarity_after=self.similarity(last_swapped, source_face),
-            restored=restore and self.restorer is not None,
+            restored=recipe == "longlive" or (restore and self.restorer is not None),
             detect_ms=int(timings["detect"] * 1000),
             swap_stage_ms=int(timings["swap"] * 1000),
             restore_ms=int(timings["restore"] * 1000),
@@ -702,6 +778,7 @@ class SwapEngine:
             enhance_ms=enhance_ms,
             sharpness_before=sharpness_before,
             sharpness_after=sharpness_after,
+            recipe=recipe,
         )
         return stats, self.encode_png(seed_frame)
 
@@ -800,6 +877,31 @@ def face_ellipse_mask(size: int):
     return mask
 
 
+# Soft eye and mouth regions of an ArcFace-128 crop, ported from LongLive's face_restore.motion_mask.
+@lru_cache(maxsize=4)
+def motion_mask(size: int):
+    import cv2
+    import numpy as np
+
+    mask = np.zeros((size, size), np.float32)
+    (lx, ly), (rx, ry), _, (mlx, mly), (mrx, mry) = ARCFACE_128_TEMPLATE
+    for cx, cy, ax, ay in ((lx, ly, 0.11, 0.07), (rx, ry, 0.11, 0.07), ((mlx + mrx) / 2, (mly + mry) / 2, 0.17, 0.09)):
+        cv2.ellipse(mask, (int(cx * size), int(cy * size)), (int(ax * size), int(ay * size)), 0, 0, 360, 1.0, -1)
+    mask = cv2.GaussianBlur(mask, (0, 0), size / 32)
+    mask.setflags(write=False)
+    return mask
+
+
+# Lets `keep` of the generated eyes and mouth through the swapped patch, so blinks and speech are not flattened.
+def keep_motion(patch, original, keep: float):
+    import numpy as np
+
+    if keep <= 0:
+        return patch
+    weight = (motion_mask(patch.shape[0]) * keep)[:, :, None]
+    return (patch.astype(np.float32) * (1.0 - weight) + original.astype(np.float32) * weight).astype(np.uint8)
+
+
 # Reinhard LAB transfer of the swapped patch's moments onto the original crop's inside the face mask, then blended back by PATCH_COLOR_MATCH_BLEND.
 def match_patch_color(patch, original, mask, blend: float = PATCH_COLOR_MATCH_BLEND):
     import cv2
@@ -863,6 +965,33 @@ def bearer_token(authorization: str | None) -> str | None:
     return authorization[len("Bearer ") :]
 
 
+# The only swap source: an allowlisted persona resolved by LongLive's persona.py against the manifest under `root`. Fails closed with the reason; the caller plays the clip unswapped.
+def persona_source_face(engine: SwapEngine, root: str | None, persona_id: object):
+    from persona import resolve_persona
+
+    if root is None:
+        reason = "no persona store on this host"
+    else:
+        persona, reason = resolve_persona(root, persona_id)
+        if persona is not None:
+            return engine.persona_face(persona)
+    print(f"swap: persona gate refused ({reason}), clip stays unswapped", flush=True)
+    raise PersonaRejected(f"persona gate: {reason}")
+
+
+def check_swap_options(engine: SwapEngine, model: str, recipe: str) -> None:
+    if model not in SWAP_MODELS:
+        raise ValueError(f"unknown swap model {model!r}")
+    # Fail instead of silently swapping with inswapper under another model's name.
+    if not engine.has_swap_model(model):
+        raise ValueError(f"{model} is not available on this engine")
+    if recipe not in FACE_RECIPES:
+        raise ValueError(f"unknown face recipe {recipe!r}")
+    # Same for a recipe whose restore model is not loaded.
+    if not engine.has_recipe(recipe):
+        raise ValueError(f"{recipe} recipe is not available on this engine")
+
+
 def download(url: str, path: str) -> None:
     with urllib.request.urlopen(url, timeout=60) as response, open(path, "wb") as file:
         while True:
@@ -873,19 +1002,26 @@ def download(url: str, path: str) -> None:
 
 
 def swap_clip_from_url(
-    engine: SwapEngine, video_url: str, reference_data_uri: str, model: str = DEFAULT_SWAP_MODEL
+    engine: SwapEngine,
+    video_url: str,
+    persona_root: str | None,
+    persona_id: object,
+    model: str = DEFAULT_SWAP_MODEL,
 ) -> dict[str, Any]:
+    # Gate before the download, so a refused persona costs nothing.
+    check_swap_options(engine, model, FACE_RECIPE)
+    source_face = persona_source_face(engine, persona_root, persona_id)
     with tempfile.TemporaryDirectory() as directory:
         source_path = os.path.join(directory, "source.mp4")
         started = time.perf_counter()
         download(video_url, source_path)
         download_ms = int((time.perf_counter() - started) * 1000)
         with open(source_path, "rb") as file:
-            result = swap_clip_from_bytes(engine, file.read(), reference_data_uri, model)
+            result = swap_clip_with_face(engine, file.read(), source_face, model)
     result["stats"]["download_ms"] = download_ms
     stats = result["stats"]
     print(
-        f"swapClip: model={model} restored={stats['restored']} frames={stats['frames']} download_ms={download_ms} swap_ms={stats['swap_ms']} "
+        f"swapClip: persona={persona_id} model={model} recipe={stats['recipe']} restored={stats['restored']} frames={stats['frames']} download_ms={download_ms} swap_ms={stats['swap_ms']} "
         f"ms_per_frame={stats['ms_per_frame']} similarity={stats['similarity_before']}->{stats['similarity_after']} "
         f"enhance_ms={stats['enhance_ms']} sharpness={stats['sharpness_before']}->{stats['sharpness_after']}",
         flush=True,
@@ -894,9 +1030,10 @@ def swap_clip_from_url(
 
 
 def swap_tail_from_url(
-    engine: SwapEngine, video_url: str, reference_data_uri: str
+    engine: SwapEngine, video_url: str, persona_root: str | None, persona_id: object
 ) -> dict[str, Any]:
-    source_face = engine.reference_face(reference_data_uri)
+    check_swap_options(engine, DEFAULT_SWAP_MODEL, FACE_RECIPE)
+    source_face = persona_source_face(engine, persona_root, persona_id)
     with tempfile.TemporaryDirectory() as directory:
         source_path = os.path.join(directory, "source.mp4")
         started = time.perf_counter()
@@ -1001,9 +1138,10 @@ def face_crop_from_data_uri(engine: SwapEngine, data_uri: str, scale: float = 1.
 
 
 def swap_tail_from_bytes(
-    engine: SwapEngine, video: bytes, reference_data_uri: str
+    engine: SwapEngine, video: bytes, persona_root: str | None, persona_id: object
 ) -> dict[str, Any]:
-    source_face = engine.reference_face(reference_data_uri)
+    check_swap_options(engine, DEFAULT_SWAP_MODEL, FACE_RECIPE)
+    source_face = persona_source_face(engine, persona_root, persona_id)
     with tempfile.TemporaryDirectory() as directory:
         source_path = os.path.join(directory, "source.mp4")
         with open(source_path, "wb") as file:
@@ -1015,17 +1153,24 @@ def swap_tail_from_bytes(
 def swap_clip_from_bytes(
     engine: SwapEngine,
     video: bytes,
-    reference_data_uri: str,
+    persona_root: str | None,
+    persona_id: object,
+    model: str = DEFAULT_SWAP_MODEL,
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    check_swap_options(engine, model, (options or {}).get("recipe", FACE_RECIPE))
+    source_face = persona_source_face(engine, persona_root, persona_id)
+    return swap_clip_with_face(engine, video, source_face, model, options)
+
+
+def swap_clip_with_face(
+    engine: SwapEngine,
+    video: bytes,
+    source_face,
     model: str = DEFAULT_SWAP_MODEL,
     options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     # Response: base64 mp4 + base64 PNG of the swapped last frame (the next clip's seed) + stats.
-    if model not in SWAP_MODELS:
-        raise ValueError(f"unknown swap model {model!r}")
-    # Fail instead of silently swapping with inswapper under another model's name.
-    if not engine.has_swap_model(model):
-        raise ValueError(f"{model} is not available on this engine")
-    source_face = engine.reference_face(reference_data_uri)
     with tempfile.TemporaryDirectory() as directory:
         source_path = os.path.join(directory, "source.mp4")
         output_path = os.path.join(directory, "swapped.mp4")
@@ -1042,8 +1187,10 @@ def swap_clip_from_bytes(
     }
 
 
-def profile_networks(engine: SwapEngine, video: bytes, reference_data_uri: str, runs: int = 30) -> dict[str, Any]:
-    source_face = engine.reference_face(reference_data_uri)
+def profile_networks(
+    engine: SwapEngine, video: bytes, persona_root: str | None, persona_id: object, runs: int = 30
+) -> dict[str, Any]:
+    source_face = persona_source_face(engine, persona_root, persona_id)
     with tempfile.TemporaryDirectory() as directory:
         source_path = os.path.join(directory, "source.mp4")
         with open(source_path, "wb") as file:
@@ -1068,6 +1215,8 @@ def profile_networks(engine: SwapEngine, video: bytes, reference_data_uri: str, 
     }
     if engine.restorer is not None:
         result["restore_ms"] = timed(lambda: engine.restore_face(frame, face, source_face))
+    if engine.gfpgan is not None:
+        result["gfpgan_ms"] = timed(lambda: engine.gfpgan_face(frame, face))
     for model in list(engine.onnx_swappers):
         result[f"{model}_ms"] = timed(lambda: engine.onnx_patch(frame, face, source_face, model))
     return result

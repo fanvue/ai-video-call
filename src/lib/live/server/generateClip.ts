@@ -384,7 +384,7 @@ export const generateClip = async (
     try {
       const swapped = await swapClip({
         videoUrl,
-        referenceImageUrl: session.anchorFrameUrl,
+        personaId: request.personaId,
         budgetMs:
           job.kind === "greeting" ? SWAP_GREETING_BUDGET_MS : SWAP_BUDGET_MS,
         jobKind: job.kind,
