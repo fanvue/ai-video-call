@@ -1132,6 +1132,36 @@ def download(url: str, path: str) -> None:
             file.write(chunk)
 
 
+def check_frame_range(start_frame: int | None, end_frame: int | None) -> None:
+    if start_frame is not None and start_frame < 0:
+        raise ValueError("start_frame must be >= 0")
+    if end_frame is not None and end_frame <= (start_frame or 0):
+        raise ValueError("end_frame must be after start_frame")
+
+
+# One segment of a split swap, frames [start_frame, end_frame): lossless, so the swap sees the same pixels a whole-clip pass would, and the audio is cut to the same span.
+def trim_frames(source_path: str, output_path: str, start_frame: int | None, end_frame: int | None) -> None:
+    import cv2
+
+    capture = cv2.VideoCapture(source_path)
+    fps = capture.get(cv2.CAP_PROP_FPS) or 24.0
+    capture.release()
+    start = start_frame or 0
+    select = f"gte(n\\,{start})" if end_frame is None else f"between(n\\,{start}\\,{end_frame - 1})"
+    atrim = f"atrim=start={start / fps:.6f}" + ("" if end_frame is None else f":end={end_frame / fps:.6f}")
+    subprocess.run(
+        [
+            "ffmpeg", "-loglevel", "error", "-y", "-i", source_path,
+            "-vf", f"select='{select}',setpts=N/FRAME_RATE/TB",
+            "-af", f"{atrim},asetpts=PTS-STARTPTS",
+            "-map", "0:v:0", "-map", "0:a:0?",
+            "-c:v", "libx264", "-preset", "ultrafast", "-qp", "0", "-pix_fmt", "yuv420p", "-c:a", "aac",
+            output_path,
+        ],
+        check=True,
+    )
+
+
 def swap_clip_from_url(
     engine: SwapEngine,
     video_url: str,
@@ -1140,15 +1170,24 @@ def swap_clip_from_url(
     model: str = DEFAULT_SWAP_MODEL,
     recipe: str = FACE_RECIPE,
     occlusion_mask: bool | None = None,
+    start_frame: int | None = None,
+    end_frame: int | None = None,
 ) -> dict[str, Any]:
     # Gate before the download, so a refused persona costs nothing.
     check_swap_options(engine, model, recipe, occlusion_mask)
     source_face = persona_source_face(engine, persona_root, persona_id)
+    check_frame_range(start_frame, end_frame)
     with tempfile.TemporaryDirectory() as directory:
         source_path = os.path.join(directory, "source.mp4")
         started = time.perf_counter()
         download(video_url, source_path)
         download_ms = int((time.perf_counter() - started) * 1000)
+        if start_frame is not None or end_frame is not None:
+            trimmed_path = os.path.join(directory, "segment.mp4")
+            trim_started = time.perf_counter()
+            trim_frames(source_path, trimmed_path, start_frame, end_frame)
+            source_path = trimmed_path
+            print(f"swapClip: range={start_frame}:{end_frame} trim_ms={int((time.perf_counter() - trim_started) * 1000)}", flush=True)
         with open(source_path, "rb") as file:
             options: dict[str, Any] = {"recipe": recipe}
             if occlusion_mask is not None:

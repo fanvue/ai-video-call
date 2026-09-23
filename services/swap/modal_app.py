@@ -95,6 +95,9 @@ class SwapClipRequest(BaseModel):
     video_url: str
     # The swap source is a manifest persona; an uploaded reference sent here is ignored, never swapped in.
     persona_id: str | None = None
+    # Split swap: frames [start_frame, end_frame) only, so a reply's two halves swap on two containers at once; check_frame_range 422s a bad range. Absent, the whole clip.
+    start_frame: int | None = None
+    end_frame: int | None = None
     model: str = DEFAULT_SWAP_MODEL
     # "Face lock" under Advanced: "longlive" swaps in LongLive's persona recipe (kept eyes/mouth, GFPGAN restore) instead of the legacy pass.
     recipe: str = FACE_RECIPE
@@ -258,6 +261,8 @@ class SwapService:
                     body.model,
                     recipe=body.recipe,
                     occlusion_mask=body.occlusion_mask,
+                    start_frame=body.start_frame,
+                    end_frame=body.end_frame,
                 )
             except ValueError as error:
                 raise HTTPException(status_code=422, detail=str(error)) from error
