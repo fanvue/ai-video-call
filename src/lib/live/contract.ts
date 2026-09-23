@@ -480,7 +480,7 @@ export const LIVE_TUNABLES = {
   // Spend cap: every session auto-ends here regardless of activity. 5 min now that swap mode holds the face that long.
   MAX_SESSION_MS: 300_000,
   // Cumulative render spend cap: the pipeline stops dispatching new jobs once reached.
-  SESSION_COST_CAP_USD: 8,
+  SESSION_COST_CAP_USD: 10,
   // Director (minimax/h3-max/director) bills per second of live stream, promo rate; list price is
   // $0.08/sec. There is also a $1.20 session minimum charge regardless of duration.
   DIRECTOR_COST_PER_SEC_USD: 0.02,
