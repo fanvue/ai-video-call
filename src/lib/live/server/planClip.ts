@@ -1876,6 +1876,10 @@ export const planClip = ({
   // A greeting on a staged seed loops like an idle, so it needs no stretch and swaps 120 fewer frames at the join.
   const loopingGreeting =
     job.kind === "greeting" && session.seedFrameUrl !== session.anchorFrameUrl;
+  // Premium renders 81 frames, so every chain clip, the greeting included (Wan has no end frame to loop on), fits 5 s the way swap fits 10 s.
+  if (backend === "wan14b" && job.kind !== "idle") {
+    return fitForSwap(plan, LIVE_TUNABLES.WAN14B_CLIP_SEC);
+  }
   if (backend === "swap" && job.kind !== "idle" && !loopingGreeting) {
     return fitForSwap(
       plan,

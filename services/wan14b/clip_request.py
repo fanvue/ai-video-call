@@ -12,7 +12,8 @@ MIN_FRAMES = 17
 # 81 frames is the length the 480P model and the lightx2v 4-step LoRA were trained on; longer clips lose motion quality.
 MAX_FRAMES = 81
 DEFAULT_FRAMES = 81
-MAX_PROMPT_CHARS = 800
+# planClip prompts measured 2,043 to 2,276 characters; the T5 encoder truncates to 512 tokens itself.
+MAX_PROMPT_CHARS = 4000
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 # ArcFace cosine between the seed's face and the persona: chained Wan seeds measured 0.8 to 0.95, a different identity sits near 0.
 SEED_MIN_SIMILARITY = 0.35
@@ -88,6 +89,14 @@ def seed_image_bytes(image_url: str | None, image_base64: str | None) -> bytes:
     if image_base64:
         return decode_base64_image(image_base64)
     return fetch_image(image_url)
+
+
+def tone_reference_bytes(tone_url: str | None, tone_base64: str | None) -> bytes | None:
+    if tone_url and tone_base64:
+        raise ValueError("send tone_reference_url or tone_reference_base64, not both")
+    if tone_base64:
+        return decode_base64_image(tone_base64)
+    return fetch_image(tone_url) if tone_url else None
 
 
 def seed_gate(similarity: float | None) -> None:

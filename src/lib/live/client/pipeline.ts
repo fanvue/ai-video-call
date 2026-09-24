@@ -2,6 +2,7 @@
 // docs/LIVE_ENGINE.md "Clip chain: anchors and loops" / "Request latency policy".
 
 import {
+  isSwapSession,
   LIVE_TUNABLES,
   type ClipJob,
   type ClipRequest,
@@ -546,7 +547,7 @@ export class ClipPipeline {
     // Pre-stocked fillers seed from the starting frame, so they only pay off where the greeting lands back on it: reference re-seeds to it, and on a staged seed the greeting loops (see generateClip). Swap mode waits for the greeting instead: its loop covers the gap, and fillers swapping alongside it doubled the join.
     if (
       this.backend === "reference" ||
-      (this.backend !== "swap" && greetingLoopsOn(snapshot))
+      (!isSwapSession(this.backend) && greetingLoopsOn(snapshot))
     ) {
       this.fillIdleStockpile();
     }
@@ -809,13 +810,13 @@ export class ClipPipeline {
   }
 
   private idleBufferTarget(): number {
-    return this.backend === "swap"
+    return isSwapSession(this.backend)
       ? LIVE_TUNABLES.SWAP_IDLE_BUFFER_TARGET
       : LIVE_TUNABLES.IDLE_BUFFER_TARGET;
   }
 
   private idleMaxInflight(): number {
-    return this.backend === "swap"
+    return isSwapSession(this.backend)
       ? LIVE_TUNABLES.SWAP_IDLE_MAX_INFLIGHT
       : LIVE_TUNABLES.IDLE_MAX_INFLIGHT;
   }
@@ -932,7 +933,7 @@ export class ClipPipeline {
     this.tryAdvanceChain();
     // Swap mode's service restores the seed frame itself (services/swap enhance_frame); the fal upscaler timed out on every prod call.
     if (
-      this.backend !== "swap" &&
+      !isSwapSession(this.backend) &&
       this.now() - this.lastUpscaleAtMs >= LIVE_TUNABLES.UPSCALE_INTERVAL_MS
     ) {
       this.lastUpscaleAtMs = this.now();
@@ -1018,7 +1019,7 @@ export class ClipPipeline {
     }
     // The swap service takes one clip at a time (6 to 7 s each), and prod showed replies queueing 7 to 15 s behind fillers submitted while they rendered. While a request is in flight, fillers wait unless the shelf is bare.
     const chainSwapActive =
-      this.backend === "swap" &&
+      isSwapSession(this.backend) &&
       (this.chainInflight || this.pendingChainSwaps > 0);
     // Only a playable idle on the current target anchor counts as cover: an old-anchor idle cannot follow the new tail, and counting it left a beat's bridge idle unsubmitted for 39 s in prod, so the beat's end held for 8 s.
     const target = this.idleLaneTarget();
@@ -1062,7 +1063,7 @@ export class ClipPipeline {
           this.deckCountFor(anchorAtSubmit.frameUrl),
       },
       // Idle is never committed as canon or reused as a seed, so use the faster turbo backend; swap mode keeps swap, or the filler (most of what plays) would show the unswapped face.
-      backend: this.backend === "swap" ? "swap" : "turbo",
+      backend: isSwapSession(this.backend) ? "swap" : "turbo",
       speechMode: this.speechMode,
       swapFaceLock: this.swapFaceLock,
       swapHandMask: this.swapHandMask,

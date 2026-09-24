@@ -169,7 +169,7 @@ export const LiveStudio = () => {
       session
         .start(values.file, values.sceneId, {
           displayName: values.displayName || "Her",
-          backend: "swap",
+          backend: values.renderMode,
           speechMode: values.speechMode,
           swapFaceLock: values.swapFaceLock,
           swapHandMask: values.swapHandMask,

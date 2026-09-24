@@ -18,16 +18,18 @@ Fictional, company-owned synthetic personas only: `persona_id` must resolve in t
   "duration_s": null,
   "seed": 42,
   "swap": true,
-  "tone_reference_base64": "<the session's first seed; defaults to the persona photo>"
+  "tone_reference_base64": "<the session's first seed; defaults to the persona photo>",
+  "tone_reference_url": null
 }
 ```
 
-- Exactly one of `image_url` (https only, 10 MB cap) or `image_base64`.
+- Exactly one of `image_url` (https only, 10 MB cap) or `image_base64`; at most one of `tone_reference_url` or `tone_reference_base64`.
+- `prompt` up to 4,000 characters (the app's planner prompts run about 2,000 to 2,300).
 - `num_frames` is 4k+1 in 17..81, or `duration_s` rounds to that grid (16 fps, so 81 frames is 5.06 s). Default 81.
-- Response: `{video_base64 (h264 mp4, 480x832, 16 fps), last_frame_base64 (PNG, next seed), last_frame_format, stats}`; `stats` carries `render_ms`, `decode_ms`, `swap_ms`, `encode_ms`, `total_ms`, `tone_locked`, `similarity_after`.
+- Response: `{video_base64 (h264 mp4, 480x832, 16 fps), last_frame_base64 (PNG, next seed), last_frame_format, stats}`; `stats` carries `render_ms`, `decode_ms`, `swap_ms`, `encode_ms`, `total_ms`, `num_frames`, `fps`, `frames_with_face`, `tone_locked`, `similarity_after`.
 - `GET /health`. Modal-authenticated `Wan14bService.clip_bytes(body)` for laptop smoke tests.
 
-H100, `min_containers=0`, `scaledown_window=60`, `max_containers=2`, one clip per container.
+H100, `min_containers=0`, `scaledown_window=30`, `max_containers=2`, one clip per container.
 
 ## Deploy and smoke
 
@@ -43,9 +45,10 @@ H100, `min_containers=0`, `scaledown_window=60`, `max_containers=2`, one clip pe
 cd services/wan14b && ../../.venv-fal/bin/python -m unittest -v test_clip_request test_seed_lock
 ```
 
-## Integration points (follow-up, not done)
+## App integration (Premium render mode)
 
-- `src/lib/live/contract.ts`: add a `"wan14b"` backend to the backend enum beside `"swap"`.
-- `src/lib/live/server/generateClip.ts` / `renderClip.ts`: a render backend that posts to `/clip` with the session seed, and sets `session.seedFrameUrl` from `last_frame_base64` (upload to Blob) instead of calling `/swapTail`; skip the separate swap pass since the clip is already swapped.
-- `SetupScreen`: a premium toggle that picks the backend and persona.
-- Cost tracking: GPU seconds per clip (`stats.total_ms` x H100 rate) into the session cost ledger.
+- `contract.ts`: `"wan14b"` backend, `isSwapSession`, `WAN14B_CLIP_SEC` (5), `WAN14B_NUM_FRAMES` (81), `WAN14B_COST_PER_SEC_USD` (H100 list price), `premium` report on clip results.
+- `server/wan14bClip.ts`: posts to `/clip` with the session seed, persona and tone frame, rehosts the mp4 and PNG on fal storage like swap mode. URL from `WAN14B_SERVICE_URL` (defaults to the deployed app), auth is `SWAP_TOKEN`.
+- `server/generateClip.ts`: chain clips render here and seed the next clip from the returned last frame (no `/swapTail`, no client clip swap); idles stay on swap; any error or timeout re-plans that clip on swap and records `premium.status = "fallback"`, which the client reports as the `premiumFallback` telemetry event.
+- `server/planClip.ts`: chain clips fit to 5 s the way swap mode fits 10 s.
+- `SetupScreen`: "Premium (slower, best likeness)" beside the default Swap; Face lock and Hand mask are hidden for it.

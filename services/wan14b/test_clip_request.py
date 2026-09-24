@@ -89,6 +89,20 @@ class ImageInputTest(unittest.TestCase):
             urlopen.assert_not_called()
 
 
+    def test_tone_reference_is_optional_and_single_source(self):
+        self.assertIsNone(cr.tone_reference_bytes(None, None))
+        self.assertEqual(cr.tone_reference_bytes(None, base64.b64encode(PNG).decode()), PNG)
+        with self.assertRaises(ValueError):
+            cr.tone_reference_bytes("https://x/y.png", base64.b64encode(PNG).decode())
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            with self.assertRaises(ValueError):
+                cr.tone_reference_bytes("http://x/y.png", None)
+            urlopen.assert_not_called()
+
+    def test_prompt_cap_fits_planner_prompts(self):
+        self.assertEqual(cr.check_prompt("x" * 3000), "x" * 3000)
+
+
 class SeedGateTest(unittest.TestCase):
     def test_fails_closed(self):
         with self.assertRaises(ValueError):

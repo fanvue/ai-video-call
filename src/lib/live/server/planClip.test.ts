@@ -1185,3 +1185,39 @@ describe("planClip: setupOnly marks steps ahead of the real action", () => {
     expect(replyPlan("stand up").setupOnly).toBe(false);
   });
 });
+
+describe("planClip: Premium (wan14b) clip length", () => {
+  it("fits every chain clip, the greeting included, to WAN14B_CLIP_SEC and leaves idle alone", () => {
+    const base = { session: session(), speechMode: "text" as const };
+    expect(LIVE_TUNABLES.WAN14B_CLIP_SEC).toBe(5);
+    const greeting = planClip({
+      ...base,
+      job: { kind: "greeting" },
+      backend: "wan14b",
+    });
+    expect(greeting.durationSec).toBe(LIVE_TUNABLES.WAN14B_CLIP_SEC);
+    expect(greeting.prompt).toContain(
+      `By ${LIVE_TUNABLES.WAN14B_CLIP_SEC}s she is`,
+    );
+    const reply = planClip({
+      ...base,
+      job: {
+        kind: "reply",
+        requestId: "r1",
+        text: "wave at me",
+        channel: "chat",
+        from: "fan",
+        precededByIdle: false,
+      },
+      backend: "wan14b",
+    });
+    expect(reply.durationSec).toBe(LIVE_TUNABLES.WAN14B_CLIP_SEC);
+    expect(reply.prompt).not.toMatch(/\b1[01]s\b/);
+    const idle = planClip({
+      ...base,
+      job: { kind: "idle" },
+      backend: "wan14b",
+    });
+    expect(idle.durationSec).toBe(LIVE_TUNABLES.IDLE_CLIP_SEC);
+  });
+});

@@ -32,6 +32,7 @@ import {
   type RoomChatMessage,
 } from "@/lib/live/client/roomSim";
 import {
+  isSwapSession,
   LIVE_TUNABLES,
   type ClipJob,
   type ClipJobKind,
@@ -813,6 +814,14 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
 
       const result = event.result;
       clipMetaRef.current.set(result.clipId, result);
+      // Premium fails open to swap per clip; without this a Wan outage would only show as slower, cheaper-looking clips.
+      if (result.premium?.status === "fallback") {
+        reportTelemetry?.("premiumFallback", {
+          kind: result.jobKind,
+          wanMs: result.premium.wanMs,
+          reason: result.premium.reason?.slice(0, 200) ?? null,
+        });
+      }
       // Download each swapped clip as soon as it lands instead of when the player pulls it, so a clip that lands after a boundary plays about a second sooner (prod: 1.3 to 2.3 s from swap landed to on screen).
       if (
         result.swap !== undefined &&
@@ -1031,7 +1040,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
           ms: CONNECT_STALL_MS,
         });
       }, CONNECT_STALL_MS);
-      if (options.backend === "swap") {
+      if (isSwapSession(options.backend)) {
         deps.warmSwap().catch(() => undefined);
       }
       greetingPlayedRef.current = false;
@@ -1056,7 +1065,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       setPrivateModeState(false);
       player.reset();
       // Swap mode sets the scene inside its reference-to-video greeting, so it skips the 17 to 35 s still.
-      const stage = options.backend !== "swap";
+      const stage = !isSwapSession(options.backend);
       const prepared = preparedReferenceRef.current;
       const reference =
         prepared &&
@@ -1155,7 +1164,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         : null;
       // Start a reply's (and the greeting's) full swap from the clip route's render stream instead of after its seed swap, taking that 2 to 4 s off the wait; at most one such early swap runs, outside the pipeline's swap slots.
       const earlyReplySwaps =
-        options.backend === "swap" &&
+        isSwapSession(options.backend) &&
         earlySwaps !== null &&
         LIVE_TUNABLES.SWAP_DEFER_CLIP;
       const pipeline = new ClipPipeline({
@@ -1184,7 +1193,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         needsIdentityReference: () =>
           directorRef.current?.consumeIdentityReferenceDue(Date.now()) ?? false,
         finalizeSwap:
-          options.backend === "swap" && runSwap
+          isSwapSession(options.backend) && runSwap
             ? (result) => {
                 const early = earlySwaps?.take(result);
                 const rest = earlySwaps?.takeRest(result);

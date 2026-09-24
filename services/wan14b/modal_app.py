@@ -71,6 +71,8 @@ class ClipRequest(BaseModel):
     swap: StrictBool = True
     # The session's first seed; the next seed's face tone is pulled toward it. Absent, the persona photo is the reference.
     tone_reference_base64: str | None = None
+    # Same reference as a URL, how the app sends it (the session's toneFrameUrl on fal storage).
+    tone_reference_url: str | None = None
 
 
 @app.cls(
@@ -161,8 +163,7 @@ class Wan14bService:
         prompt = check_prompt(body.get("prompt"))
         num_frames = frame_count(body.get("num_frames"), body.get("duration_s"))
         seed_bytes = seed_image_bytes(body.get("image_url"), body.get("image_base64"))
-        tone_reference = body.get("tone_reference_base64")
-        tone_bytes = clip_request.decode_base64_image(tone_reference) if tone_reference else None
+        tone_bytes = clip_request.tone_reference_bytes(body.get("tone_reference_url"), body.get("tone_reference_base64"))
         root = self.fresh_personas()
         source_face = persona_source_face(self.swap, root, body.get("persona_id"))
         persona, _ = resolve_persona(root, body.get("persona_id"))
@@ -178,18 +179,21 @@ class Wan14bService:
 
             def one(frame):
                 bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                out = self.swap.swap_frame(bgr, source_face, self.swap.detector.get(bgr), model="inswapper_fp16",
-                                           restore=False, recipe="legacy")
-                return cv2.cvtColor(out, cv2.COLOR_BGR2RGB)
+                faces = self.swap.detector.get(bgr)
+                out = self.swap.swap_frame(bgr, source_face, faces, model="inswapper_fp16", restore=False, recipe="legacy")
+                return cv2.cvtColor(out, cv2.COLOR_BGR2RGB), bool(faces)
 
             with ThreadPoolExecutor(3) as pool:
-                frames = np.stack(list(pool.map(one, frames)))
+                swapped = list(pool.map(one, frames))
+            frames = np.stack([frame for frame, _ in swapped])
+            frames_with_face = sum(had_face for _, had_face in swapped)
             last_bgr = cv2.cvtColor(frames[-1], cv2.COLOR_RGB2BGR)
         else:
             # Unswapped playback still seeds from a swapped tail, as swap mode's /swapTail does.
             last_bgr = cv2.cvtColor(frames[-1], cv2.COLOR_RGB2BGR)
             last_bgr = self.swap.swap_frame(last_bgr, source_face, self.swap.detector.get(last_bgr), model="inswapper_fp16",
                                             restore=False, recipe="legacy")
+            frames_with_face = 0
         timings["swap_ms"] = int((time.perf_counter() - mark) * 1000)
         face = self.largest_face(last_bgr)
         seed_out, tone_locked = seed_lock.tone_lock(last_bgr, face.kps if face is not None else None,
@@ -198,7 +202,8 @@ class Wan14bService:
         video = encode_mp4(frames)
         timings["encode_ms"] = int((time.perf_counter() - mark) * 1000)
         timings["total_ms"] = int((time.perf_counter() - started) * 1000)
-        stats = {**timings, "num_frames": int(frames.shape[0]), "fps": 16, "tone_locked": tone_locked,
+        stats = {**timings, "num_frames": int(frames.shape[0]), "fps": 16, "frames_with_face": frames_with_face,
+                 "tone_locked": tone_locked,
                  "similarity_after": self.seed_similarity(seed_out, source_face)}
         print(f"wan14b: {stats}", flush=True)
         return {

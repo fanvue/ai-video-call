@@ -22,11 +22,31 @@ const SCENES: { id: SceneId; label: string }[] = [
   { id: "kitchen", label: "Kitchen" },
 ];
 
+// Swap is the default; Premium renders chain clips on our Wan 14B service and falls back to swap per clip.
+export type RenderMode = "swap" | "wan14b";
+
+const RENDER_MODES: { id: RenderMode; label: string; hint: string }[] = [
+  {
+    id: "swap",
+    label: "Swap",
+    hint: "Default and fastest",
+  },
+  {
+    id: "wan14b",
+    label: "Premium (slower, best likeness)",
+    hint: "About 16 s to make each 5 s clip on one H100, about $4/hr while rendering",
+  },
+];
+
+// Face lock and Hand mask tune the swap recipe; Premium swaps inside its own service, so they would do nothing there.
+export const showsSwapTuning = (mode: RenderMode): boolean => mode === "swap";
+
 export type SetupSubmit = {
   file: File;
   sceneId: SceneId;
   displayName: string;
   speechMode: SpeechMode;
+  renderMode: RenderMode;
   swapFaceLock: boolean;
   swapHandMask: boolean;
   swapPersonaId?: string;
@@ -78,6 +98,7 @@ export const SetupScreen = ({
   // On by default: the persona recipe held identity best in testing, for about 2.3x the swap GPU time.
   const [swapFaceLock, setSwapFaceLock] = useState(true);
   const [swapHandMask, setSwapHandMask] = useState(false);
+  const [renderMode, setRenderMode] = useState<RenderMode>("swap");
   const [personaSettings, setPersonaSettings] = useState(
     initialPersonaSettings,
   );
@@ -236,6 +257,36 @@ export const SetupScreen = ({
         </div>
       </div>
 
+      <div
+        className="flex flex-col gap-2"
+        role="radiogroup"
+        aria-label="Render"
+      >
+        <span className="text-sm font-medium text-[var(--foreground)]">
+          Render
+        </span>
+        {RENDER_MODES.map((mode) => (
+          <label
+            key={mode.id}
+            className="flex flex-col gap-0.5 text-sm text-[var(--foreground)]"
+          >
+            <span className="flex items-center gap-2">
+              <input
+                type="radio"
+                name="renderMode"
+                value={mode.id}
+                checked={renderMode === mode.id}
+                onChange={() => setRenderMode(mode.id)}
+              />
+              {mode.label}
+            </span>
+            <span className="pl-6 text-xs text-[var(--muted)]">
+              {mode.hint}
+            </span>
+          </label>
+        ))}
+      </div>
+
       <div className="flex flex-col gap-2">
         <button
           type="button"
@@ -255,40 +306,48 @@ export const SetupScreen = ({
               />
               Voice (experimental)
             </label>
-            <p className="text-xs text-[var(--muted)]">
-              Each Turbo clip gets the persona face swapped in on our own GPU
-              before it plays, under a cent a clip. A 10 s reply&apos;s first 4
-              s shows about 3.5 s after it renders (4.5 s with Face lock) while
-              the rest swaps alongside; the swapped last frame seeds the next
-              clip so identity re-locks every clip.
-            </p>
-            <div className="flex flex-col gap-1">
-              <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
-                <input
-                  type="checkbox"
-                  checked={swapFaceLock}
-                  onChange={(event) => setSwapFaceLock(event.target.checked)}
-                />
-                Face lock
-              </label>
-              <p className="text-xs text-[var(--muted)]">
-                Persona swap plus GFPGAN face restore, as in LongLive; about
-                2.3x the swap GPU time
-              </p>
-            </div>
-            <div className="flex flex-col gap-1">
-              <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
-                <input
-                  type="checkbox"
-                  checked={swapHandMask}
-                  onChange={(event) => setSwapHandMask(event.target.checked)}
-                />
-                Hand mask
-              </label>
-              <p className="text-xs text-[var(--muted)]">
-                Keeps hands in front of the face crisp, but swaps run slower
-              </p>
-            </div>
+            {showsSwapTuning(renderMode) ? (
+              <>
+                <p className="text-xs text-[var(--muted)]">
+                  Each Turbo clip gets the persona face swapped in on our own
+                  GPU before it plays, under a cent a clip. A 10 s reply&apos;s
+                  first 4 s shows about 3.5 s after it renders (4.5 s with Face
+                  lock) while the rest swaps alongside; the swapped last frame
+                  seeds the next clip so identity re-locks every clip.
+                </p>
+                <div className="flex flex-col gap-1">
+                  <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
+                    <input
+                      type="checkbox"
+                      checked={swapFaceLock}
+                      onChange={(event) =>
+                        setSwapFaceLock(event.target.checked)
+                      }
+                    />
+                    Face lock
+                  </label>
+                  <p className="text-xs text-[var(--muted)]">
+                    Persona swap plus GFPGAN face restore, as in LongLive; about
+                    2.3x the swap GPU time
+                  </p>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
+                    <input
+                      type="checkbox"
+                      checked={swapHandMask}
+                      onChange={(event) =>
+                        setSwapHandMask(event.target.checked)
+                      }
+                    />
+                    Hand mask
+                  </label>
+                  <p className="text-xs text-[var(--muted)]">
+                    Keeps hands in front of the face crisp, but swaps run slower
+                  </p>
+                </div>
+              </>
+            ) : null}
             <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
               Persona
               <select
@@ -372,8 +431,10 @@ export const SetupScreen = ({
             sceneId,
             displayName: displayName.trim(),
             speechMode: voiceExperimental ? "native" : "text",
-            swapFaceLock,
-            swapHandMask,
+            renderMode,
+            // Hidden for Premium, so its swap fallback runs the default legacy recipe, the one the Wan service swaps with.
+            swapFaceLock: showsSwapTuning(renderMode) && swapFaceLock,
+            swapHandMask: showsSwapTuning(renderMode) && swapHandMask,
             ...submittedPersona(personaSettings),
           });
         }}

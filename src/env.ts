@@ -23,6 +23,12 @@ export const env = createEnv({
     SWAP_TOKEN: z.string().min(16).optional(),
     // The swap app's CPU persona store (PersonaStore web URL); unset, swap mode lists no personas and registration answers 503.
     SWAP_PERSONA_URL: z.url().optional(),
+    // Premium's Wan 14B service (services/wan14b); not a secret, it checks the same SWAP_TOKEN as the swap service.
+    WAN14B_SERVICE_URL: z
+      .url()
+      .default(
+        "https://jamal-77992--ai-video-wan14b-wan14bservice-web.modal.run",
+      ),
     // Test-only language and vision models; unset leaves every OpenRouter option unavailable.
     OPENROUTER_API_KEY: z.string().min(1).optional(),
     // One-off token for running /api/live/orBench without a browser session; removed after each bench.
@@ -48,6 +54,7 @@ export const env = createEnv({
     SWAP_SERVICE_URL: process.env.SWAP_SERVICE_URL,
     SWAP_TOKEN: process.env.SWAP_TOKEN,
     SWAP_PERSONA_URL: process.env.SWAP_PERSONA_URL,
+    WAN14B_SERVICE_URL: process.env.WAN14B_SERVICE_URL,
     OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
     BENCH_TOKEN: process.env.BENCH_TOKEN,
   },

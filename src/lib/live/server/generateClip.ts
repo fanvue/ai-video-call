@@ -7,6 +7,7 @@ import {
   LIVE_TUNABLES,
   stateFrameKey,
   swapRecipeFor,
+  type ClipPremiumReport,
   type ClipRequest,
   type ClipResult,
   type ClipSwapReport,
@@ -33,6 +34,7 @@ import {
   swapServiceLastFrame,
   swapTail,
 } from "./swapClip";
+import { wan14bClip, type Wan14bClipOutcome } from "./wan14bClip";
 import { writeCheckIn, writeReply } from "./writeReply";
 
 const ANATOMY_ISSUE_RE = /extra person|extra or malformed limbs/;
@@ -270,74 +272,22 @@ export const generateClip = async (
   // Two-phase swap only: the unswapped clip's url as soon as it renders, so the client can start the full swap while the seed swap and checks still run.
   onRendered?: (videoUrl: string) => void,
 ): Promise<ClipResult> => {
-  const { session, job, backend, speechMode, useIdentityReference } = request;
+  const { session, job, speechMode, useIdentityReference } = request;
+  // Premium idles stay on swap: they loop on the anchor, which Wan cannot (no end frame), and a 16 s render is too slow for a filler.
+  let backend =
+    request.backend === "wan14b" && job.kind === "idle"
+      ? "swap"
+      : request.backend;
 
   const planStarted = Date.now();
   const parsedIntents =
     job.kind === "reply"
       ? await llmIntentsFor(job.text, session.state, request.intentParser)
       : undefined;
-  const plan = planClip({ session, job, speechMode, backend, parsedIntents });
+  let plan = planClip({ session, job, speechMode, backend, parsedIntents });
   const planMs = Date.now() - planStarted;
 
-  const greetingFromReference =
-    backend === "swap" &&
-    job.kind === "greeting" &&
-    session.seedFrameUrl === session.anchorFrameUrl;
-  const chainFromReference =
-    backend === "swap" &&
-    LIVE_TUNABLES.SWAP_CHAIN_FROM_REFERENCE &&
-    !!session.identityFrameUrl &&
-    job.kind !== "idle" &&
-    job.kind !== "greeting";
-  const videoBackend = renderBackendFor(backend, {
-    greetingFromReference,
-    chainFromReference,
-  });
-  // Only idle loops on the anchor; every other job chains forward from a real generated frame, single-image-seed style — pinning a hold's end frame to the seed never stopped it from drifting mid-clip, it only masked the seam for the next clip.
-  // The greeting also loops when its seed is a staged in-scene still (seed differs from the identity photo), so the idles pre-stocked from that frame stay playable after it. On the raw upload it chains: the photo's clothes and room contradict the prompt and every loop back to it popped.
-  const greetingLoops =
-    job.kind === "greeting" && session.seedFrameUrl !== session.anchorFrameUrl;
-  const isAnchoredLoop =
-    (job.kind === "idle" || greetingLoops) && videoBackend.supportsEndFrame;
-  // Idle never seeds the next clip even where it cannot loop (reference backend); an anchored loop returns to its seed.
-  const keepsSessionSeed = job.kind === "idle" || isAnchoredLoop;
-  // Hold clip (idle/greeting/checkIn/non-wardrobe act/hold/pose transition) — must be verified before it can play; see checkFrame below.
-  const isHoldClip = plan.wardrobeIntent === null && !plan.explicit;
-  // Explicit act with no wardrobe change of its own (useProp, twerk, ...) — checked like a hold clip but fails open on an unchecked frame; see evaluateFrameChecks.
-  const isExplicitNonWardrobe = plan.wardrobeIntent === null && plan.explicit;
-
-  // Pose bank: a chain clip landing in a state seen before ends on that state's first clean frame and seeds from it, so the session seed stops accumulating one generation of drift per act.
-  const bankedEndFrameUrl =
-    backend === "swap" &&
-    !LIVE_TUNABLES.VERIFY_FRAMES &&
-    !keepsSessionSeed &&
-    videoBackend.supportsEndFrame
-      ? session.stateFrames?.[stateFrameKey(plan.expectedState)]
-      : undefined;
-
-  // A reference-rendered chain clip always carries the head-only crop: identity is the reason it left turbo, and the full upload's room and clothes were copied into the scene.
-  const identityReferenceUrl = !videoBackend.supportsIdentityReference
-    ? undefined
-    : chainFromReference
-      ? session.identityFrameUrl
-      : useIdentityReference
-        ? session.anchorFrameUrl
-        : undefined;
-
-  const renderStarted = Date.now();
-  // The reference model has no first frame to inherit the room from, so the prompt establishes it and pins the upload to identity only.
-  const prompt = greetingFromReference
-    ? `Image 1 is the woman's identity only: face, hair, skin tone and build. Do not copy its pose, clothing or background. Scene: ${STAGE_ROOM_BY_SCENE[session.creator.sceneId]} ${plan.prompt}`
-    : plan.prompt;
-  const renderPromise = videoBackend.render({
-    prompt,
-    seedFrameUrl: session.seedFrameUrl,
-    durationSec: plan.durationSec,
-    endFrameUrl: isAnchoredLoop ? session.seedFrameUrl : bankedEndFrameUrl,
-    identityReferenceUrl,
-  });
-
+  // Started before the render so a Premium clip, and its swap fallback, write her reply alongside it.
   const replyTextPromise: Promise<{ text: string; nextWorld: string } | null> =
     !plan.needsReplyText
       ? Promise.resolve(null)
@@ -363,6 +313,103 @@ export const generateClip = async (
             })
           : Promise.resolve(null);
 
+  const renderStarted = Date.now();
+  // Premium: Wan renders from the seed and returns the swapped clip and its tone-locked last frame, so /swapTail and the client's clip swap are skipped. Fails open to the swap path for this clip.
+  let premiumClip: Wan14bClipOutcome | null = null;
+  let premium: ClipPremiumReport | undefined;
+  if (backend === "wan14b") {
+    try {
+      premiumClip = await wan14bClip({
+        prompt: plan.prompt,
+        seedFrameUrl: session.seedFrameUrl,
+        personaId: request.personaId,
+        toneReferenceUrl: session.toneFrameUrl,
+        jobKind: job.kind,
+      });
+      premium = {
+        status: "rendered",
+        wanMs: premiumClip.totalMs,
+        reason: null,
+      };
+    } catch (error) {
+      const reason = `${swapFailureReason(error)}: ${error instanceof Error ? error.message : String(error)}`;
+      console.warn(
+        `generateClip: premium fell back to swap kind=${job.kind} reason=${reason}`,
+      );
+      premium = {
+        status: "fallback",
+        wanMs: Date.now() - renderStarted,
+        reason: reason.slice(0, 300),
+      };
+      backend = "swap";
+      plan = planClip({ session, job, speechMode, backend, parsedIntents });
+    }
+  }
+
+  const greetingFromReference =
+    backend === "swap" &&
+    job.kind === "greeting" &&
+    session.seedFrameUrl === session.anchorFrameUrl;
+  const chainFromReference =
+    backend === "swap" &&
+    LIVE_TUNABLES.SWAP_CHAIN_FROM_REFERENCE &&
+    !!session.identityFrameUrl &&
+    job.kind !== "idle" &&
+    job.kind !== "greeting";
+  const videoBackend = renderBackendFor(backend, {
+    greetingFromReference,
+    chainFromReference,
+  });
+  // Only idle loops on the anchor; every other job chains forward from a real generated frame, single-image-seed style — pinning a hold's end frame to the seed never stopped it from drifting mid-clip, it only masked the seam for the next clip.
+  // The greeting also loops when its seed is a staged in-scene still (seed differs from the identity photo), so the idles pre-stocked from that frame stay playable after it. On the raw upload it chains: the photo's clothes and room contradict the prompt and every loop back to it popped.
+  const greetingLoops =
+    job.kind === "greeting" && session.seedFrameUrl !== session.anchorFrameUrl;
+  const isAnchoredLoop =
+    !premiumClip &&
+    (job.kind === "idle" || greetingLoops) &&
+    videoBackend.supportsEndFrame;
+  // Idle never seeds the next clip even where it cannot loop (reference backend); an anchored loop returns to its seed.
+  const keepsSessionSeed = job.kind === "idle" || isAnchoredLoop;
+  // Hold clip (idle/greeting/checkIn/non-wardrobe act/hold/pose transition) — must be verified before it can play; see checkFrame below.
+  const isHoldClip = plan.wardrobeIntent === null && !plan.explicit;
+  // Explicit act with no wardrobe change of its own (useProp, twerk, ...) — checked like a hold clip but fails open on an unchecked frame; see evaluateFrameChecks.
+  const isExplicitNonWardrobe = plan.wardrobeIntent === null && plan.explicit;
+
+  // Pose bank: a chain clip landing in a state seen before ends on that state's first clean frame and seeds from it, so the session seed stops accumulating one generation of drift per act.
+  const bankedEndFrameUrl =
+    backend === "swap" &&
+    !LIVE_TUNABLES.VERIFY_FRAMES &&
+    !keepsSessionSeed &&
+    videoBackend.supportsEndFrame
+      ? session.stateFrames?.[stateFrameKey(plan.expectedState)]
+      : undefined;
+
+  // A reference-rendered chain clip always carries the head-only crop: identity is the reason it left turbo, and the full upload's room and clothes were copied into the scene.
+  const identityReferenceUrl = !videoBackend.supportsIdentityReference
+    ? undefined
+    : chainFromReference
+      ? session.identityFrameUrl
+      : useIdentityReference
+        ? session.anchorFrameUrl
+        : undefined;
+
+  // The reference model has no first frame to inherit the room from, so the prompt establishes it and pins the upload to identity only.
+  const prompt = greetingFromReference
+    ? `Image 1 is the woman's identity only: face, hair, skin tone and build. Do not copy its pose, clothing or background. Scene: ${STAGE_ROOM_BY_SCENE[session.creator.sceneId]} ${plan.prompt}`
+    : plan.prompt;
+  const renderPromise = premiumClip
+    ? Promise.resolve({
+        videoUrl: premiumClip.videoUrl,
+        costUsd: premiumClip.costUsd,
+      })
+    : videoBackend.render({
+        prompt,
+        seedFrameUrl: session.seedFrameUrl,
+        durationSec: plan.durationSec,
+        endFrameUrl: isAnchoredLoop ? session.seedFrameUrl : bankedEndFrameUrl,
+        identityReferenceUrl,
+      });
+
   // Render is the one hard-fail path — everything after this point degrades instead of throwing.
   const rendered = await renderPromise;
   const renderMs = Date.now() - renderStarted;
@@ -379,7 +426,10 @@ export const generateClip = async (
   let costUsd = rendered.costUsd;
   let swapReport: ClipSwapReport | undefined;
   let swappedLastFrameUrl: string | null = null;
-  if (backend === "swap" && LIVE_TUNABLES.SWAP_DEFER_CLIP) {
+  if (premiumClip) {
+    swapReport = premiumClip.report;
+    swappedLastFrameUrl = premiumClip.lastFrameUrl;
+  } else if (backend === "swap" && LIVE_TUNABLES.SWAP_DEFER_CLIP) {
     // Two-phase swap: the clip comes back unswapped and pending, so the chain renders its next clip right after this render instead of after the 7 s clip swap; the client swaps the full clip before it plays (api/live/swap). Seeding from a swapped tail was reverted in 820c0c6 for stacking a swap on an already swapped and restored face, but that was with GPEN restore at 0.8 plus colour lock at 0.5, and both are off now, so the seed below goes through /swapTail instead of staying on the raw render.
     swapReport = pendingSwapReport();
     onRendered?.(videoUrl);
@@ -715,5 +765,6 @@ export const generateClip = async (
     timings: { planMs, renderMs, frameMs, guardMs, repairMs: 0, verifyMs },
     costUsd,
     swap: swapReport,
+    ...(premium ? { premium } : {}),
   };
 };

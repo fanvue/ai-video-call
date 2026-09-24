@@ -229,8 +229,17 @@ export type ClipJobKind = ClipJob["kind"];
 
 // "swap" is our self-hosted per-clip identity swap over the turbo pipeline's output; see server/swapClip.ts.
 // Setup only offers swap; "turbo" and "reference" remain because the planner and pipeline still branch on them.
-export const renderBackendSchema = z.enum(["turbo", "reference", "swap"]);
+// "wan14b" is Premium: chain clips render on our own Wan 14B service (services/wan14b), idles and any failed clip stay on swap.
+export const renderBackendSchema = z.enum([
+  "turbo",
+  "reference",
+  "swap",
+  "wan14b",
+]);
 export type RenderBackend = z.infer<typeof renderBackendSchema>;
+// Premium keeps swap mode's client behaviour (no staging, swap fillers, deferred swaps for fallback clips).
+export const isSwapSession = (backend: RenderBackend | undefined): boolean =>
+  backend === "swap" || backend === "wan14b";
 
 const speechModeSchema = z.enum(["text", "native"]);
 export type SpeechMode = z.infer<typeof speechModeSchema>;
@@ -339,11 +348,21 @@ export const clipSwapReportSchema = z.object({
 });
 export type ClipSwapReport = z.infer<typeof clipSwapReportSchema>;
 
+// Premium (wan14b) chain clips only: "fallback" means the Wan service failed or timed out and this clip rendered on the swap path.
+export const clipPremiumReportSchema = z.object({
+  status: z.enum(["rendered", "fallback"]),
+  // Time spent on the Wan call, including a failed or timed-out one.
+  wanMs: z.number().int().min(0),
+  reason: z.string().max(300).nullable(),
+});
+export type ClipPremiumReport = z.infer<typeof clipPremiumReportSchema>;
+
 export const clipResultSchema = z.object({
   clipId: z.string().min(1),
   jobKind: z.enum(["greeting", "idle", "checkIn", "reply", "beat"]),
   videoUrl: z.url(),
-  durationSec: z.number().int().min(10).max(15),
+  // 5 for a Premium (wan14b) clip, 81 frames at 16 fps; every fal render is 10 or more.
+  durationSec: z.number().int().min(5).max(15),
   // Guarded last frame. The client MUST use this as the next seed.
   seedFrameUrl: z.url(),
   // True when the clip starts and ends on the request's seed frame (idle loops). Such clips are
@@ -379,6 +398,7 @@ export const clipResultSchema = z.object({
   }),
   costUsd: z.number().min(0),
   swap: clipSwapReportSchema.optional(),
+  premium: clipPremiumReportSchema.optional(),
 });
 export type ClipResult = z.infer<typeof clipResultSchema>;
 
@@ -482,4 +502,9 @@ export const LIVE_TUNABLES = {
   SESSION_COST_CAP_USD: 10,
   // Swap runs on our own Modal L40S at $1.95/hr; charged per clip on the service's reported swap time.
   SWAP_COST_PER_SEC_USD: 1.95 / 3600,
+  // Premium renders 81 frames at 16 fps, the length Wan2.1 480P and the 4-step LoRA were trained on.
+  WAN14B_CLIP_SEC: 5,
+  WAN14B_NUM_FRAMES: 81,
+  // Modal H100 list price; charged per clip on the service's reported total time.
+  WAN14B_COST_PER_SEC_USD: 3.95 / 3600,
 } as const;

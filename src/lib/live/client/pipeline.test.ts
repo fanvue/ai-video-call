@@ -1494,6 +1494,7 @@ describe("ClipPipeline", () => {
 
   it.each([
     ["swap", "swap"],
+    ["wan14b", "swap"],
     ["reference", "turbo"],
     ["turbo", "turbo"],
   ] as const)(
