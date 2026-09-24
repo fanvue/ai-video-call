@@ -1124,13 +1124,13 @@ describe("ClipPipeline", () => {
     expect(pipeline.getBufferStats().idleReady).toBe(0);
   });
 
-  it("stops dispatching new render jobs once cumulative cost reaches SESSION_COST_CAP_USD", async () => {
+  it("stops dispatching new render jobs once cumulative cost reaches the default cost cap", async () => {
     const events: PipelineEvent[] = [];
     const renderCalls: ClipRequest[] = [];
     const queue = makeJobQueue();
     // Each clip costs enough that the greeting alone (plus its initial idle stockpile) crosses
     // the cap, so no further job should ever be dispatched after that first batch settles.
-    const bigCost = LIVE_TUNABLES.SESSION_COST_CAP_USD;
+    const bigCost = LIVE_TUNABLES.DEFAULT_SESSION_COST_CAP_USD;
     const pipeline = trackedPipeline({
       now: nowFn,
       onEvent: (e) => events.push(e),
@@ -1162,6 +1162,41 @@ describe("ClipPipeline", () => {
     expect(renderCalls.some((r) => r.job.kind === "reply")).toBe(false);
     expect(events.filter((e) => e.type === "costCapReached")).toHaveLength(1);
   });
+
+  it.each([
+    [5, 3, true],
+    [50, 3, false],
+    [Number.NaN, LIVE_TUNABLES.DEFAULT_SESSION_COST_CAP_USD, true],
+  ])(
+    "a configured cap of %s with a %s greeting ends the session: %s",
+    async (costCapUsd, greetingCost, capped) => {
+      const events: PipelineEvent[] = [];
+      const queue = makeJobQueue();
+      const pipeline = trackedPipeline({
+        costCapUsd,
+        now: nowFn,
+        onEvent: (e) => events.push(e),
+        render: async (req) =>
+          delayed(() =>
+            makeResult(
+              req.job.kind === "idle" ? "idle" : "greeting",
+              req.job.kind === "idle" ? req.session.seedFrameUrl : freshFrame(),
+              { costUsd: req.job.kind === "idle" ? 0 : greetingCost },
+            ),
+          ),
+      });
+
+      pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+      await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+      // A 3 dollar greeting stays under both the 50 cap and the 40 default, so only the configured 5 ends it; NaN fails closed to the default.
+      pipeline.nextClip();
+      queue.push({ ...REPLY_JOB, requestId: "r1" });
+      pipeline.onRequestEnqueued();
+      await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+
+      expect(events.some((e) => e.type === "costCapReached")).toBe(capped);
+    },
+  );
 
   it("dispatches a bridge idle for the chain tail the instant the chain clip settles approved, before any pickNext/nextClip call", async () => {
     const idleRequests: ClipRequest[] = [];
@@ -1495,6 +1530,7 @@ describe("ClipPipeline", () => {
   it.each([
     ["swap", "swap"],
     ["wan14b", "swap"],
+    ["commercial", "commercial"],
     ["reference", "turbo"],
     ["turbo", "turbo"],
   ] as const)(

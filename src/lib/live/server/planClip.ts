@@ -1,6 +1,7 @@
 import { HELD_OBJECTS, isIntentSatisfied } from "../intents";
 import {
   LIVE_TUNABLES,
+  rendersLikeSwap,
   type BeatIntent,
   type Body,
   type ClipJob,
@@ -1880,7 +1881,7 @@ export const planClip = ({
   if (backend === "wan14b" && job.kind !== "idle") {
     return fitForSwap(plan, LIVE_TUNABLES.WAN14B_CLIP_SEC);
   }
-  if (backend === "swap" && job.kind !== "idle" && !loopingGreeting) {
+  if (rendersLikeSwap(backend) && job.kind !== "idle" && !loopingGreeting) {
     return fitForSwap(
       plan,
       job.kind === "greeting"

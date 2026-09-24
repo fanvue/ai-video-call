@@ -14,6 +14,10 @@ import {
 } from "@/lib/live/client/api";
 import { CLIP_ENGINE_LABEL } from "@/lib/live/client/clipEngine";
 import {
+  sessionCostCapFrom,
+  sessionMinutesFrom,
+} from "@/lib/live/client/sessionLimits";
+import {
   DEFAULT_TIP_MENU,
   type TipMenuAction,
 } from "@/lib/live/client/defaultCreatorProfile";
@@ -64,6 +68,11 @@ export const LiveStudio = () => {
   const [soundOn, setSoundOn] = useState(true);
   const [endConfirmOpen, setEndConfirmOpen] = useState(false);
   const [startedAtMs, setStartedAtMs] = useState<number | null>(null);
+  // The limits the running session was started with, so its end message names them.
+  const [sessionLimits, setSessionLimits] = useState<{
+    maxMinutes: number;
+    costCapUsd: number;
+  } | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [wallet, setWallet] = useState(() => createWalletState());
   const [lastTipCoins, setLastTipCoins] = useState(DEFAULT_LAST_TIP_COINS);
@@ -169,6 +178,10 @@ export const LiveStudio = () => {
       setStarting(true);
       setStartError(null);
       setDisplayName(values.displayName || "Her");
+      setSessionLimits({
+        maxMinutes: values.maxMinutes,
+        costCapUsd: values.costCapUsd,
+      });
       session
         .start(values.file, values.sceneId, {
           displayName: values.displayName || "Her",
@@ -177,6 +190,8 @@ export const LiveStudio = () => {
           swapFaceLock: values.swapFaceLock,
           swapHandMask: values.swapHandMask,
           swapPersonaId: values.swapPersonaId,
+          maxMinutes: values.maxMinutes,
+          costCapUsd: values.costCapUsd,
         })
         .then(() => {
           setStartedAtMs(Date.now());
@@ -223,11 +238,15 @@ export const LiveStudio = () => {
     setPhase("setup");
     setStartedAtMs(null);
     if (session.endReason === "costCap") {
-      setStartError("Session ended: spending cap reached ($8.00).");
+      setStartError(
+        `Session ended: spending cap reached ($${sessionCostCapFrom(sessionLimits?.costCapUsd).toFixed(2)}).`,
+      );
     } else if (session.endReason === "maxDuration") {
-      setStartError("Session ended: max session length reached.");
+      setStartError(
+        `Session ended: max session length reached (${sessionMinutesFrom(sessionLimits?.maxMinutes)} min).`,
+      );
     }
-  }, [voice, stopPrivateMeter, session.endReason]);
+  }, [voice, stopPrivateMeter, session.endReason, sessionLimits]);
 
   // Syncs local UI to a session that ended itself (spend cap, max duration), not derived state.
   useEffect(() => {
@@ -421,6 +440,16 @@ export const LiveStudio = () => {
             posterUrl={session.posterUrl}
             premium={session.backend === "wan14b"}
           />
+        ) : null}
+
+        {session.backend === "commercial" ? (
+          <span
+            role="status"
+            aria-label="Clip engine: Commercial"
+            className="pointer-events-none absolute right-3 top-28 rounded-full bg-black/50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white/80"
+          >
+            Commercial
+          </span>
         ) : null}
 
         {session.backend === "wan14b" && session.playingEngine ? (

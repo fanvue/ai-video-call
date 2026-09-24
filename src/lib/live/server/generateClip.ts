@@ -5,6 +5,7 @@ import {
 } from "@/lib/fal/extractLastFrame";
 import {
   LIVE_TUNABLES,
+  rendersLikeSwap,
   stateFrameKey,
   swapRecipeFor,
   type ClipPremiumReport,
@@ -347,11 +348,11 @@ export const generateClip = async (
   }
 
   const greetingFromReference =
-    backend === "swap" &&
+    rendersLikeSwap(backend) &&
     job.kind === "greeting" &&
     session.seedFrameUrl === session.anchorFrameUrl;
   const chainFromReference =
-    backend === "swap" &&
+    rendersLikeSwap(backend) &&
     LIVE_TUNABLES.SWAP_CHAIN_FROM_REFERENCE &&
     !!session.identityFrameUrl &&
     job.kind !== "idle" &&
@@ -377,7 +378,7 @@ export const generateClip = async (
 
   // Pose bank: a chain clip landing in a state seen before ends on that state's first clean frame and seeds from it, so the session seed stops accumulating one generation of drift per act.
   const bankedEndFrameUrl =
-    backend === "swap" &&
+    rendersLikeSwap(backend) &&
     !LIVE_TUNABLES.VERIFY_FRAMES &&
     !keepsSessionSeed &&
     videoBackend.supportsEndFrame
@@ -529,7 +530,8 @@ export const generateClip = async (
                       return extractLastFrameUrl(videoUrl, FRAME_BUDGET_MS);
                     });
                   })
-              : extractLastFrameUrl(videoUrl, FRAME_BUDGET_MS),
+              : // Commercial seeds from the raw render by design: its tail must not touch the swap service at all, not even /lastFrame.
+                extractLastFrameUrl(videoUrl, FRAME_BUDGET_MS),
             FRAME_BUDGET_MS,
             "extractFrame",
           ));

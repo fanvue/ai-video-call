@@ -13,6 +13,7 @@ import {
   type RenderBackend,
   type SpeechMode,
 } from "@/lib/live/contract";
+import { sessionCostCapFrom } from "@/lib/live/client/sessionLimits";
 
 export type PipelineEvent =
   // The clip is playable. A swap-mode clip fires this once its full swap has landed.
@@ -28,7 +29,7 @@ export type PipelineEvent =
   | { type: "error"; job: ClipJob; message: string }
   // Fires once a chain job leaves the queue and starts rendering (surfaces "she's getting to @handle's request").
   | { type: "chainJobStarted"; job: ClipJob }
-  // Fires once when cumulative spend reaches SESSION_COST_CAP_USD; no further jobs are dispatched.
+  // Fires once when cumulative spend reaches the session's cost cap; no further jobs are dispatched.
   | { type: "costCapReached"; totalCostUsd: number };
 
 export type ClipPipelineOptions = {
@@ -40,6 +41,8 @@ export type ClipPipelineOptions = {
   swapFaceLock?: boolean;
   swapHandMask?: boolean;
   personaId?: string;
+  // The setup screen's spend cap; missing or invalid falls back to the default cap, never to none.
+  costCapUsd?: number;
   // Called with a chain job that failed past retry, so the caller (director) can drop only that
   // request's own queued follow-ups instead of the whole queue.
   abandonDependents?: (job: ClipJob) => void;
@@ -180,6 +183,7 @@ export class ClipPipeline {
 
   // Cumulative render spend, tallied from every clipReady/clipDiscarded result's own costUsd.
   private totalCostUsd = 0;
+  private readonly costCapUsd: number;
   private costCapReached = false;
   private lastUpscaleAtMs = -Infinity;
   // Wall time of the last few idle productions (render + swap + rehost), so the next idle can be made at least that long.
@@ -198,6 +202,7 @@ export class ClipPipeline {
     this.swapFaceLock = options.swapFaceLock;
     this.swapHandMask = options.swapHandMask;
     this.personaId = options.personaId;
+    this.costCapUsd = sessionCostCapFrom(options.costCapUsd);
   }
 
   setBackend(backend: RenderBackend): void {
@@ -224,10 +229,7 @@ export class ClipPipeline {
   // costCapReached exactly once when the cumulative total reaches the cap.
   private addCost(costUsd: number): void {
     this.totalCostUsd += costUsd;
-    if (
-      !this.costCapReached &&
-      this.totalCostUsd >= LIVE_TUNABLES.SESSION_COST_CAP_USD
-    ) {
+    if (!this.costCapReached && this.totalCostUsd >= this.costCapUsd) {
       this.costCapReached = true;
       this.onEvent({ type: "costCapReached", totalCostUsd: this.totalCostUsd });
     }
@@ -1062,8 +1064,13 @@ export class ClipPipeline {
           this.idleLaneTargetStockCount() +
           this.deckCountFor(anchorAtSubmit.frameUrl),
       },
-      // Idle is never committed as canon or reused as a seed, so use the faster turbo backend; swap mode keeps swap, or the filler (most of what plays) would show the unswapped face.
-      backend: isSwapSession(this.backend) ? "swap" : "turbo",
+      // Idle is never committed as canon or reused as a seed, so use the faster turbo backend; swap mode keeps swap, or the filler (most of what plays) would show the unswapped face. Commercial keeps its own backend so its fillers never reach the swap service.
+      backend:
+        this.backend === "commercial"
+          ? "commercial"
+          : isSwapSession(this.backend)
+            ? "swap"
+            : "turbo",
       speechMode: this.speechMode,
       swapFaceLock: this.swapFaceLock,
       swapHandMask: this.swapHandMask,

@@ -5,6 +5,8 @@ import {
   isSwapSession,
   LIVE_TUNABLES,
   renderBackendSchema,
+  rendersLikeSwap,
+  usesSwapService,
 } from "./contract";
 
 describe("contract: Premium (wan14b)", () => {
@@ -19,6 +21,17 @@ describe("contract: Premium (wan14b)", () => {
     expect(isSwapSession("turbo")).toBe(false);
     expect(isSwapSession("reference")).toBe(false);
     expect(isSwapSession(undefined)).toBe(false);
+  });
+
+  it("gives Commercial swap mode's client and render behaviour but never the swap service", () => {
+    expect(renderBackendSchema.parse("commercial")).toBe("commercial");
+    expect(isSwapSession("commercial")).toBe(true);
+    expect(rendersLikeSwap("commercial")).toBe(true);
+    expect(usesSwapService("commercial")).toBe(false);
+    expect(usesSwapService("swap")).toBe(true);
+    expect(usesSwapService("wan14b")).toBe(true);
+    expect(usesSwapService("turbo")).toBe(false);
+    expect(rendersLikeSwap("wan14b")).toBe(false);
   });
 
   it("allows a 5 s clip result and carries the premium report", () => {

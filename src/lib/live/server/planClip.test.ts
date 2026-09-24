@@ -1221,3 +1221,24 @@ describe("planClip: Premium (wan14b) clip length", () => {
     expect(idle.durationSec).toBe(LIVE_TUNABLES.IDLE_CLIP_SEC);
   });
 });
+
+describe("planClip: Commercial plans exactly like swap", () => {
+  it.each([
+    { kind: "greeting" as const },
+    { kind: "idle" as const },
+    { kind: "checkIn" as const, channel: "chat" as const },
+    {
+      kind: "reply" as const,
+      requestId: "r1",
+      text: "wave at me",
+      channel: "chat" as const,
+      from: "fan" as const,
+      precededByIdle: false,
+    },
+  ])("a $kind job gets swap's prompt and duration", (job) => {
+    const base = { session: session(), speechMode: "text" as const, job };
+    const swap = planClip({ ...base, backend: "swap" });
+    const commercial = planClip({ ...base, backend: "commercial" });
+    expect(commercial).toEqual(swap);
+  });
+});

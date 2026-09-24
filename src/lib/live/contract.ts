@@ -235,11 +235,19 @@ export const renderBackendSchema = z.enum([
   "reference",
   "swap",
   "wan14b",
+  // "commercial" is swap mode minus the face swap, for comparison: the swap service's InsightFace models are not licensed for commercial use.
+  "commercial",
 ]);
 export type RenderBackend = z.infer<typeof renderBackendSchema>;
-// Premium keeps swap mode's client behaviour (no staging, swap fillers, deferred swaps for fallback clips).
+// Premium and Commercial keep swap mode's client behaviour (no staging, swap fillers, cut-in logic); whether swaps run is usesSwapService.
 export const isSwapSession = (backend: RenderBackend | undefined): boolean =>
+  backend === "swap" || backend === "wan14b" || backend === "commercial";
+// Only these call our swap service (swapClip, swapTail, /api/live/swap, swapWarm); Commercial never does.
+export const usesSwapService = (backend: RenderBackend | undefined): boolean =>
   backend === "swap" || backend === "wan14b";
+// Commercial plans and renders on h3 exactly like swap, so every planner and render branch on "swap" takes it too.
+export const rendersLikeSwap = (backend: RenderBackend | undefined): boolean =>
+  backend === "swap" || backend === "commercial";
 
 const speechModeSchema = z.enum(["text", "native"]);
 export type SpeechMode = z.infer<typeof speechModeSchema>;
@@ -496,10 +504,12 @@ export const LIVE_TUNABLES = {
   // Second trigger alongside the interval, in chain clips. 1 = every chain clip carries the identity reference: production logs showed dual-reference renders no slower than single (~5s either way), and the face was visibly drifting by clip ~10 when it was periodic. See consumeIdentityReferenceDue.
   IDENTITY_REFERENCE_MAX_CHAIN_CLIPS: 1,
   TRANSCRIPT_WINDOW: 40,
-  // Spend cap: every session auto-ends here regardless of activity. 5 min now that swap mode holds the face that long.
-  MAX_SESSION_MS: 300_000,
+  // Session limits, picked on the setup screen. The last prod run cost about $2.50/min, mostly h3 renders at ~$0.25 each, so 15 min is about $38.
+  DEFAULT_SESSION_MINUTES: 15,
+  MAX_SESSION_MINUTES: 30,
   // Cumulative render spend cap: the pipeline stops dispatching new jobs once reached.
-  SESSION_COST_CAP_USD: 10,
+  DEFAULT_SESSION_COST_CAP_USD: 40,
+  MAX_SESSION_COST_CAP_USD: 100,
   // Swap runs on our own Modal L40S at $1.95/hr; charged per clip on the service's reported swap time.
   SWAP_COST_PER_SEC_USD: 1.95 / 3600,
   // Premium renders 81 frames at 16 fps, the length Wan2.1 480P and the 4-step LoRA were trained on.

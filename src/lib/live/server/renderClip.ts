@@ -6,7 +6,11 @@ import {
   pollH3MaxVideoUntilComplete,
   submitH3MaxVideoGeneration,
 } from "@/lib/fal/requestH3MaxVideo";
-import { LIVE_TUNABLES, type RenderBackend } from "../contract";
+import {
+  LIVE_TUNABLES,
+  rendersLikeSwap,
+  type RenderBackend,
+} from "../contract";
 
 const RENDER_RESOLUTION = LIVE_TUNABLES.RENDER_RESOLUTION;
 const RENDER_TIMEOUT_MS = 5 * 60 * 1000;
@@ -124,7 +128,7 @@ export const renderBackendFor = (
   } = {},
 ): VideoBackend => {
   if (
-    backend === "swap" &&
+    rendersLikeSwap(backend) &&
     (options.greetingFromReference || options.chainFromReference)
   ) {
     return referenceBackend;

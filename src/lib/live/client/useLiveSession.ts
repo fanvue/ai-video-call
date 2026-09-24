@@ -28,6 +28,10 @@ import {
   type PlayerStatus,
 } from "@/lib/live/client/gaplessPlayer";
 import {
+  sessionCostCapFrom,
+  sessionMinutesFrom,
+} from "@/lib/live/client/sessionLimits";
+import {
   RenderStatsTracker,
   type RenderPercentiles,
 } from "@/lib/live/client/renderStats";
@@ -39,6 +43,7 @@ import {
 import {
   isSwapSession,
   LIVE_TUNABLES,
+  usesSwapService,
   type ClipJob,
   type ClipJobKind,
   type ClipRequest,
@@ -94,6 +99,9 @@ export type StartOptions = {
   swapHandMask?: boolean;
   // Swap mode only: the manifest persona id the swap uses as its source, never an image.
   swapPersonaId?: string;
+  // The setup screen's session limits; missing or invalid fall back to the defaults, never to no limit.
+  maxMinutes?: number;
+  costCapUsd?: number;
 };
 
 export type UseLiveSessionDeps = {
@@ -105,6 +113,7 @@ export type UseLiveSessionDeps = {
     file: File,
     sceneId: SceneId,
     stage?: boolean,
+    faceCrop?: boolean,
   ) => Promise<ReferenceUploadResult>;
   upscaleSeed?: (
     frameUrl: string,
@@ -233,6 +242,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     file: File;
     sceneId: SceneId;
     stage: boolean;
+    swapService: boolean;
     promise: Promise<ReferenceUploadResult>;
   } | null>(null);
   const [prepareStatus, setPrepareStatus] = useState<PrepareStatus>("idle");
@@ -254,6 +264,12 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     useState<ConnectStage>("uploading");
   const connectStageRef = useRef<ConnectStage>("uploading");
   const connectStartedAtMsRef = useRef(0);
+  const sessionLimitsRef = useRef({
+    maxMinutes: sessionMinutesFrom(),
+    costCapUsd: sessionCostCapFrom(),
+  });
+  // Logged on connect so swap and Commercial sessions can be told apart in prod logs.
+  const sessionBackendRef = useRef<string>("unknown");
   const connectStallTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
@@ -564,6 +580,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       connectStallTimeoutRef.current = null;
       reportTelemetry?.("connected", {
         ms: Date.now() - connectStartedAtMsRef.current,
+        ...sessionLimitsRef.current,
+        backend: sessionBackendRef.current,
       });
     }
     setStatus((current) => (current === "connecting" ? "live" : current));
@@ -992,22 +1010,23 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   const uploadReference = deps.uploadReference;
   const warmSwap = deps.warmSwap;
   const prepare = useCallback(
-    (file: File, sceneId: SceneId, stage = true) => {
+    (file: File, sceneId: SceneId, stage = true, swapService = true) => {
       const current = preparedReferenceRef.current;
       if (
         current &&
         current.file === file &&
         current.sceneId === sceneId &&
-        current.stage === stage
+        current.stage === stage &&
+        current.swapService === swapService
       ) {
         return;
       }
-      // stage=false is swap mode; the swap service scales to zero, so its containers start with the upload.
-      if (!stage) {
+      // stage=false is swap mode; the swap service scales to zero, so its containers start with the upload. Commercial passes swapService=false: no warm-up and no face crop.
+      if (!stage && swapService) {
         warmSwap().catch(() => undefined);
       }
-      const promise = uploadReference(file, sceneId, stage);
-      const entry = { file, sceneId, stage, promise };
+      const promise = uploadReference(file, sceneId, stage, swapService);
+      const entry = { file, sceneId, stage, swapService, promise };
       preparedReferenceRef.current = entry;
       setPrepareStatus("staging");
       setPreparedSeedUrl(null);
@@ -1038,6 +1057,11 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       setAcceptingRequests(false);
       setPosterUrl(null);
       connectStartedAtMsRef.current = Date.now();
+      sessionLimitsRef.current = {
+        maxMinutes: sessionMinutesFrom(options.maxMinutes),
+        costCapUsd: sessionCostCapFrom(options.costCapUsd),
+      };
+      sessionBackendRef.current = options.backend ?? "unknown";
       setConnectStage("uploading");
       if (connectStallTimeoutRef.current) {
         clearTimeout(connectStallTimeoutRef.current);
@@ -1052,7 +1076,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
           ms: CONNECT_STALL_MS,
         });
       }, CONNECT_STALL_MS);
-      if (isSwapSession(options.backend)) {
+      if (usesSwapService(options.backend)) {
         deps.warmSwap().catch(() => undefined);
       }
       // Started now so the Wan boot overlaps the upload; awaited just before the greeting, capped so a dead service cannot hold the join.
@@ -1092,14 +1116,17 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       player.reset();
       // Swap mode sets the scene inside its reference-to-video greeting, so it skips the 17 to 35 s still.
       const stage = !isSwapSession(options.backend);
+      // The face crop runs on the swap service and only feeds swap-served clips, so Commercial skips it.
+      const swapService = usesSwapService(options.backend);
       const prepared = preparedReferenceRef.current;
       const reference =
         prepared &&
         prepared.file === file &&
         prepared.sceneId === sceneId &&
-        prepared.stage === stage
+        prepared.stage === stage &&
+        prepared.swapService === swapService
           ? await prepared.promise
-          : await deps.uploadReference(file, sceneId, stage);
+          : await deps.uploadReference(file, sceneId, stage, swapService);
       preparedReferenceRef.current = null;
       setPrepareStatus("idle");
       setPreparedSeedUrl(null);
@@ -1205,7 +1232,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         : null;
       // Start a reply's (and the greeting's) full swap from the clip route's render stream instead of after its seed swap, taking that 2 to 4 s off the wait; at most one such early swap runs, outside the pipeline's swap slots.
       const earlyReplySwaps =
-        isSwapSession(options.backend) &&
+        usesSwapService(options.backend) &&
         earlySwaps !== null &&
         LIVE_TUNABLES.SWAP_DEFER_CLIP;
       const renderClip: ClipPipelineOptions["render"] = earlyReplySwaps
@@ -1233,6 +1260,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         swapFaceLock: options.swapFaceLock,
         swapHandMask: options.swapHandMask,
         personaId: options.swapPersonaId,
+        costCapUsd: sessionLimitsRef.current.costCapUsd,
         abandonDependents: (job) => {
           directorRef.current?.abandonRequest(requestIdForJob(job));
         },
@@ -1240,7 +1268,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         needsIdentityReference: () =>
           directorRef.current?.consumeIdentityReferenceDue(Date.now()) ?? false,
         finalizeSwap:
-          isSwapSession(options.backend) && runSwap
+          usesSwapService(options.backend) && runSwap
             ? (result) => {
                 const early = earlySwaps?.take(result);
                 const rest = earlySwaps?.takeRest(result);
@@ -1282,7 +1310,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         if (
           currentDirector &&
           Date.now() - currentDirector.getState().startedAt >=
-            LIVE_TUNABLES.MAX_SESSION_MS
+            sessionLimitsRef.current.maxMinutes * 60_000
         ) {
           setEndReason("maxDuration");
           endRef.current();

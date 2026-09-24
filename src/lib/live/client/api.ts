@@ -174,6 +174,8 @@ export const uploadReference = async (
   file: File,
   sceneId: SceneId,
   stage = true,
+  // False keeps the upload off the swap service (Commercial).
+  faceCrop = true,
 ): Promise<ReferenceUploadResult> => {
   // The server only accepts jpeg/png; HEIC and webp are rejected upfront rather than as a 400.
   if (file.type && file.type !== "image/jpeg" && file.type !== "image/png") {
@@ -187,6 +189,7 @@ export const uploadReference = async (
     contentType,
     sceneId,
     stage,
+    faceCrop,
   });
 };
 

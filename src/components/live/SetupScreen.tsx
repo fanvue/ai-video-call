@@ -2,10 +2,16 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
+  LIVE_TUNABLES,
+  usesSwapService,
   type PersonaOption,
   type SceneId,
   type SpeechMode,
 } from "@/lib/live/contract";
+import {
+  sessionCostCapFrom,
+  sessionMinutesFrom,
+} from "@/lib/live/client/sessionLimits";
 import {
   initialPersonaSettings,
   personaOptionLabel,
@@ -23,7 +29,7 @@ const SCENES: { id: SceneId; label: string }[] = [
 ];
 
 // Swap is the default; Premium renders chain clips on our Wan 14B service and falls back to swap per clip.
-export type RenderMode = "swap" | "wan14b";
+export type RenderMode = "swap" | "wan14b" | "commercial";
 
 const RENDER_MODES: { id: RenderMode; label: string; hint: string }[] = [
   {
@@ -36,10 +42,17 @@ const RENDER_MODES: { id: RenderMode; label: string; hint: string }[] = [
     label: "Premium (slower, best likeness)",
     hint: "About 16 s to make each 5 s clip on one H100, about $4/hr while rendering",
   },
+  {
+    id: "commercial",
+    label: "Commercial (no face swap)",
+    hint: "Licence-clean comparison: h3 only, no face swap",
+  },
 ];
 
 // Face lock and Hand mask tune the swap recipe; Premium swaps inside its own service, so they would do nothing there.
 export const showsSwapTuning = (mode: RenderMode): boolean => mode === "swap";
+// The persona is the swap's source face; Commercial never swaps, so its picker would do nothing.
+const showsSwapPersona = (mode: RenderMode): boolean => usesSwapService(mode);
 
 export type SetupSubmit = {
   file: File;
@@ -50,7 +63,37 @@ export type SetupSubmit = {
   swapFaceLock: boolean;
   swapHandMask: boolean;
   swapPersonaId?: string;
+  maxMinutes: number;
+  costCapUsd: number;
 };
+
+// Pure so the submitted values, limits included, are testable without a DOM.
+export const setupSubmitFor = (fields: {
+  file: File;
+  sceneId: SceneId;
+  displayName: string;
+  voiceExperimental: boolean;
+  renderMode: RenderMode;
+  swapFaceLock: boolean;
+  swapHandMask: boolean;
+  personaSettings: Parameters<typeof submittedPersona>[0];
+  maxMinutesInput: string;
+  costCapInput: string;
+}): SetupSubmit => ({
+  file: fields.file,
+  sceneId: fields.sceneId,
+  displayName: fields.displayName.trim(),
+  speechMode: fields.voiceExperimental ? "native" : "text",
+  renderMode: fields.renderMode,
+  // Hidden for Premium, so its swap fallback runs the default legacy recipe, the one the Wan service swaps with.
+  swapFaceLock: showsSwapTuning(fields.renderMode) && fields.swapFaceLock,
+  swapHandMask: showsSwapTuning(fields.renderMode) && fields.swapHandMask,
+  ...(showsSwapPersona(fields.renderMode)
+    ? submittedPersona(fields.personaSettings)
+    : {}),
+  maxMinutes: sessionMinutesFrom(fields.maxMinutesInput),
+  costCapUsd: sessionCostCapFrom(fields.costCapInput),
+});
 
 type PersonaLoader = () => Promise<{
   personas: PersonaOption[];
@@ -60,7 +103,12 @@ type PersonaLoader = () => Promise<{
 type SetupScreenProps = {
   busy: boolean;
   error: string | null;
-  onPrepare?: (file: File, sceneId: SceneId, stage: boolean) => void;
+  onPrepare?: (
+    file: File,
+    sceneId: SceneId,
+    stage: boolean,
+    swapService: boolean,
+  ) => void;
   // Swap mode's own list and registration, served without a GPU.
   loadSwapPersonas?: PersonaLoader;
   onRegisterSwapPersona?: (file: File, name: string) => Promise<{ id: string }>;
@@ -102,6 +150,12 @@ export const SetupScreen = ({
   const [swapFaceLock, setSwapFaceLock] = useState(true);
   const [swapHandMask, setSwapHandMask] = useState(false);
   const [renderMode, setRenderMode] = useState<RenderMode>("swap");
+  const [maxMinutesInput, setMaxMinutesInput] = useState(
+    String(LIVE_TUNABLES.DEFAULT_SESSION_MINUTES),
+  );
+  const [costCapInput, setCostCapInput] = useState(
+    String(LIVE_TUNABLES.DEFAULT_SESSION_COST_CAP_USD),
+  );
   const [personaSettings, setPersonaSettings] = useState(
     initialPersonaSettings,
   );
@@ -122,11 +176,11 @@ export const SetupScreen = ({
     }
     // Swap mode sets the scene inside its greeting, so the reference step skips the staged still.
     const timeoutId = setTimeout(
-      () => onPrepare(file, sceneId, false),
+      () => onPrepare(file, sceneId, false, usesSwapService(renderMode)),
       PREPARE_DEBOUNCE_MS,
     );
     return () => clearTimeout(timeoutId);
-  }, [file, sceneId, onPrepare]);
+  }, [file, sceneId, onPrepare, renderMode]);
 
   useEffect(() => {
     if (!loadSwapPersonas) {
@@ -295,6 +349,39 @@ export const SetupScreen = ({
         ))}
       </div>
 
+      <div className="flex gap-2">
+        <label className="flex flex-1 flex-col gap-1">
+          <span className="text-sm font-medium text-[var(--foreground)]">
+            Max minutes
+          </span>
+          <input
+            type="number"
+            inputMode="numeric"
+            min={1}
+            max={LIVE_TUNABLES.MAX_SESSION_MINUTES}
+            step={1}
+            value={maxMinutesInput}
+            onChange={(event) => setMaxMinutesInput(event.target.value)}
+            className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--foreground)] outline-none"
+          />
+        </label>
+        <label className="flex flex-1 flex-col gap-1">
+          <span className="text-sm font-medium text-[var(--foreground)]">
+            Spend cap ($)
+          </span>
+          <input
+            type="number"
+            inputMode="decimal"
+            min={1}
+            max={LIVE_TUNABLES.MAX_SESSION_COST_CAP_USD}
+            step="any"
+            value={costCapInput}
+            onChange={(event) => setCostCapInput(event.target.value)}
+            className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--foreground)] outline-none"
+          />
+        </label>
+      </div>
+
       <div className="flex flex-col gap-2">
         <button
           type="button"
@@ -356,28 +443,31 @@ export const SetupScreen = ({
                 </div>
               </>
             ) : null}
-            <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
-              Persona
-              <select
-                value={personaSettings.personaId}
-                onChange={(event) =>
-                  setPersonaSettings((current) => ({
-                    ...current,
-                    personaId: event.target.value,
-                  }))
-                }
-                className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] p-2 text-[var(--foreground)]"
-              >
-                <option value="">Off</option>
-                {personaOptionsFor(personaSettings).map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {personaOptionLabel(option)}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            {personaSettings.canRegister && onRegisterSwapPersona ? (
+            {showsSwapPersona(renderMode) ? (
+              <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
+                Persona
+                <select
+                  value={personaSettings.personaId}
+                  onChange={(event) =>
+                    setPersonaSettings((current) => ({
+                      ...current,
+                      personaId: event.target.value,
+                    }))
+                  }
+                  className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] p-2 text-[var(--foreground)]"
+                >
+                  <option value="">Off</option>
+                  {personaOptionsFor(personaSettings).map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {personaOptionLabel(option)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            {showsSwapPersona(renderMode) &&
+            personaSettings.canRegister &&
+            onRegisterSwapPersona ? (
               <div className="flex flex-col gap-2 text-xs text-[var(--muted)]">
                 <label className="flex flex-col gap-1">
                   Name
@@ -434,17 +524,20 @@ export const SetupScreen = ({
           if (!file) {
             return;
           }
-          onSubmit({
-            file,
-            sceneId,
-            displayName: displayName.trim(),
-            speechMode: voiceExperimental ? "native" : "text",
-            renderMode,
-            // Hidden for Premium, so its swap fallback runs the default legacy recipe, the one the Wan service swaps with.
-            swapFaceLock: showsSwapTuning(renderMode) && swapFaceLock,
-            swapHandMask: showsSwapTuning(renderMode) && swapHandMask,
-            ...submittedPersona(personaSettings),
-          });
+          onSubmit(
+            setupSubmitFor({
+              file,
+              sceneId,
+              displayName,
+              voiceExperimental,
+              renderMode,
+              swapFaceLock,
+              swapHandMask,
+              personaSettings,
+              maxMinutesInput,
+              costCapInput,
+            }),
+          );
         }}
         className={
           "rounded-full px-4 py-3 text-sm font-semibold " +
