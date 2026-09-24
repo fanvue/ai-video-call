@@ -231,8 +231,11 @@ class Wan14bService:
     def web(self):
         api = FastAPI()
 
+        # Token-gated: any request boots an H100, so an open health check would let anyone run up GPU time.
         @api.get("/health")
-        def health() -> dict[str, str]:
+        def health(authorization: str | None = Header(default=None)) -> dict[str, str]:
+            if not token_allowed(bearer_token(authorization)):
+                raise HTTPException(status_code=403, detail="unauthorized")
             return {"status": "ok"}
 
         # Premium's warm-up: answering at all means @modal.enter has loaded Wan and the swap, so the greeting lands warm.

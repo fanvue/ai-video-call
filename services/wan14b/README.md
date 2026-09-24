@@ -29,7 +29,7 @@ Fictional, company-owned synthetic personas only: `persona_id` must resolve in t
 - Response: `{video_base64 (h264 mp4, 480x832, 16 fps), last_frame_base64 (PNG, next seed), last_frame_format, stats}`; `stats` carries `render_ms`, `decode_ms`, `swap_ms`, `encode_ms`, `total_ms`, `num_frames`, `fps`, `frames_with_face`, `tone_locked`, `similarity_after`.
 - `POST /warm` (Bearer token): answers once the container has loaded Wan and the swap; the app's Premium warm-up. A cold one took 85.8 s in the smoke.
 - Face detection pads the frame by half on every side when the raw pass finds nothing (`face_detect.py`): a Wan headshot's face is ~440 px of a 480 px frame, past SCRFD's range at det_size 640.
-- `GET /health`. Modal-authenticated `Wan14bService.clip_bytes(body)` for laptop smoke tests.
+- `GET /health` (bearer token). Modal-authenticated `Wan14bService.clip_bytes(body)` for laptop smoke tests.
 
 H100, `min_containers=0`, `scaledown_window=300`, `max_containers=2`, one clip per container.
 
