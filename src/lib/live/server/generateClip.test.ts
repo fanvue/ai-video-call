@@ -48,6 +48,12 @@ vi.mock("./swapClip", () => ({
 // The real module pulls in @/env; Premium routing has its own tests in generateClip.premium.test.ts.
 vi.mock("./wan14bClip", () => ({ wan14bClip: vi.fn() }));
 
+// The real module pulls in @/env; planner routing has its own tests in generateClip.director.test.ts.
+vi.mock("./directClip", () => ({
+  directClip: vi.fn(),
+  hardLimitHold: () => null,
+}));
+
 const writeReply = vi.fn();
 const writeCheckIn = vi.fn();
 const captureRoom = vi.fn(async (): Promise<string | null> => null);
@@ -753,7 +759,11 @@ describe("generateClip: non-hold clips (requested wardrobe change or explicit ac
   it("a reply that only moves her into position carries setupOnly so the client holds its text", async () => {
     renderBackendFor.mockReturnValue({ supportsEndFrame: true, render });
     writeReply.mockResolvedValue({ text: "mmm okay", nextWorld: "w" });
-    guardFrame.mockResolvedValue({ checked: true, issues: [], observed: { wardrobe: {} } });
+    guardFrame.mockResolvedValue({
+      checked: true,
+      issues: [],
+      observed: { wardrobe: {} },
+    });
     const job = {
       kind: "reply" as const,
       requestId: "r1",

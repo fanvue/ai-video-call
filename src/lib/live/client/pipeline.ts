@@ -10,6 +10,7 @@ import {
   type ClipSwapReport,
   type LiveSessionSnapshot,
   type LiveState,
+  type Planner,
   type RenderBackend,
   type SpeechMode,
 } from "@/lib/live/contract";
@@ -41,6 +42,8 @@ export type ClipPipelineOptions = {
   swapFaceLock?: boolean;
   swapHandMask?: boolean;
   personaId?: string;
+  // The setup screen's reply planner; only chain requests carry it, since the Director plans replies alone.
+  planner?: Planner;
   // The setup screen's spend cap; missing or invalid falls back to the default cap, never to none.
   costCapUsd?: number;
   // Called with a chain job that failed past retry, so the caller (director) can drop only that
@@ -123,6 +126,7 @@ export class ClipPipeline {
   private readonly swapFaceLock?: boolean;
   private readonly swapHandMask?: boolean;
   private readonly personaId?: string;
+  private readonly planner?: Planner;
 
   private getSnapshot: SnapshotSource | null = null;
   private getNextJob: (() => ClipJob) | null = null;
@@ -202,6 +206,7 @@ export class ClipPipeline {
     this.swapFaceLock = options.swapFaceLock;
     this.swapHandMask = options.swapHandMask;
     this.personaId = options.personaId;
+    this.planner = options.planner;
     this.costCapUsd = sessionCostCapFrom(options.costCapUsd);
   }
 
@@ -869,6 +874,7 @@ export class ClipPipeline {
       swapFaceLock: this.swapFaceLock,
       swapHandMask: this.swapHandMask,
       personaId: this.personaId,
+      ...(this.planner ? { planner: this.planner } : {}),
       useIdentityReference,
     };
     this.chainInflight = { job };

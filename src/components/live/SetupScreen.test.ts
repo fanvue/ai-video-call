@@ -51,6 +51,7 @@ describe("SetupScreen session limits", () => {
     displayName: " Aria ",
     voiceExperimental: false,
     renderMode: "swap" as const,
+    planner: "catalogue" as const,
     swapFaceLock: true,
     swapHandMask: false,
     personaSettings: { ...initialPersonaSettings(), personaId: "aria" },
@@ -98,5 +99,38 @@ describe("SetupScreen session limits", () => {
     expect(submit.swapFaceLock).toBe(false);
     expect(submit.swapHandMask).toBe(false);
     expect(submit).toMatchObject({ maxMinutes: 15, costCapUsd: 40 });
+  });
+});
+
+describe("SetupScreen planner", () => {
+  const fields = {
+    file: new File(["x"], "me.jpg", { type: "image/jpeg" }),
+    sceneId: "bedroom" as const,
+    displayName: "Aria",
+    voiceExperimental: false,
+    swapFaceLock: true,
+    swapHandMask: false,
+    personaSettings: initialPersonaSettings(),
+    maxMinutesInput: "15",
+    costCapInput: "40",
+  };
+
+  it("offers both planners with the catalogue selected by default", () => {
+    const html = markup();
+    expect(html).toContain("Planner");
+    expect(html).toContain(
+      '<option value="catalogue" selected="">Catalogue (fast)</option>',
+    );
+    expect(html).toContain(
+      '<option value="director">Director (LLM, any action)</option>',
+    );
+  });
+
+  it("submits the chosen planner for every render mode", () => {
+    for (const renderMode of ["swap", "wan14b", "commercial"] as const) {
+      expect(
+        setupSubmitFor({ ...fields, renderMode, planner: "director" }).planner,
+      ).toBe("director");
+    }
   });
 });

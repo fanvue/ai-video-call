@@ -1673,6 +1673,29 @@ describe("ClipPipeline", () => {
     expect(requests.every((req) => req.swapHandMask === true)).toBe(true);
   });
 
+  it("carries the setup's planner on chain renders and leaves it off idles", async () => {
+    const requests: ClipRequest[] = [];
+    const queue = makeJobQueue();
+    const pipeline = trackedPipeline({
+      backend: "swap",
+      planner: "director",
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) => {
+        requests.push(req);
+        return delayed(() => chainAdvancingResult(req));
+      },
+    });
+
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS * 2);
+    const greeting = requests.find((req) => req.job.kind === "greeting");
+    const idles = requests.filter((req) => req.job.kind === "idle");
+    expect(greeting?.planner).toBe("director");
+    expect(idles.length).toBeGreaterThan(0);
+    expect(idles.every((req) => req.planner === undefined)).toBe(true);
+  });
+
   it("swap mode keeps two idles in flight and two ready, since a filler takes longer to make than it plays", async () => {
     const requests: ClipRequest[] = [];
     const queue = makeJobQueue();

@@ -5,6 +5,7 @@ import {
   LIVE_TUNABLES,
   usesSwapService,
   type PersonaOption,
+  type Planner,
   type SceneId,
   type SpeechMode,
 } from "@/lib/live/contract";
@@ -49,6 +50,12 @@ const RENDER_MODES: { id: RenderMode; label: string; hint: string }[] = [
   },
 ];
 
+// Every render mode offers both; the Director falls back to the catalogue per reply.
+const PLANNERS: { id: Planner; label: string }[] = [
+  { id: "catalogue", label: "Catalogue (fast)" },
+  { id: "director", label: "Director (LLM, any action)" },
+];
+
 // Face lock and Hand mask tune the swap recipe; Premium swaps inside its own service, so they would do nothing there.
 export const showsSwapTuning = (mode: RenderMode): boolean => mode === "swap";
 // The persona is the swap's source face; Commercial never swaps, so its picker would do nothing.
@@ -60,6 +67,7 @@ export type SetupSubmit = {
   displayName: string;
   speechMode: SpeechMode;
   renderMode: RenderMode;
+  planner: Planner;
   swapFaceLock: boolean;
   swapHandMask: boolean;
   swapPersonaId?: string;
@@ -74,6 +82,7 @@ export const setupSubmitFor = (fields: {
   displayName: string;
   voiceExperimental: boolean;
   renderMode: RenderMode;
+  planner: Planner;
   swapFaceLock: boolean;
   swapHandMask: boolean;
   personaSettings: Parameters<typeof submittedPersona>[0];
@@ -85,6 +94,7 @@ export const setupSubmitFor = (fields: {
   displayName: fields.displayName.trim(),
   speechMode: fields.voiceExperimental ? "native" : "text",
   renderMode: fields.renderMode,
+  planner: fields.planner,
   // Hidden for Premium, so its swap fallback runs the default legacy recipe, the one the Wan service swaps with.
   swapFaceLock: showsSwapTuning(fields.renderMode) && fields.swapFaceLock,
   swapHandMask: showsSwapTuning(fields.renderMode) && fields.swapHandMask,
@@ -150,6 +160,7 @@ export const SetupScreen = ({
   const [swapFaceLock, setSwapFaceLock] = useState(true);
   const [swapHandMask, setSwapHandMask] = useState(false);
   const [renderMode, setRenderMode] = useState<RenderMode>("swap");
+  const [planner, setPlanner] = useState<Planner>("catalogue");
   const [maxMinutesInput, setMaxMinutesInput] = useState(
     String(LIVE_TUNABLES.DEFAULT_SESSION_MINUTES),
   );
@@ -349,6 +360,28 @@ export const SetupScreen = ({
         ))}
       </div>
 
+      <label className="flex flex-col gap-1">
+        <span className="text-sm font-medium text-[var(--foreground)]">
+          Planner
+        </span>
+        <select
+          value={planner}
+          onChange={(event) =>
+            setPlanner(
+              PLANNERS.find((option) => option.id === event.target.value)?.id ??
+                "catalogue",
+            )
+          }
+          className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--foreground)] outline-none"
+        >
+          {PLANNERS.map((option) => (
+            <option key={option.id} value={option.id}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </label>
+
       <div className="flex gap-2">
         <label className="flex flex-1 flex-col gap-1">
           <span className="text-sm font-medium text-[var(--foreground)]">
@@ -531,6 +564,7 @@ export const SetupScreen = ({
               displayName,
               voiceExperimental,
               renderMode,
+              planner,
               swapFaceLock,
               swapHandMask,
               personaSettings,

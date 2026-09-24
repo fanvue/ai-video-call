@@ -19,8 +19,9 @@ import {
   type Pose,
 } from "../contract";
 import { captureRoom } from "./captureRoom";
+import { directClip, hardLimitHold } from "./directClip";
 import { guardFrame } from "./frameGuard";
-import { planClip, typingLeadSecFor } from "./planClip";
+import { fitForSwap, planClip, typingLeadSecFor } from "./planClip";
 import { reconcilePose, reconcileWardrobe } from "./reconcileState";
 import { llmIntentsFor } from "./requestIntents";
 import { renderBackendFor } from "./renderClip";
@@ -281,11 +282,24 @@ export const generateClip = async (
       : request.backend;
 
   const planStarted = Date.now();
-  const parsedIntents =
+  // Checked before any LLM sees the request, on either planner.
+  const held =
     job.kind === "reply"
-      ? await llmIntentsFor(job.text, session.state, request.intentParser)
-      : undefined;
-  let plan = planClip({ session, job, speechMode, backend, parsedIntents });
+      ? hardLimitHold({ session, job, speechMode, backend })
+      : null;
+  // Started alongside the Director, so a Director fallback does not wait on the parse after spending its budget.
+  const parsedIntentsPromise =
+    job.kind === "reply" && !held
+      ? llmIntentsFor(job.text, session.state, request.intentParser)
+      : Promise.resolve(undefined);
+  const directed =
+    held ??
+    (job.kind === "reply" && request.planner === "director"
+      ? await directClip({ session, job, speechMode, backend })
+      : null);
+  const parsedIntents = directed ? undefined : await parsedIntentsPromise;
+  let plan =
+    directed ?? planClip({ session, job, speechMode, backend, parsedIntents });
   const planMs = Date.now() - planStarted;
 
   // Started before the render so a Premium clip, and its swap fallback, write her reply alongside it.
@@ -304,7 +318,7 @@ export const generateClip = async (
           ? writeReply({
               transcript: session.transcript,
               requestText: job.text,
-              physical: plan.prompt,
+              physical: plan.replyPhysical ?? plan.prompt,
               creator: session.creator,
               channel: job.channel,
               world: session.state.world,
@@ -343,7 +357,10 @@ export const generateClip = async (
         reason: reason.slice(0, 300),
       };
       backend = "swap";
-      plan = planClip({ session, job, speechMode, backend, parsedIntents });
+      // A Director plan keeps its beats and holds the settled pose for the longer swap clip.
+      plan = directed
+        ? fitForSwap(directed)
+        : planClip({ session, job, speechMode, backend, parsedIntents });
     }
   }
 

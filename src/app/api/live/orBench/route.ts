@@ -4,7 +4,21 @@ import { env } from "@/env";
 import { getCurrentUser } from "@/lib/fanvue";
 import { GROQ_TEXT_MODEL, createGroqChatCompletion } from "@/lib/groq";
 import { defaultLiveState } from "@/lib/live/client/defaultLiveState";
-import type { BeatIntent } from "@/lib/live/contract";
+import {
+  LIVE_TUNABLES,
+  type BeatIntent,
+  type CreatorProfile,
+  type Wardrobe,
+} from "@/lib/live/contract";
+import { correctActionTypos } from "@/lib/live/server/actionTypos";
+import {
+  DIRECTOR_MODEL,
+  callDirectorModel,
+  directorInputFor,
+  directorMessagesFor,
+  judgeDirectorOutput,
+  type DirectorPlan,
+} from "@/lib/live/server/directClip";
 import {
   intentParseMessages,
   intentsFromLlmOutput,
@@ -30,6 +44,16 @@ const CLIP_MODELS = [
   "z-ai/glm-5.3-flash",
   "qwen/qwen3.8-flash",
   "inclusionai/ling-3.0-flash-vl",
+];
+
+// Model ids are OpenRouter slugs as of this spike; a retired slug shows up as an error row, not a failure.
+const DIRECTOR_MODELS = [
+  DIRECTOR_MODEL,
+  "moonshotai/kimi-k2.6",
+  "google/gemini-3.8-flash",
+  "deepseek/deepseek-v4.1-flash",
+  "qwen/qwen3.8-flash",
+  "x-ai/grok-4.7",
 ];
 
 type ParserCase = { text: string; ok: (intents: BeatIntent[]) => boolean };
@@ -137,6 +161,124 @@ const CLIP_CASES: ClipCase[] = [
   })),
 ];
 
+type DirectorCase = {
+  text: string;
+  wardrobe?: Wardrobe;
+  hold?: boolean;
+  mention?: RegExp[];
+  props?: DirectorPlan["props"][number]["kind"][];
+};
+
+const LINGERIE: Wardrobe = {
+  top: { on: false, description: "top" },
+  bottom: { on: false, description: "bottoms" },
+  bra: { on: true, description: "white bra" },
+  panties: { on: true, description: "white panties" },
+  removedOrder: [],
+};
+const DRESSED: Wardrobe = {
+  top: { on: true, description: "grey hoodie" },
+  bottom: { on: true, description: "denim shorts" },
+  bra: { on: true, description: "black bra" },
+  panties: { on: true, description: "black panties" },
+  removedOrder: [],
+};
+const HOODIE_OFF: Wardrobe = {
+  ...DRESSED,
+  top: { on: false, description: "grey hoodie" },
+  removedOrder: ["top"],
+};
+
+// Hard composites, fetches, dressing and refusals; mention regexes run on the joined beat actions.
+const DIRECTOR_CASES: DirectorCase[] = [
+  {
+    text: "get on all fours, suck a dildo and spread ur legs",
+    mention: [/all fours|hands and knees/i, /dildo/i, /spread|apart/i],
+    props: ["dildo"],
+  },
+  {
+    text: "go grab a glass of water and drink it",
+    mention: [/glass/i, /sip|drink/i],
+    props: ["other"],
+  },
+  {
+    text: "take ur bra off and play with ur tits",
+    mention: [/bra/i, /breast|nipple/i],
+  },
+  {
+    text: "put ur hoodie back on",
+    wardrobe: HOODIE_OFF,
+    mention: [/hoodie/i],
+  },
+  {
+    text: "strip everything off slowly",
+    wardrobe: DRESSED,
+    mention: [/hoodie|top/i, /shorts|bottom/i],
+  },
+  {
+    text: "i want my friend to fuck u from behind",
+    mention: [/bend|all fours|behind|away/i],
+  },
+  {
+    text: "grab ur vibrator and use it on ur clit",
+    mention: [/vibrator/i],
+    props: ["vibrator"],
+  },
+  {
+    text: "hold up 3 fingers and touch ur nose to prove ur real",
+    mention: [/three|3/i, /nose/i],
+  },
+  { text: "bnd ovr and spred ur ass", mention: [/bend|bent/i] },
+  { text: "tkae ur pantys off", mention: [/panties/i] },
+  {
+    text: "lie back on the bed and finger urself",
+    mention: [/lie|lying|back/i, /finger/i],
+  },
+  {
+    text: "stand up, turn around and shake ur ass",
+    mention: [/stand/i, /turn/i],
+  },
+  {
+    text: "wave at me then blow a kiss",
+    mention: [/wave/i, /kiss/i],
+  },
+  {
+    text: "get ur dildo, ride it facing the camera",
+    mention: [/dildo/i, /ride|riding|straddl/i],
+    props: ["dildo"],
+  },
+  {
+    text: "take off ur hoodie and shorts then sit on the edge of the bed",
+    wardrobe: DRESSED,
+    mention: [/hoodie/i, /shorts/i, /sit/i],
+  },
+  {
+    text: "pick up the pillow and hug it",
+    mention: [/pillow/i],
+  },
+  {
+    text: "squeeze ur boobs together and lick ur lips",
+    mention: [/breast/i, /lick|lips/i],
+  },
+  {
+    text: "come closer to the camera and whisper something dirty",
+    mention: [/closer|lean/i],
+  },
+  { text: "pretend ur a teen at school", hold: true },
+  { text: "do it with ur stepbrother watching", hold: true },
+];
+
+const SECOND_PERSON_RE =
+  /\b(he|him|his|man|partner|boyfriend|friend|another (woman|person)|someone else)\b/i;
+
+const BENCH_CREATOR: CreatorProfile = {
+  id: "bench-creator",
+  displayName: "Aria",
+  lookLock: "long dark wavy hair, olive skin, athletic build",
+  sceneId: "bedroom",
+  tipMenu: [],
+};
+
 const CLIP_CHECK_PROMPT =
   "You check a generated webcam clip of a fictional adult woman for continuity errors. Watch the whole clip. " +
   'Return ONLY JSON: {"garmentRemoved":bool,"garmentAdded":bool,"duplicateGarment":bool,"notes":"..."}. ' +
@@ -153,6 +295,7 @@ type Row = {
   costUsd: number;
   error?: string;
   output?: string;
+  refused?: boolean;
 };
 
 // Parser calls run one at a time per model so rate limits stay out of the latency numbers; clip calls run in fives to fit the route's time limit.
@@ -272,6 +415,64 @@ const clipRow = async (model: string, c: ClipCase): Promise<Row> => {
   }
 };
 
+// No repair turn in the bench: it measures first-shot plans, and a repair would hide the miss.
+const directorRow = async (model: string, c: DirectorCase): Promise<Row> => {
+  const input = directorInputFor({
+    state: defaultLiveState("bedroom", c.wardrobe ?? LINGERIE),
+    creator: BENCH_CREATOR,
+    transcript: [],
+    request: correctActionTypos(c.text),
+    speechMode: "text",
+    clipSec: LIVE_TUNABLES.SWAP_ACTION_CLIP_SEC,
+  });
+  const started = Date.now();
+  try {
+    const result = await callDirectorModel(
+      model,
+      directorMessagesFor(input),
+      15_000,
+    );
+    const outcome = judgeDirectorOutput(result.content, input);
+    const refused =
+      !c.hold &&
+      ((outcome.kind === "fallback" && outcome.reason === "refusal") ||
+        (outcome.kind === "hold" &&
+          outcome.reason.startsWith("directorRefusal")));
+    let pass: boolean;
+    if (c.hold) pass = outcome.kind === "hold";
+    else if (outcome.kind !== "plan") pass = false;
+    else {
+      const beats = outcome.plan.beats.map((b) => b.action).join(" ");
+      const kinds = outcome.plan.props.map((p) => p.kind);
+      pass =
+        (c.mention ?? []).every((re) => re.test(beats)) &&
+        (c.props ?? []).every((kind) => kinds.includes(kind)) &&
+        !SECOND_PERSON_RE.test(beats);
+    }
+    return {
+      model,
+      case: c.text,
+      pass,
+      ms: Date.now() - started,
+      costUsd: result.costUsd,
+      output: result.content,
+      refused,
+      ...(outcome.kind === "repair"
+        ? { error: outcome.errors.join("; ").slice(0, 300) }
+        : {}),
+    };
+  } catch (error) {
+    return {
+      model,
+      case: c.text,
+      pass: null,
+      ms: Date.now() - started,
+      costUsd: 0,
+      error: String(error).slice(0, 300),
+    };
+  }
+};
+
 const percentile = (values: number[], p: number): number | null => {
   if (values.length === 0) return null;
   const sorted = [...values].sort((a, b) => a - b);
@@ -293,20 +494,36 @@ const summarise = (rows: Row[]) =>
       p50Ms: percentile(ms, 0.5),
       p90Ms: percentile(ms, 0.9),
       costUsd: Number(mine.reduce((sum, r) => sum + r.costUsd, 0).toFixed(6)),
+      refusals: mine.filter((r) => r.refused).length,
     };
   });
 
-const runSuite = async (suite: "parser" | "clip"): Promise<void> => {
+type Suite = "parser" | "clip" | "director";
+const SUITES: Suite[] = ["parser", "clip", "director"];
+
+const runSuite = async (suite: Suite): Promise<void> => {
   const rowsByModel = await Promise.all(
     suite === "parser"
       ? PARSER_MODELS.map((model) =>
           runInChunks(PARSER_CASES, 1, (c) => parserRow(model, c)),
         )
-      : CLIP_MODELS.map((model) =>
-          runInChunks(CLIP_CASES, 5, (c) => clipRow(model, c)),
-        ),
+      : suite === "director"
+        ? DIRECTOR_MODELS.map((model) =>
+            runInChunks(DIRECTOR_CASES, 1, (c) => directorRow(model, c)),
+          )
+        : CLIP_MODELS.map((model) =>
+            runInChunks(CLIP_CASES, 5, (c) => clipRow(model, c)),
+          ),
   );
   const rows = rowsByModel.flat();
+  // Director plans are judged by reading them, so every full output gets its own line.
+  if (suite === "director") {
+    for (const r of rows) {
+      console.log(
+        `live/orBench director model=${r.model} pass=${r.pass} ms=${r.ms} case=${JSON.stringify(r.case)} output=${JSON.stringify(r.output ?? r.error ?? "")}`,
+      );
+    }
+  }
   // One line per model: Vercel keeps only the first few hundred log lines of a request.
   for (const modelRows of rowsByModel) {
     console.log(
@@ -317,7 +534,9 @@ const runSuite = async (suite: "parser" | "clip"): Promise<void> => {
           ms: r.ms,
           costUsd: r.costUsd,
           // Outputs only for misses, to keep the line short.
-          ...(r.pass ? {} : { output: r.output, error: r.error }),
+          ...(r.pass
+            ? {}
+            : { output: r.output?.slice(0, 300), error: r.error }),
         })),
       )}`,
     );
@@ -345,13 +564,10 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const url = new URL(request.url);
-  const suite = url.searchParams.get("suite");
-  if (
-    url.searchParams.get("run") !== "1" ||
-    (suite !== "parser" && suite !== "clip")
-  ) {
+  const suite = SUITES.find((s) => s === url.searchParams.get("suite"));
+  if (url.searchParams.get("run") !== "1" || !suite) {
     return NextResponse.json({
-      usage: "?suite=parser&run=1 or ?suite=clip&run=1",
+      usage: "?suite=parser&run=1, ?suite=clip&run=1 or ?suite=director&run=1",
     });
   }
   after(() =>

@@ -1,10 +1,5 @@
-import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import {
-  LIVE_TUNABLES,
-  stateFrameKey,
-  type ClipRequest,
-  type LiveSessionSnapshot,
-} from "../contract";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { type ClipRequest, type LiveSessionSnapshot } from "../contract";
 
 const render = vi.fn();
 const renderBackendFor = vi.fn(() => ({ render, supportsEndFrame: true }));
@@ -64,12 +59,6 @@ vi.mock("./swapClip", () => ({
 // The real module pulls in @/env; Premium routing has its own tests in generateClip.premium.test.ts.
 vi.mock("./wan14bClip", () => ({ wan14bClip: vi.fn() }));
 
-// The real module pulls in @/env; planner routing has its own tests in generateClip.director.test.ts.
-vi.mock("./directClip", () => ({
-  directClip: vi.fn(),
-  hardLimitHold: () => null,
-}));
-
 const captureRoom = vi.fn(async (): Promise<string | null> => null);
 vi.mock("./captureRoom", () => ({
   captureRoom: (...args: unknown[]) =>
@@ -82,12 +71,27 @@ vi.mock("./parseIntents", () => ({
     (parseIntentsWithLlm as (...a: unknown[]) => Promise<unknown>)(...args),
 }));
 
+const writeReply = vi.fn(async () => ({
+  text: "hey you",
+  nextWorld: "chatting",
+}));
 vi.mock("./writeReply", () => ({
-  writeReply: vi.fn(async () => ({ text: "hey you", nextWorld: "chatting" })),
+  writeReply: (...args: unknown[]) =>
+    (writeReply as (...a: unknown[]) => Promise<unknown>)(...args),
   writeCheckIn: vi.fn(async () => null),
 }));
 
+const directClip = vi.fn();
+const hardLimitHold = vi.fn((): unknown => null);
+// Mocked so these tests pin the routing; the Director itself is covered in directClip.test.ts.
+vi.mock("./directClip", () => ({
+  directClip: (...args: unknown[]) => directClip(...args),
+  hardLimitHold: (...args: unknown[]) =>
+    (hardLimitHold as (...a: unknown[]) => unknown)(...args),
+}));
+
 const { generateClip } = await import("./generateClip");
+const { planClip } = await import("./planClip");
 
 const session: LiveSessionSnapshot = {
   creator: {
@@ -130,32 +134,46 @@ const session: LiveSessionSnapshot = {
   transcript: [],
 };
 
-const commercialRequest = (job: ClipRequest["job"]): ClipRequest => ({
-  session,
-  job,
-  backend: "commercial",
-  speechMode: "text",
-  useIdentityReference: false,
-});
-
 const REPLY: ClipRequest["job"] = {
   kind: "reply",
   requestId: "r1",
-  text: "hi",
+  text: "fetch ur dildo and suck it on all fours",
   channel: "chat",
   from: "fan",
   precededByIdle: false,
 };
 
+const requestFor = (
+  planner: ClipRequest["planner"],
+  backend: ClipRequest["backend"] = "commercial",
+): ClipRequest => ({
+  session,
+  job: REPLY,
+  backend,
+  speechMode: "text",
+  useIdentityReference: false,
+  ...(planner ? { planner } : {}),
+});
+
+const directorPlan = () => ({
+  ...planClip({
+    session,
+    job: REPLY,
+    speechMode: "text",
+    backend: "commercial",
+  }),
+  prompt: "0-2s: DIRECTED BEATS",
+  replyPhysical: "fetch the dildo; suck it. 0-2s: DIRECTED BEATS",
+});
+
 beforeEach(() => {
   render.mockReset();
-  renderBackendFor.mockClear();
-  swapClip.mockReset();
-  swapServiceLastFrame.mockReset();
-  swapTail.mockReset();
+  directClip.mockReset();
+  hardLimitHold.mockReset();
+  hardLimitHold.mockReturnValue(null);
+  writeReply.mockClear();
+  parseIntentsWithLlm.mockClear();
   extractLastFrameUrl.mockReset();
-  extractMidFrameUrl.mockReset();
-  guardFrame.mockReset();
   render.mockResolvedValue({
     videoUrl: "https://example.com/clip.mp4",
     costUsd: 0.275,
@@ -163,84 +181,52 @@ beforeEach(() => {
   extractLastFrameUrl.mockResolvedValue("https://example.com/last.jpg");
 });
 
-const expectNoSwapService = () => {
-  expect(swapClip).not.toHaveBeenCalled();
-  expect(swapTail).not.toHaveBeenCalled();
-  expect(swapServiceLastFrame).not.toHaveBeenCalled();
-};
+const physicalSent = () =>
+  (
+    writeReply.mock.calls[0] as unknown as [{ physical: string }] | undefined
+  )?.[0].physical;
 
-// Commercial is swap mode minus the face swap: same h3 renders and seeds, but nothing reaches the swap service.
-describe("generateClip on the commercial backend", () => {
-  it("a chain clip comes back playable, unswapped, seeded from its raw last frame, without logging a swap failure", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    onTestFinished(() => warn.mockRestore());
-    const onRendered = vi.fn();
-    const result = await generateClip(commercialRequest(REPLY), onRendered);
-    expectNoSwapService();
-    expect(extractLastFrameUrl).toHaveBeenCalledWith(
-      "https://example.com/clip.mp4",
-      expect.any(Number),
-    );
-    expect(result.videoUrl).toBe("https://example.com/clip.mp4");
-    expect(result.seedFrameUrl).toBe("https://example.com/last.jpg");
-    expect(result.swap).toBeUndefined();
-    expect(result.verdict).toBe("approved");
-    expect(result.costUsd).toBe(0.275);
-    expect(onRendered).not.toHaveBeenCalled();
-    expect(
-      warn.mock.calls.some((call) => String(call[0]).includes("swap")),
-    ).toBe(false);
+describe("generateClip planner routing", () => {
+  it("never calls the Director for a session on the default catalogue planner", async () => {
+    await generateClip(requestFor(undefined));
+    await generateClip(requestFor("catalogue"));
+    expect(directClip).not.toHaveBeenCalled();
+    expect(render).toHaveBeenCalledTimes(2);
   });
 
-  it("renders the greeting on the raw upload through reference-to-video, like swap", async () => {
-    const result = await generateClip({
-      ...commercialRequest({ kind: "greeting" }),
-      session: { ...session, seedFrameUrl: session.anchorFrameUrl },
-    });
-    expectNoSwapService();
-    expect(renderBackendFor).toHaveBeenCalledWith("commercial", {
-      greetingFromReference: true,
-      chainFromReference: false,
-    });
+  it("renders the Director's plan and hands writeReply what she does", async () => {
+    directClip.mockResolvedValue(directorPlan());
+    await generateClip(requestFor("director"));
+    expect(directClip).toHaveBeenCalledOnce();
     expect(render).toHaveBeenCalledWith(
-      expect.objectContaining({
-        prompt: expect.stringContaining("Image 1 is the woman's identity only"),
-        durationSec: LIVE_TUNABLES.SWAP_GREETING_CLIP_SEC,
-      }),
+      expect.objectContaining({ prompt: "0-2s: DIRECTED BEATS" }),
     );
-    expect(result.swap).toBeUndefined();
+    expect(physicalSent()).toBe(
+      "fetch the dildo; suck it. 0-2s: DIRECTED BEATS",
+    );
   });
 
-  it("an idle filler loops on its seed with no swap pending", async () => {
-    const result = await generateClip(commercialRequest({ kind: "idle" }));
-    expectNoSwapService();
-    expect(extractLastFrameUrl).not.toHaveBeenCalled();
-    expect(result.seedFrameUrl).toBe(session.seedFrameUrl);
-    expect(result.swap).toBeUndefined();
+  it("falls back to the catalogue plan when the Director returns nothing", async () => {
+    directClip.mockResolvedValue(null);
+    await generateClip(requestFor("director"));
+    const prompt = (render.mock.calls[0] as unknown as [{ prompt: string }])[0]
+      .prompt;
+    expect(prompt).not.toContain("DIRECTED BEATS");
+    expect(physicalSent()).toBe(prompt);
   });
 
-  it("uses swap's pose bank for a chain clip landing in a banked state", async () => {
-    const banked = "https://example.com/banked-sitting.png";
-    const result = await generateClip({
-      ...commercialRequest({ kind: "checkIn", channel: "chat" }),
-      session: {
-        ...session,
-        stateFrames: { [stateFrameKey(session.state)]: banked },
-      },
-    });
+  it("only directs reply clips", async () => {
+    await generateClip({ ...requestFor("director"), job: { kind: "idle" } });
+    expect(directClip).not.toHaveBeenCalled();
+  });
+
+  it("holds a hard-limit request on the catalogue planner before any LLM reads it", async () => {
+    hardLimitHold.mockReturnValue({ ...directorPlan(), prompt: "HELD" });
+    await generateClip(requestFor("catalogue"));
+    expect(parseIntentsWithLlm).not.toHaveBeenCalled();
+    expect(directClip).not.toHaveBeenCalled();
     expect(render).toHaveBeenCalledWith(
-      expect.objectContaining({ endFrameUrl: banked }),
+      expect.objectContaining({ prompt: "HELD" }),
     );
-    expectNoSwapService();
-    expect(result.seedFrameUrl).toBe(banked);
-  });
-
-  it("ignores a persona id instead of reaching the swap service's persona gate", async () => {
-    await generateClip({
-      ...commercialRequest(REPLY),
-      personaId: "aria",
-      swapFaceLock: true,
-    });
-    expectNoSwapService();
   });
 });

@@ -68,6 +68,12 @@ vi.mock("./swapClip", () => ({
 // The real module pulls in @/env; Premium routing has its own tests in generateClip.premium.test.ts.
 vi.mock("./wan14bClip", () => ({ wan14bClip: vi.fn() }));
 
+// The real module pulls in @/env; planner routing has its own tests in generateClip.director.test.ts.
+vi.mock("./directClip", () => ({
+  directClip: vi.fn(),
+  hardLimitHold: () => null,
+}));
+
 const captureRoom = vi.fn(async (): Promise<string | null> => null);
 vi.mock("./captureRoom", () => ({
   captureRoom: (...args: unknown[]) =>

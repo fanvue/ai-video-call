@@ -10,11 +10,8 @@ import type {
 } from "../contract";
 import { HELD_OBJECTS, isIntentSatisfied } from "../intents";
 import { correctActionTypos } from "./actionTypos";
+import { MINOR_CUE_RE } from "./contentSafety";
 import { planBeatIntent } from "./planClip";
-
-// A request with a minor cue fails closed to the neutral reaction, before it reaches the LLM or a template.
-export const MINOR_CUE_RE =
-  /\b(teen\w*|child\w*|kid|kids|minor|minors|underage|under-age|schoolgirl\w*|school uniform|loli\w*|little girl|barely legal|jailbait)\b/i;
 
 // Generated text is held to a stricter bar: it must never frame her as young at all.
 export const YOUTH_WORD_RE =

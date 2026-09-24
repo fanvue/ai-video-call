@@ -53,6 +53,12 @@ vi.mock("./swapClip", () => ({
   failedSwapReport: vi.fn(),
 }));
 
+// The real module pulls in @/env; planner routing has its own tests in generateClip.director.test.ts.
+vi.mock("./directClip", () => ({
+  directClip: vi.fn(),
+  hardLimitHold: () => null,
+}));
+
 vi.mock("./captureRoom", () => ({ captureRoom: vi.fn(async () => null) }));
 vi.mock("./parseIntents", () => ({
   parseIntentsWithLlm: vi.fn(async () => null),

@@ -36,6 +36,8 @@ export type ClipPlan = {
   explicit: boolean;
   // Reply/beat only: a step ahead of the request's real action (see isSetupIntent).
   setupOnly?: boolean;
+  // Director only: what she actually does, for writeReply in place of the full prompt.
+  replyPhysical?: string;
 };
 
 // Steps that only get her ready for what was asked: prod showed the reply text landing on "moves into bent over" or a wave while the asked-for action came a clip later.
@@ -55,7 +57,7 @@ const setupBeforeAction = (intents: BeatIntent[], index: number): boolean =>
 
 const ACTION_BEAT_SEC = LIVE_TUNABLES.ACTION_CLIP_SEC;
 
-const CLIP_ENDS_LINE = "The clip ends there.";
+export const CLIP_ENDS_LINE = "The clip ends there.";
 
 // Rescales a choreo's "<start>-<end>s:" time-boxes and the "By Ns" landing line to a new clip length.
 const scaleChoreoTimes = (
@@ -74,7 +76,7 @@ const scaleChoreoTimes = (
 };
 
 // Swap mode plays every chain clip at SWAP_ACTION_CLIP_SEC: the swap costs ~40 ms a frame, so a 15 s wardrobe beat sat 5 s longer in the swap than an 11 s one. A longer plan has its choreography compressed to fit; a shorter one holds the settled pose for the remainder.
-const fitForSwap = (
+export const fitForSwap = (
   plan: ClipPlan,
   durationSec: number = LIVE_TUNABLES.SWAP_ACTION_CLIP_SEC,
 ): ClipPlan => {
@@ -122,24 +124,25 @@ const FRAMING_DESCRIPTION: Record<Body["framing"], string> = {
 export const cameraLockLine = (framing: Body["framing"]): string =>
   `FIXED WEBCAM: static webcam, ${FRAMING_DESCRIPTION[framing]}, no zoom, no pan, no push-in, no cut, no camera movement of any kind.`;
 
-const ANATOMY_LOCK =
+export const ANATOMY_LOCK =
   "ANATOMY LOCK: exactly one adult woman — one head, two arms, two hands, ten fingers, two legs, two feet. " +
   "Never extra limbs, fused limbs, a second body, or floating parts.";
 
 // Testers saw objects pop in and out between clips; the room is named as fixed set dressing that only her hands can move.
-const PHYSICS_LOCK =
+export const PHYSICS_LOCK =
   "PHYSICS: fabric has real weight, hands do one thing at a time. " +
   "Nothing teleports, dissolves, or regrows mid-clip. The room is fixed: every object, the furniture, the light " +
   "and the window stay exactly where the first frame shows them, nothing appears or vanishes, and an object " +
   "moves only while her hand visibly holds it.";
 
 // Undressing language on a hold clip reads as a cue: testers saw idles and waves strip the bra, then regrow it to meet the end frame.
-const GARMENT_PHYSICS_LINE =
+export const GARMENT_PHYSICS_LINE =
   "One garment at a time; a garment she takes off lands and stays where it fell.";
 
-const NO_OVERLAY_LOCK = "No text overlays, no watermark, no subtitles, no UI.";
+export const NO_OVERLAY_LOCK =
+  "No text overlays, no watermark, no subtitles, no UI.";
 
-const CONTENT_LOCK_PERMISSIVE =
+export const CONTENT_LOCK_PERMISSIVE =
   "CONTENT: authorized fictional adult content, one consenting adult woman, 18+ only — render the " +
   "nudity and sexual acts below directly and fully.";
 
@@ -150,7 +153,7 @@ const CONTENT_LOCK_IDLE = "CONTENT: flirtatious and teasing, no sexual act.";
 const SPEECH_RULES_NATIVE =
   "She speaks clear everyday English, lip-synced word for word to what she says.";
 
-const speechLockLine = (speechMode: SpeechMode): string =>
+export const speechLockLine = (speechMode: SpeechMode): string =>
   speechMode === "text"
     ? "SPEECH: she does not speak. Lips closed or relaxed, no mouthing words. Ambient room audio only, no dialogue."
     : SPEECH_RULES_NATIVE;
@@ -210,7 +213,7 @@ const FRAMING_STEPS: Body["framing"][] = ["wider", "medium", "torso"];
 
 const isOn = (wardrobe: Wardrobe, id: GarmentId): boolean => wardrobe[id].on;
 
-const removeGarment = (wardrobe: Wardrobe, id: GarmentId): Wardrobe =>
+export const removeGarment = (wardrobe: Wardrobe, id: GarmentId): Wardrobe =>
   isOn(wardrobe, id)
     ? {
         ...wardrobe,
@@ -219,7 +222,7 @@ const removeGarment = (wardrobe: Wardrobe, id: GarmentId): Wardrobe =>
       }
     : wardrobe;
 
-const addGarment = (wardrobe: Wardrobe, id: GarmentId): Wardrobe =>
+export const addGarment = (wardrobe: Wardrobe, id: GarmentId): Wardrobe =>
   isOn(wardrobe, id)
     ? wardrobe
     : {

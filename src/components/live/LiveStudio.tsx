@@ -190,6 +190,7 @@ export const LiveStudio = () => {
           swapFaceLock: values.swapFaceLock,
           swapHandMask: values.swapHandMask,
           swapPersonaId: values.swapPersonaId,
+          planner: values.planner,
           maxMinutes: values.maxMinutes,
           costCapUsd: values.costCapUsd,
         })

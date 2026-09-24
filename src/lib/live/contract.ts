@@ -256,6 +256,10 @@ export type SpeechMode = z.infer<typeof speechModeSchema>;
 const intentParserSchema = z.enum(["regex", "hybrid", "llm"]);
 export type IntentParser = z.infer<typeof intentParserSchema>;
 
+// Who plans a reply clip: the regex catalogue (default), or the Director LLM, which writes the clip's timed beats itself and falls back to the catalogue.
+const plannerSchema = z.enum(["catalogue", "director"]);
+export type Planner = z.infer<typeof plannerSchema>;
+
 // LongLive persona face lock: the id names an allowlisted synthetic persona in the server's manifest, never an image.
 export const personaIdSchema = z.string().regex(/^[a-z0-9-]{1,64}$/);
 export const DEFAULT_PERSONA_ID = "synth-persona-01";
@@ -312,6 +316,8 @@ export const clipRequestSchema = z.object({
   // Swap mode's swap source, resolved against the persona manifest; absent, clips play unswapped.
   personaId: personaIdSchema.optional(),
   intentParser: intentParserSchema.optional(),
+  // Absent is the same as "catalogue".
+  planner: plannerSchema.optional(),
   // Gates the reference backend's dual (identity + current-frame) reference; see consumeIdentityReferenceDue.
   useIdentityReference: z.boolean().default(false),
 });
@@ -519,4 +525,6 @@ export const LIVE_TUNABLES = {
   WAN14B_COST_PER_SEC_USD: 3.95 / 3600,
   // The Premium greeting waits this long for the container to boot and load before it plays on swap; later clips keep their 40 s fallback.
   WAN14B_WARM_WAIT_MS: 120_000,
+  // The Director's LLM time per reply, its one repair call included; past it the catalogue plans the clip. It sits in front of the render, so it eats into the 20 s request-to-action contract.
+  DIRECTOR_BUDGET_MS: 5_000,
 } as const;

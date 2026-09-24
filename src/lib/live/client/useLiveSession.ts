@@ -51,6 +51,7 @@ import {
   type ClipSwapReport,
   type InputChannel,
   type LiveState,
+  type Planner,
   type RenderBackend,
   type SceneId,
   type SpeechMode,
@@ -76,11 +77,7 @@ export type ReferenceUploadResult = {
 };
 
 export type LiveSessionStatus =
-  | "connecting"
-  | "live"
-  | "holding"
-  | "ended"
-  | "error";
+  "connecting" | "live" | "holding" | "ended" | "error";
 
 export type BufferDepth = {
   idleReady: number;
@@ -99,6 +96,8 @@ export type StartOptions = {
   swapHandMask?: boolean;
   // Swap mode only: the manifest persona id the swap uses as its source, never an image.
   swapPersonaId?: string;
+  // Absent plans replies on the catalogue.
+  planner?: Planner;
   // The setup screen's session limits; missing or invalid fall back to the defaults, never to no limit.
   maxMinutes?: number;
   costCapUsd?: number;
@@ -139,12 +138,7 @@ export type UseLiveSessionDeps = {
 
 // Staging state of the reference step started from the setup screen: "unstaged" is a completed step whose still was refused or failed, so the greeting starts on the photo.
 export type PrepareStatus =
-  | "idle"
-  | "staging"
-  | "ready"
-  | "uploaded"
-  | "unstaged"
-  | "failed";
+  "idle" | "staging" | "ready" | "uploaded" | "unstaged" | "failed";
 
 // A join that has not shown the greeting by now is the "stuck in connecting" report; log where it stalled.
 const CONNECT_STALL_MS = 60_000;
@@ -176,9 +170,7 @@ export type ConnectStage =
   | "primingBuffer";
 
 export type QueueOwner =
-  | { type: "fan" }
-  | { type: "viewer"; handle: string }
-  | { type: "studio" };
+  { type: "fan" } | { type: "viewer"; handle: string } | { type: "studio" };
 
 // `requestId` is only set for a reply/beat job (a request-owned act); it's what the failed-chip
 // timeout and the "playing" transition key off.
@@ -510,15 +502,11 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     if (!director) {
       return;
     }
-    const queued = director.getState().jobQueue.map(
-      (job): QueueStripEntry => ({
-        kind: job.kind,
-        owner:
-          job.kind === "reply"
-            ? ownerForReplyJob(job)
-            : currentOwnerRef.current,
-      }),
-    );
+    const queued = director.getState().jobQueue.map((job): QueueStripEntry => ({
+      kind: job.kind,
+      owner:
+        job.kind === "reply" ? ownerForReplyJob(job) : currentOwnerRef.current,
+    }));
     setQueueStrip({ current: currentActRef.current, queued });
   }, []);
 
@@ -1260,6 +1248,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         swapFaceLock: options.swapFaceLock,
         swapHandMask: options.swapHandMask,
         personaId: options.swapPersonaId,
+        planner: options.planner,
         costCapUsd: sessionLimitsRef.current.costCapUsd,
         abandonDependents: (job) => {
           directorRef.current?.abandonRequest(requestIdForJob(job));
