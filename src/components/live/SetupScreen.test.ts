@@ -15,6 +15,14 @@ const markup = () =>
   );
 
 describe("SetupScreen render mode", () => {
+  it("shows Face lock, Hand mask and the Persona picker on first paint, not behind Advanced", () => {
+    const html = markup();
+    expect(html).toContain("Face lock");
+    expect(html).toContain("Hand mask");
+    expect(html).toContain("Persona");
+    expect(html).toContain('aria-expanded="false"');
+  });
+
   it("offers Premium beside Swap, with Swap selected by default", () => {
     const html = markup();
     expect(html).toContain('role="radiogroup" aria-label="Render"');

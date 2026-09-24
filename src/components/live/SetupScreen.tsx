@@ -360,6 +360,125 @@ export const SetupScreen = ({
         ))}
       </div>
 
+      {/* Out of Advanced so testers see the face settings without hunting; Commercial says why it has none. */}
+      <div className="flex flex-col gap-2 rounded-xl border border-[var(--border)] p-3">
+        <span className="text-sm font-medium text-[var(--foreground)]">
+          Face
+        </span>
+        {usesSwapService(renderMode) ? null : (
+          <p className="text-xs text-[var(--muted)]">
+            Commercial never runs the face swap, so Face lock, Hand mask and
+            Persona are off in this mode.
+          </p>
+        )}
+        {showsSwapTuning(renderMode) ? (
+          <>
+            <p className="text-xs text-[var(--muted)]">
+              Each Turbo clip gets the persona face swapped in on our own GPU
+              before it plays, under a cent a clip. A 10 s reply&apos;s first 4
+              s shows about 3.5 s after it renders (4.5 s with Face lock) while
+              the rest swaps alongside; the swapped last frame seeds the next
+              clip so identity re-locks every clip.
+            </p>
+            <div className="flex flex-col gap-1">
+              <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
+                <input
+                  type="checkbox"
+                  checked={swapFaceLock}
+                  onChange={(event) => setSwapFaceLock(event.target.checked)}
+                />
+                Face lock
+              </label>
+              <p className="text-xs text-[var(--muted)]">
+                Persona swap plus GFPGAN face restore, as in LongLive; about
+                2.3x the swap GPU time
+              </p>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
+                <input
+                  type="checkbox"
+                  checked={swapHandMask}
+                  onChange={(event) => setSwapHandMask(event.target.checked)}
+                />
+                Hand mask
+              </label>
+              <p className="text-xs text-[var(--muted)]">
+                Keeps hands in front of the face crisp, but swaps run slower
+              </p>
+            </div>
+          </>
+        ) : null}
+        {showsSwapPersona(renderMode) ? (
+          <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
+            Persona
+            <select
+              value={personaSettings.personaId}
+              onChange={(event) =>
+                setPersonaSettings((current) => ({
+                  ...current,
+                  personaId: event.target.value,
+                }))
+              }
+              className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] p-2 text-[var(--foreground)]"
+            >
+              <option value="">Off</option>
+              {personaOptionsFor(personaSettings).map((option) => (
+                <option key={option.id} value={option.id}>
+                  {personaOptionLabel(option)}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+        {showsSwapPersona(renderMode) &&
+        personaSettings.canRegister &&
+        onRegisterSwapPersona ? (
+          <div className="flex flex-col gap-2 text-xs text-[var(--muted)]">
+            <label className="flex flex-col gap-1">
+              Name
+              <input
+                type="text"
+                value={personaSettings.name}
+                onChange={(event) =>
+                  setPersonaSettings((current) => ({
+                    ...current,
+                    name: event.target.value,
+                  }))
+                }
+                maxLength={40}
+                placeholder="So testers can tell faces apart"
+                className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] p-2 text-[var(--foreground)]"
+              />
+            </label>
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={personaSettings.attested}
+                onChange={(event) =>
+                  setPersonaSettings((current) => ({
+                    ...current,
+                    attested: event.target.checked,
+                  }))
+                }
+              />
+              This is a Fanvue-owned AI creator likeness, not a real person
+            </label>
+            <button
+              type="button"
+              disabled={!file || !personaSettings.attested || !registeredName}
+              onClick={registerUpload}
+              className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] p-2 text-[var(--foreground)] disabled:text-[var(--muted)]"
+            >
+              Register this photo as a persona
+            </button>
+            {personaSettings.registerStatus ? (
+              <p>{personaSettings.registerStatus}</p>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+
       <label className="flex flex-col gap-1">
         <span className="text-sm font-medium text-[var(--foreground)]">
           Planner
@@ -434,118 +553,6 @@ export const SetupScreen = ({
               />
               Voice (experimental)
             </label>
-            {showsSwapTuning(renderMode) ? (
-              <>
-                <p className="text-xs text-[var(--muted)]">
-                  Each Turbo clip gets the persona face swapped in on our own
-                  GPU before it plays, under a cent a clip. A 10 s reply&apos;s
-                  first 4 s shows about 3.5 s after it renders (4.5 s with Face
-                  lock) while the rest swaps alongside; the swapped last frame
-                  seeds the next clip so identity re-locks every clip.
-                </p>
-                <div className="flex flex-col gap-1">
-                  <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
-                    <input
-                      type="checkbox"
-                      checked={swapFaceLock}
-                      onChange={(event) =>
-                        setSwapFaceLock(event.target.checked)
-                      }
-                    />
-                    Face lock
-                  </label>
-                  <p className="text-xs text-[var(--muted)]">
-                    Persona swap plus GFPGAN face restore, as in LongLive; about
-                    2.3x the swap GPU time
-                  </p>
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
-                    <input
-                      type="checkbox"
-                      checked={swapHandMask}
-                      onChange={(event) =>
-                        setSwapHandMask(event.target.checked)
-                      }
-                    />
-                    Hand mask
-                  </label>
-                  <p className="text-xs text-[var(--muted)]">
-                    Keeps hands in front of the face crisp, but swaps run slower
-                  </p>
-                </div>
-              </>
-            ) : null}
-            {showsSwapPersona(renderMode) ? (
-              <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
-                Persona
-                <select
-                  value={personaSettings.personaId}
-                  onChange={(event) =>
-                    setPersonaSettings((current) => ({
-                      ...current,
-                      personaId: event.target.value,
-                    }))
-                  }
-                  className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] p-2 text-[var(--foreground)]"
-                >
-                  <option value="">Off</option>
-                  {personaOptionsFor(personaSettings).map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {personaOptionLabel(option)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-            {showsSwapPersona(renderMode) &&
-            personaSettings.canRegister &&
-            onRegisterSwapPersona ? (
-              <div className="flex flex-col gap-2 text-xs text-[var(--muted)]">
-                <label className="flex flex-col gap-1">
-                  Name
-                  <input
-                    type="text"
-                    value={personaSettings.name}
-                    onChange={(event) =>
-                      setPersonaSettings((current) => ({
-                        ...current,
-                        name: event.target.value,
-                      }))
-                    }
-                    maxLength={40}
-                    placeholder="So testers can tell faces apart"
-                    className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] p-2 text-[var(--foreground)]"
-                  />
-                </label>
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={personaSettings.attested}
-                    onChange={(event) =>
-                      setPersonaSettings((current) => ({
-                        ...current,
-                        attested: event.target.checked,
-                      }))
-                    }
-                  />
-                  This is a Fanvue-owned AI creator likeness, not a real person
-                </label>
-                <button
-                  type="button"
-                  disabled={
-                    !file || !personaSettings.attested || !registeredName
-                  }
-                  onClick={registerUpload}
-                  className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] p-2 text-[var(--foreground)] disabled:text-[var(--muted)]"
-                >
-                  Register this photo as a persona
-                </button>
-                {personaSettings.registerStatus ? (
-                  <p>{personaSettings.registerStatus}</p>
-                ) : null}
-              </div>
-            ) : null}
           </div>
         ) : null}
       </div>
