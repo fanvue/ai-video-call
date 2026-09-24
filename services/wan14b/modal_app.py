@@ -83,9 +83,9 @@ class ClipRequest(BaseModel):
     memory=65536,
     secrets=[modal.Secret.from_name("ai-video-swap-token")],
     volumes={"/weights": weights, PERSONA_ROOT: personas_volume},
-    # Scale to zero between sessions: a chain asks for its next clip as soon as one returns, so 30 s idle means the stream ended.
+    # Scale to zero between sessions; 5 min idle keeps a quiet fan's next reply off a ~90 s cold start (up to ~$0.33 idle per session).
     min_containers=0,
-    scaledown_window=30,
+    scaledown_window=300,
     # One stream per container: the chain is sequential, so a second container never speeds up one stream.
     max_containers=2,
     timeout=900,
