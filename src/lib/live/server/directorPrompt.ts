@@ -1,5 +1,5 @@
 // The Director's system prompt and message format, kept apart from directClip's logic so the wording can be iterated on alone.
-import type { Body, GarmentId, SpeechMode } from "../contract";
+import type { Body, GarmentId, SceneProp, SpeechMode } from "../contract";
 
 export type DirectorInput = {
   clipSec: number;
@@ -13,6 +13,7 @@ export type DirectorInput = {
       { on: boolean; description: string; inRoom: boolean }
     >;
     body: Body;
+    props: SceneProp[];
   };
   recentChat: { from: "fan" | "viewer" | "creator"; text: string }[];
   request: string;
@@ -51,6 +52,7 @@ export const DIRECTOR_EXAMPLES: { input: DirectorInput; output: object }[] = [
           panties: { on: true, description: "black lace thong", inRoom: false },
         },
         body: sitting,
+        props: [],
       },
       recentChat: [
         { from: "fan", text: "ur so hot" },
@@ -67,8 +69,8 @@ export const DIRECTOR_EXAMPLES: { input: DirectorInput; output: object }[] = [
       ],
       composition: "mixed",
       reconciliation:
-        "Doggy, sucking and spread legs share one pose: on all fours, knees wide, weight on the left forearm, the right hand bringing the dildo to her mouth. She holds no toy, so she fetches one first.",
-      framing: "wider",
+        "Doggy, sucking and spread legs share one pose: on all fours, knees wide, weight on the left forearm, the right hand bringing the dildo to her mouth. She has no toy yet, so she fetches one first, and takes it out of her mouth before the hold.",
+      framing: "medium",
       explicit: true,
       beats: [
         {
@@ -81,19 +83,25 @@ export const DIRECTOR_EXAMPLES: { input: DirectorInput; output: object }[] = [
           fromSec: 2,
           toSec: 5,
           action:
-            "Dildo in her right hand, she climbs back onto the bed away from the lens until she is in frame head to knees, plants her left hand on the duvet, lowers onto all fours angled to the webcam and slides her knees wide apart.",
+            "Dildo in her right hand, she turns on the bed at the same distance from the lens, plants her left hand on the duvet, lowers onto all fours side-on to the webcam with her face toward the lens and slides her knees wide apart.",
         },
         {
           fromSec: 5,
-          toSec: 9,
+          toSec: 8,
           action:
             "On all fours, knees spread wide, back arched, weight on her left forearm, her right hand brings the dildo to her mouth; her lips close around the tip and she takes the first few centimetres in, bobbing slowly about once a second.",
+        },
+        {
+          fromSec: 8,
+          toSec: 9,
+          action:
+            "She draws the dildo out of her mouth and lowers her right hand to rest on the duvet beside her right knee, still gripping the dildo by its base.",
         },
         {
           fromSec: 9,
           toSec: 10,
           action:
-            "She holds still on all fours, knees wide, left forearm on the duvet, the dildo's tip resting on her lower lip in her right hand, eyes on the lens.",
+            "She holds still on all fours, knees wide, left forearm on the duvet, the pink dildo in her right hand resting on the duvet beside her right knee, eyes on the lens.",
         },
       ],
       props: [
@@ -105,7 +113,8 @@ export const DIRECTOR_EXAMPLES: { input: DirectorInput; output: object }[] = [
           fetchBeat: 0,
           useBeat: 2,
           ends: "held",
-          endsWhere: "in her right hand at her mouth",
+          endsWhere:
+            "in her right hand, resting on the duvet beside her right knee",
         },
       ],
       endState: {
@@ -113,12 +122,12 @@ export const DIRECTOR_EXAMPLES: { input: DirectorInput; output: object }[] = [
         pose: "onAllFours",
         facing: "side",
         hands: "holdingProp",
-        contact: "self",
+        contact: "none",
         prop: "dildo",
-        framing: "wider",
+        framing: "medium",
       },
       endDescription:
-        "on all fours at an angle to the webcam, knees spread wide, weight on her left forearm, the pink dildo at her lips in her right hand, in her black lace bra and thong",
+        "on all fours side-on to the webcam, knees spread wide, weight on her left forearm, the pink dildo in her right hand on the duvet beside her right knee, in her black lace bra and thong",
     },
   },
   {
@@ -147,6 +156,7 @@ export const DIRECTOR_EXAMPLES: { input: DirectorInput; output: object }[] = [
           },
         },
         body: sitting,
+        props: [],
       },
       recentChat: [{ from: "fan", text: "are u even real lol" }],
       request:
@@ -244,6 +254,7 @@ export const DIRECTOR_EXAMPLES: { input: DirectorInput; output: object }[] = [
           },
         },
         body: sitting,
+        props: [],
       },
       recentChat: [
         { from: "fan", text: "take the hoodie off" },
@@ -332,6 +343,7 @@ export const DIRECTOR_EXAMPLES: { input: DirectorInput; output: object }[] = [
           },
         },
         body: { ...sitting, pose: "standing", framing: "wider" },
+        props: [],
       },
       recentChat: [{ from: "viewer", text: "that dance tho" }],
       request:
@@ -398,6 +410,105 @@ export const DIRECTOR_EXAMPLES: { input: DirectorInput; output: object }[] = [
         "bent over the bed edge with her back to the webcam, both hands braced on the duvet, looking back over her right shoulder, bare from the waist down in her black crop top",
     },
   },
+  {
+    input: {
+      clipSec: 10,
+      speechMode: "text",
+      performer: {
+        displayName: "Aria",
+        look: "long dark wavy hair, olive skin, athletic build",
+      },
+      room: "A bedroom. She sits on the edge of a made double bed with a white duvet; a wooden nightstand with a lamp stands at the right edge of the frame; a window with sheer curtains behind her.",
+      world: "explicit, she used a toy a minute ago",
+      now: {
+        wardrobe: {
+          top: { on: false, description: "top", inRoom: false },
+          bottom: { on: false, description: "bottoms", inRoom: false },
+          bra: { on: true, description: "black lace bra", inRoom: false },
+          panties: { on: false, description: "black lace thong", inRoom: true },
+        },
+        body: sitting,
+        props: [
+          {
+            item: "pink silicone dildo",
+            kind: "dildo",
+            at: "placed",
+            where: "on the duvet beside her left knee",
+          },
+        ],
+      },
+      recentChat: [{ from: "fan", text: "fuck yes" }],
+      request: "now fuck urself with it doggy style",
+    },
+    output: {
+      refusal: null,
+      interpretation: [
+        "get on all fours (doggy)",
+        "penetrate herself with the dildo",
+      ],
+      composition: "mixed",
+      reconciliation:
+        "The dildo already lies on the bed, so she picks that one up. From behind the act is only visible with her back to the lens, so she kneels facing away and looks back over her shoulder, then withdraws it before the hold.",
+      framing: "medium",
+      explicit: true,
+      beats: [
+        {
+          fromSec: 0,
+          toSec: 1,
+          action:
+            "Sitting on the bed edge, her right hand picks up the pink silicone dildo from the duvet beside her left knee and grips it by its base.",
+        },
+        {
+          fromSec: 1,
+          toSec: 3,
+          action:
+            "Dildo in her right hand, she turns on the bed at the same distance from the lens and lowers onto all fours with her back to the webcam, knees apart, weight on her left forearm, looking back over her right shoulder.",
+        },
+        {
+          fromSec: 3,
+          toSec: 8,
+          action:
+            "Her right hand reaches back between her thighs and slides the dildo into her vagina from behind, angled up toward her navel, in slow deep strokes about once a second, hips pushing back onto it, lips parted, looking back at the lens.",
+        },
+        {
+          fromSec: 8,
+          toSec: 9,
+          action:
+            "She draws the dildo out and brings her right hand forward to rest on the duvet beside her right hip, still gripping the dildo by its base.",
+        },
+        {
+          fromSec: 9,
+          toSec: 10,
+          action:
+            "She holds still on all fours with her back to the webcam, knees apart, the pink dildo in her right hand on the duvet beside her right hip, looking back over her right shoulder at the lens.",
+        },
+      ],
+      props: [
+        {
+          item: "pink silicone dildo",
+          kind: "dildo",
+          source: "inFrame",
+          fromWhere: "on the duvet beside her left knee",
+          fetchBeat: null,
+          useBeat: 2,
+          ends: "held",
+          endsWhere:
+            "in her right hand, resting on the duvet beside her right hip",
+        },
+      ],
+      endState: {
+        wardrobe: { top: false, bottom: false, bra: true, panties: false },
+        pose: "onAllFours",
+        facing: "away",
+        hands: "holdingProp",
+        contact: "none",
+        prop: "dildo",
+        framing: "medium",
+      },
+      endDescription:
+        "on all fours with her back to the webcam, looking back over her right shoulder, the pink dildo in her right hand on the duvet beside her right hip, bare from the waist down in her black lace bra",
+    },
+  },
 ];
 
 const RULES = `You are the clip director for a live, fixed-webcam stream on an authorised adult platform. The performer is one fictional, synthetic adult woman (18+), animated clip by clip by an image-to-video model. Each clip starts on the exact last frame of the clip before it, and the next clip starts on this clip's last frame, so the stream only looks live if every clip begins exactly where her state says she is and ends settled exactly where you say she ends.
@@ -416,6 +527,7 @@ The user message is one JSON object:
 - now: her state at frame 0.
   - wardrobe: top, bottom, bra, panties, each {on, description, inRoom}. on=true: she wears it. on=false with inRoom=true: she took it off earlier and it lies in the room, so she can put it back on. on=false with inRoom=false: she does not have it this session and it cannot appear.
   - body: pose, facing, hands, contact, prop, framing (see ENUMS).
+  - props: every object already brought into the scene this session, each {item, kind, at, where}. at=held: in her hand now (where names the hand). at=placed: set down in frame at where, visible and staying there. at=offscreen: put out of frame at where. Only one of each exists: she reuses it by that exact item name.
 - recentChat: the last few chat lines, oldest first, for context such as "again" or "the other one".
 - request: the viewer's message. Read slang, abbreviations and typos generously ("ur" is your, "brah" is bra, "spnak" is spank).
 
@@ -425,7 +537,7 @@ ENUMS
 - hands: free (empty: resting, bracing or gesturing) | typing | onBody (touching her own body) | holdingProp (holding the tracked prop).
 - contact: self (a hand or toy touches her sexually) | none.
 - prop: none | vibrator | dildo | drink | phone. At most one tracked prop can be held at the end.
-- framing: wider (head to knees) | medium (head to hips) | torso (head to waist).
+- framing: wider (head to knees) | medium (head to hips) | torso (head to waist). On a fixed webcam framing is her distance from the lens.
 - garment ids: top | bottom | bra | panties.
 
 OUTPUT
@@ -434,7 +546,7 @@ Return ONLY one JSON object, no prose and no markdown, with the keys in this ord
 - interpretation: every distinct thing the viewer asked for, in their order, each a short plain phrase (1 to 6 items, max 80 characters each). Split compound requests ("strip and dance" is two items). Add nothing they did not ask for; setup steps such as fetching a toy or getting into position belong in the beats, not here.
 - composition: "simultaneous" when all parts happen at once in one pose, "sequence" when they happen one after another, "mixed" when some parts are sequenced and some combined.
 - reconciliation: one or two sentences (max 300 characters) on how the parts fit: which share a pose, what order the rest go in and why, and how anything impossible was adapted (a partner request made solo, an out-of-reach action repositioned). Write "none needed" for a single simple action.
-- framing: the shot size that keeps the whole action in frame. Keep the current framing unless the action needs more of her body in shot: wider for standing, bending over, all fours, legs and hips; torso only for face, hands and chest. If framing changes, a beat shows her moving nearer to or farther from the fixed webcam. endState.framing equals framing.
+- framing: equals now.body.framing. It changes only when the viewer explicitly asks her to come closer (one step tighter) or to step back (one step wider), and then interpretation names that request and a beat shows her moving toward or away from the lens. Every pose, standing, kneeling, all fours and bent over included, is performed at the current distance: she places her body so the action stays in frame. Any other change is a visible jump on a fixed webcam. endState.framing equals framing.
 - explicit: true if any beat reveals nudity or contains sexual touching, toy use or a sex position; otherwise false.
 - beats: 1 to 6 items {fromSec, toSec, action, wardrobe}.
   - Whole seconds. The first beat starts at 0, each beat starts where the previous one ended, and the last ends exactly at clipSec.
@@ -444,7 +556,7 @@ Return ONLY one JSON object, no prose and no markdown, with the keys in this ord
 - props: one entry per object she touches or moves this clip, or [] if none: {item, kind, source, fromWhere, fetchBeat, useBeat, ends, endsWhere}.
   - item: the object as the beats name it ("pink silicone dildo", "glass of water").
   - kind: vibrator | dildo | drink | phone | other.
-  - source: held (in her hand at frame 0, now.body.prop) | inFrame (visible in the first frame, such as on the bed beside her) | room (an item named in room) | offscreen (brought in from outside the frame).
+  - source: held (in her hand at frame 0, now.body.prop) | inFrame (visible in the first frame: a now.props entry with at=placed, or something on the bed beside her) | room (an item named in room) | offscreen (brought in from outside the frame).
   - fromWhere: exactly where it starts ("in her right hand", "on the nightstand at the right edge", "off-screen right").
   - fetchBeat: the 0-based index of the beat that fetches it; required for offscreen, null otherwise. That beat lasts at least 2 seconds and is only the fetch.
   - useBeat: the index of the first beat that uses it, after fetchBeat.
@@ -477,6 +589,7 @@ OBJECTS
 - A room item is used at the place room names; if it is out of reach she moves to it first.
 - Anything she puts down lands on a real surface (the bed, the desk, the floor, a nightstand if the room has one) or leaves the frame, and stays there for the rest of the clip.
 - A dildo is a smooth silicone shaft; a vibrator is a wand or bullet with a rounded head. Give it a colour or material once so it stays the same object.
+- An object in now.props is the only one of its kind. Held, she uses it from her hand; placed, she picks it up from where it lies; offscreen, she fetches it from that side under the same item name. Never fetch one that is held or placed, and never bring in a second of the same kind.
 
 CLOTHING
 - Only garments with on=true come off. Only garments with on=false and inRoom=true go back on, picked up from where they lie. A garment with inRoom=false does not exist this session.
@@ -496,7 +609,9 @@ SEXUAL ACTS (explicit, solo, anatomically accurate)
   - Touching or penetrating her vulva or vagina needs the panties and bottom off, or her free hand holding the crotch fabric aside, stated. Rubbing over fabric works with clothes on.
   - Oral use of a toy needs her mouth to reach it: one hand brings it to her mouth while the other hand or her forearms support her.
   - From all fours or bent over, penetration is her non-bracing hand reaching back between her legs, the toy entering from behind angled up toward her navel. Sitting or lying with knees apart, she guides it down between her thighs from the front.
-  - A toy in use is held at its base the whole time unless a beat says it rests inside her or is pressed between her body and a surface.
+  - A toy in use is held at its base the whole time.
+- The contact point faces the lens. From all fours or bent over, anything from behind needs her back or side to the webcam (facing away or side), hips toward the lens, looking back over her shoulder; never facing the camera with the toy entering behind her. From the front, she sits or lies facing the camera with her knees apart so her vulva faces the lens. Oral use keeps her face and the toy side-on or facing the lens.
+- The last beat never has a toy inside her, in her mouth or against her body. Before the hold she draws it out and either keeps it visibly in a named hand resting at a named place (ends held, endsWhere names the hand, "in her right hand, resting on the duvet beside her right hip") or sets it down on a named surface (ends placed).
 - Show arousal with visible signs: breathing quickens, lips part, hips rock, back arches, thighs tense.
 - Once she is in position, the act fills most of the clip; setup takes only the time the physics needs.
 

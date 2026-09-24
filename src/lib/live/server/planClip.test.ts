@@ -1081,6 +1081,75 @@ describe("planBeatIntent: rest restores the full baseline, not just free hands",
     expect(plan.nextBody).toEqual(s.baselineBody);
     expect(plan.physical).not.toMatch(/settles back into/i);
   });
+
+  it("keeps her distance from the webcam: nothing in the settle walks her toward or away from the lens", () => {
+    const s: LiveState = {
+      ...state({ body: body({ pose: "onAllFours", facing: "side" }) }),
+      baselineBody: body({ framing: "medium" }),
+    };
+    const plan = planClip({
+      session: session({ state: s }),
+      job: {
+        kind: "beat",
+        beat: { id: "rest-1", intent: { type: "rest" }, attempt: 0 },
+      },
+      speechMode: "text",
+      backend: "swap",
+    });
+    expect(plan.expectedState.body.framing).toBe("wider");
+    expect(plan.prompt).toContain("wide shot");
+    expect(plan.prompt).not.toContain("medium shot");
+  });
+});
+
+describe("scene props in NOW and end lines", () => {
+  const dildo = {
+    item: "pink silicone dildo",
+    kind: "dildo" as const,
+    at: "held" as const,
+    where: "in her right hand beside her hip",
+  };
+
+  it("names a held prop the way the Director left it, one object in one hand", () => {
+    const plan = planClip({
+      session: session({
+        state: state({
+          body: body({ prop: "dildo", hands: "holdingProp" }),
+          sceneProps: [dildo],
+        }),
+      }),
+      job: { kind: "idle" },
+      speechMode: "text",
+    });
+    expect(plan.prompt).toContain(
+      "holding the pink silicone dildo in her right hand beside her hip",
+    );
+    expect(plan.prompt).not.toContain("holding a dildo");
+  });
+
+  it("keeps a placed prop where it lies, and drops a held entry once body.prop says she let go", () => {
+    const plan = planClip({
+      session: session({
+        state: state({
+          sceneProps: [
+            dildo,
+            {
+              item: "clear glass of water",
+              kind: "drink",
+              at: "placed",
+              where: "on the desk at the right",
+            },
+          ],
+        }),
+      }),
+      job: { kind: "idle" },
+      speechMode: "text",
+    });
+    expect(plan.prompt).toContain(
+      "The clear glass of water is on the desk at the right.",
+    );
+    expect(plan.prompt).not.toContain("dildo");
+  });
 });
 
 describe("planClip: typing stays in the chat, never on camera", () => {

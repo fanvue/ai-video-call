@@ -13,6 +13,7 @@ import {
   type PlannedBeat,
   type Pose,
   type RenderBackend,
+  type SceneProp,
   type SpeechMode,
   type Wardrobe,
 } from "../contract";
@@ -247,19 +248,62 @@ const bareRegions = (wardrobe: Wardrobe): string[] => {
   return regions;
 };
 
+// A held entry counts only while body.prop still holds that kind: the catalogue sets a held prop down out of frame, or fetches one, without touching sceneProps.
+export const currentSceneProps = (
+  state: Pick<LiveState, "body" | "sceneProps">,
+): SceneProp[] => {
+  const held = state.body.prop;
+  const props = (state.sceneProps ?? []).map((prop) =>
+    prop.at === "held" && prop.kind !== held
+      ? { ...prop, at: "offscreen" as const, where: "off-screen" }
+      : prop,
+  );
+  if (held === "none" || held === "fetching") return props;
+  const index = props.findIndex((prop) => prop.kind === held);
+  if (index === -1) {
+    return [
+      ...props,
+      { item: held, kind: held, at: "held", where: "in her hand" },
+    ];
+  }
+  const existing = props[index] as SceneProp;
+  return existing.at === "held"
+    ? props
+    : props.map((prop, i) =>
+        i === index
+          ? { ...prop, at: "held" as const, where: "in her hand" }
+          : prop,
+      );
+};
+
+// Names the held prop the way the Director left it, so the next clip draws that one object in that hand and not a second.
+const heldPropPart = (body: Body, props: SceneProp[]): string => {
+  if (body.prop === "none" || body.prop === "fetching") return "";
+  const held = props.find(
+    (prop) => prop.at === "held" && prop.kind === body.prop,
+  );
+  return held
+    ? `, holding the ${held.item} ${held.where}`
+    : `, holding ${PROP_LABEL[body.prop]}`;
+};
+
 // Positive-only: describes what she wears and what is bare, never names an absent garment.
-export const describeState = (wardrobe: Wardrobe, body: Body): string => {
+export const describeState = (
+  wardrobe: Wardrobe,
+  body: Body,
+  props: SceneProp[] = [],
+): string => {
   const worn = GARMENT_ORDER.filter((id) => wardrobe[id].on);
   const bare = bareRegions(wardrobe);
   const clothing =
     worn.length === 0
       ? "She is completely nude."
       : `She is wearing ${worn.map((id) => `her ${GARMENT_LABEL[id]} (${wardrobe[id].description})`).join(" and ")}${bare.length > 0 ? `; ${bare.join(" and ")} bare` : ""}.`;
-  const propPart =
-    body.prop !== "none" && body.prop !== "fetching"
-      ? `, holding ${PROP_LABEL[body.prop]}`
-      : "";
-  return `${POSE_DESCRIPTION[body.pose]}, ${FACING_TRANSITION_LABEL[body.facing]}, hands ${HANDS_DESC[body.hands]}${propPart}, ${FRAMING_DESCRIPTION[body.framing]}. ${clothing}`;
+  const placed = props
+    .filter((prop) => prop.at === "placed")
+    .map((prop) => ` The ${prop.item} is ${prop.where}.`)
+    .join("");
+  return `${POSE_DESCRIPTION[body.pose]}, ${FACING_TRANSITION_LABEL[body.facing]}, hands ${HANDS_DESC[body.hands]}${heldPropPart(body, props)}, ${FRAMING_DESCRIPTION[body.framing]}. ${clothing}${placed}`;
 };
 
 const wardrobeUnchanged = (a: Wardrobe, b: Wardrobe): boolean =>
@@ -311,16 +355,17 @@ const buildPrompt = (params: {
     params.state.wardrobe,
     params.nextWardrobe,
   );
+  const props = currentSceneProps(params.state);
   const setupLines = [
     cameraLockLine(params.state.body.framing),
     ANATOMY_LOCK,
     lookLockLine(params.creator.lookLock),
     `ROOM: ${params.state.surroundings}`,
-    `NOW: she is ${describeState(params.state.wardrobe, params.state.body)}`,
+    `NOW: she is ${describeState(params.state.wardrobe, params.state.body, props)}`,
     holdsWardrobe ? wardrobeLockLine(params.nextWardrobe) : null,
   ];
   const closingLines = [
-    `By ${params.durationSec}s she is ${describeState(params.nextWardrobe, params.nextBody)}, still, eyes on the lens. ${CLIP_ENDS_LINE}`,
+    `By ${params.durationSec}s she is ${describeState(params.nextWardrobe, params.nextBody, props)}, still, eyes on the lens. ${CLIP_ENDS_LINE}`,
     PHYSICS_LOCK,
     holdsWardrobe ? null : GARMENT_PHYSICS_LINE,
     NO_OVERLAY_LOCK,
@@ -861,7 +906,8 @@ const planBeatIntentCore = (
       return {
         physical: `${propLine}${handLine}${poseLine}Her hands come to rest, empty, still.`,
         nextWardrobe: wardrobe,
-        nextBody: { ...baselineBody },
+        // Framing stays: on a fixed webcam a distance change is a visible reframe, and nothing in this settle walks her toward or away from the lens.
+        nextBody: { ...baselineBody, framing: body.framing },
         durationSec: ACTION_BEAT_SEC,
         explicit: false,
       };

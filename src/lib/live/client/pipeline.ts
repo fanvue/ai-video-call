@@ -95,7 +95,8 @@ type AnchorPoint = { frameUrl: string; state: LiveState };
 export const greetingLoopsOn = (snapshot: LiveSessionSnapshot): boolean =>
   snapshot.seedFrameUrl !== snapshot.anchorFrameUrl;
 
-// Which trusted seed a settled state may re-seed from: same garments, prop, pose and framing.
+// Which trusted seed a settled state may re-seed from: same garments, prop, pose, facing and framing.
+// Facing is in because Director clips end in their own positions: a same-pose idle turned the other way cut in as a visible jump.
 const lookKey = (state: LiveState): string =>
   [
     state.wardrobe.top.on,
@@ -104,6 +105,7 @@ const lookKey = (state: LiveState): string =>
     state.wardrobe.panties.on,
     state.body.prop,
     state.body.pose,
+    state.body.facing,
     state.body.framing,
   ].join("|");
 
@@ -363,19 +365,37 @@ export class ClipPipeline {
     }
   }
 
-  // The filler that covers the frame playback is on now goes first; the rest keep submit order.
+  // The bridge (seeded from the chain's newest tail) goes first while the frame on screen already has a filler to loop, since it is the only cover for the boundary after the reply; then the filler on the cursor; the rest keep submit order.
   private nextIdleSwapIndex(): number {
-    const onCursor = this.queuedSwaps.findIndex(
-      (q) =>
-        q.lane === "idle" &&
-        this.sameSeed(
-          this.idleAnchorByClipId.get(q.result.clipId) ?? "",
-          this.playoutCursorFrameUrl,
-        ),
-    );
+    const queuedOn = (frameUrl: string) =>
+      this.queuedSwaps.findIndex(
+        (q) =>
+          q.lane === "idle" &&
+          this.sameSeed(
+            this.idleAnchorByClipId.get(q.result.clipId) ?? "",
+            frameUrl,
+          ),
+      );
+    const bridge = queuedOn(this.idleLaneTarget().frameUrl);
+    if (bridge !== -1 && this.cursorHasFiller()) {
+      return bridge;
+    }
+    const onCursor = queuedOn(this.playoutCursorFrameUrl);
     return onCursor !== -1
       ? onCursor
       : this.queuedSwaps.findIndex((q) => q.lane === "idle");
+  }
+
+  // A playable idle, fresh or in the deck, that loops on the frame playback stands on.
+  private cursorHasFiller(): boolean {
+    return [...this.idleReady, ...this.idleDeck].some(
+      (clip) =>
+        this.isPlayable(clip) &&
+        this.sameSeed(
+          this.idleAnchorByClipId.get(clip.clipId) ?? "",
+          this.playoutCursorFrameUrl,
+        ),
+    );
   }
 
   // Swaps in flight on the pipeline's slots plus containers held for a split rest.
@@ -1006,6 +1026,16 @@ export class ClipPipeline {
     );
   }
 
+  private idleInflightFor(frameUrl: string): number {
+    let inflight = 0;
+    for (const [seed, count] of this.idleInflightBySeed) {
+      if (this.sameSeed(seed, frameUrl)) {
+        inflight += count;
+      }
+    }
+    return inflight;
+  }
+
   private trackIdleInflight(seed: string, delta: number): void {
     this.idleInflightCount += delta;
     const next = (this.idleInflightBySeed.get(seed) ?? 0) + delta;
@@ -1043,10 +1073,15 @@ export class ClipPipeline {
       return;
     }
     // A bare shelf still needs covering, but the account's swap capacity only sustains one chain swap plus one filler at a time; piling the full idle inflight budget on top of a chain swap is what queued replies 15-20s behind fillers.
-    const inflightCap = chainSwapActive ? 1 : this.idleMaxInflight();
+    // That one is counted on the target alone: old-anchor fillers still rendering held the bridge back until the reply had played, and the boundary after it fell back to a cut.
+    const withinCap = () =>
+      chainSwapActive
+        ? this.idleInflightFor(target.frameUrl) < 1 &&
+          this.idleInflightCount < this.idleMaxInflight()
+        : this.idleInflightCount < this.idleMaxInflight();
     while (
       this.idleLaneTargetStockCount() < this.idleBufferTarget() &&
-      this.idleInflightCount < inflightCap
+      withinCap()
     ) {
       this.submitIdleJob(target, 0);
     }

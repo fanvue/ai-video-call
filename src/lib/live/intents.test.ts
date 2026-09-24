@@ -136,13 +136,14 @@ describe("isIntentSatisfied", () => {
         state({ body: body({ facing: "away" }) }),
       ),
     ).toBe(false);
+    // Framing alone is not drift: rest keeps her distance from the fixed webcam.
     expect(
       isIntentSatisfied(
         { type: "rest" },
         state({ body: body({ framing: "torso" }) }),
       ),
-    ).toBe(false);
-    // Satisfied once body pose/facing/framing matches a non-default baseline too.
+    ).toBe(true);
+    // Satisfied once body pose/facing matches a non-default baseline too.
     expect(
       isIntentSatisfied(
         { type: "rest" },

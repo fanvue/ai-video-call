@@ -18,6 +18,7 @@ import {
   type LiveSessionSnapshot,
   type LiveState,
   type RenderBackend,
+  type SceneProp,
   type SpeechMode,
   type Wardrobe,
 } from "../contract";
@@ -37,6 +38,7 @@ import {
   PHYSICS_LOCK,
   addGarment,
   cameraLockLine,
+  currentSceneProps,
   describeState,
   lookLockLine,
   planClip,
@@ -118,6 +120,16 @@ export type DirectorPlan = z.infer<typeof directorPlanSchema>;
 const isTrackedProp = (prop: string): boolean =>
   prop !== "none" && prop !== "fetching";
 
+// An explicit ask to come closer or step back: the only reason her distance to the fixed webcam may change.
+const DISTANCE_REQUEST_RE =
+  /\b(closer|nearer|step(?:s|ping)? back|move(?:s|ing)? back|back(?:s|ing)? up|(?:further|farther) (?:back|away)|(?:toward|towards|away from) the (?:camera|lens|webcam))\b/i;
+const TOY_KINDS = new Set(["dildo", "vibrator"]);
+// A toy still in use at the hold: the next clip's NOW line would put it in her hand while h3 still draws it inside her.
+const TOY_ENGAGED_RE =
+  /\b(inside|insert\w*|penetrat\w*|half[- ]in\w*|in her (?:mouth|vagina|pussy|ass|anus)|at her (?:lips|mouth)|on her (?:lower|upper) lip|between her (?:lips|labia)|against her (?:clit|vulva|labia|pussy|lips|mouth|entrance|anus|ass|nipples?|breasts?|crotch))\b/i;
+const PENETRATION_RE =
+  /\b(insert\w*|penetrat\w*|inside her|(?:slides?|pushes?|eases?|sinks?) (?:it|the [\w-]+(?: [\w-]+)?) (?:in|into))\b/i;
+
 // Physical consistency against frame 0; each message is written to be sent back to the model as a repair instruction.
 export const validateDirectorPlan = (
   plan: DirectorPlan,
@@ -182,6 +194,14 @@ export const validateDirectorPlan = (
   });
   if (plan.endState.framing !== plan.framing)
     errors.push("endState.framing must equal framing");
+  const startFraming = input.now.body.framing;
+  if (
+    plan.framing !== startFraming &&
+    !DISTANCE_REQUEST_RE.test(plan.interpretation.join("; "))
+  )
+    errors.push(
+      `framing must stay ${startFraming}: she moves nearer or farther only when the viewer asks her to come closer or step back`,
+    );
 
   const startProp = input.now.body.prop;
   plan.props.forEach((prop, i) => {
@@ -203,6 +223,54 @@ export const validateDirectorPlan = (
     if (prop.useBeat <= fetchBeat)
       errors.push(`props[${i}]: useBeat must come after fetchBeat`);
   });
+  const inScene = input.now.props.filter((prop) => prop.at !== "offscreen");
+  plan.props.forEach((prop, i) => {
+    const existing =
+      prop.kind === "other"
+        ? undefined
+        : inScene.find((scene) => scene.kind === prop.kind);
+    if (existing && prop.source === "offscreen")
+      errors.push(
+        `props[${i}]: the ${existing.item} is already ${existing.at === "held" ? "in her hand" : existing.where}; use that one instead of fetching another`,
+      );
+  });
+  const kinds = plan.props
+    .filter((prop) => prop.kind !== "other")
+    .map((prop) => prop.kind);
+  if (new Set(kinds).size !== kinds.length)
+    errors.push("only one of each prop exists: one props entry per kind");
+  const toys = plan.props.filter((prop) => TOY_KINDS.has(prop.kind));
+  if (
+    last &&
+    toys.length > 0 &&
+    TOY_ENGAGED_RE.test(
+      [last.action, plan.endDescription, ...toys.map((t) => t.endsWhere)].join(
+        " ",
+      ),
+    )
+  )
+    errors.push(
+      "by the last beat the toy is drawn out of her and held in a named hand or set down on a named surface, never inside her, at her mouth or against her",
+    );
+  plan.props.forEach((prop, i) => {
+    if (
+      TOY_KINDS.has(prop.kind) &&
+      prop.ends === "held" &&
+      !/\b(left|right) hand\b/i.test(prop.endsWhere)
+    )
+      errors.push(
+        `props[${i}].endsWhere must name the hand holding it and where that hand rests`,
+      );
+  });
+  const { pose: endPose, facing: endFacing } = plan.endState;
+  if (
+    (endPose === "onAllFours" || endPose === "bentOver") &&
+    endFacing === "camera" &&
+    beats.some((beat) => PENETRATION_RE.test(beat.action))
+  )
+    errors.push(
+      "from all fours or bent over, penetration is visible only with her back or side to the webcam: facing away or side, looking back over her shoulder",
+    );
   const heldAtEnd = plan.props.filter((prop) => prop.ends === "held");
   const endProp = plan.endState.prop;
   if (heldAtEnd.length > 1)
@@ -358,6 +426,7 @@ export const directorInputFor = ({
       ]),
     ) as DirectorInput["now"]["wardrobe"],
     body: state.body,
+    props: currentSceneProps(state),
   },
   // Role and text only: viewer handles are not needed to plan the motion.
   recentChat: transcript.slice(-TRANSCRIPT_ENTRIES).map((entry) => ({
@@ -436,7 +505,7 @@ export const buildDirectorPrompt = ({
     ANATOMY_LOCK,
     lookLockLine(creator.lookLock),
     `ROOM: ${state.surroundings}`,
-    `NOW: she is ${describeState(state.wardrobe, state.body)}`,
+    `NOW: she is ${describeState(state.wardrobe, state.body, currentSceneProps(state))}`,
     holdsWardrobe ? wardrobeLockLine(nextWardrobe) : null,
     `By ${durationSec}s she is ${lowerFirst(plan.endDescription)}, still. ${CLIP_ENDS_LINE}`,
     PHYSICS_LOCK,
@@ -466,6 +535,27 @@ const wardrobeAfter = (wardrobe: Wardrobe, plan: DirectorPlan): Wardrobe =>
           : addGarment(current, change.garment),
       wardrobe,
     );
+
+// Each prop replaces the earlier entry of its kind (or its name, for an "other" item), so the scene holds one of each.
+const scenePropsAfter = (state: LiveState, plan: DirectorPlan): SceneProp[] =>
+  plan.props
+    .reduce<SceneProp[]>(
+      (props, prop) => [
+        ...props.filter((scene) =>
+          prop.kind === "other"
+            ? scene.item !== prop.item
+            : scene.kind !== prop.kind,
+        ),
+        {
+          item: prop.item,
+          kind: prop.kind,
+          at: prop.ends,
+          where: prop.endsWhere,
+        },
+      ],
+      currentSceneProps(state),
+    )
+    .slice(-6);
 
 export const directorClipPlan = ({
   plan,
@@ -507,6 +597,7 @@ export const directorClipPlan = ({
       ...state,
       wardrobe: nextWardrobe,
       body: { pose, facing, hands, contact, prop, framing },
+      sceneProps: scenePropsAfter(state, plan),
     },
     // The whole request plays in this one clip, and the next one chains from where it ends.
     followUps: [],

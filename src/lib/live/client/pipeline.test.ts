@@ -2801,6 +2801,156 @@ describe("ClipPipeline", () => {
     expect(pipeline.nextFallbackClip()).toBeNull();
   });
 
+  it("nextFallbackClip never cuts to a same-pose idle facing the other way", async () => {
+    const queue = makeJobQueue();
+    const turnedAway: LiveState = {
+      ...liveState,
+      body: { ...baseBody, facing: "away" },
+    };
+    const pipeline = trackedPipeline({
+      backend: "reference",
+      now: nowFn,
+      onEvent: () => {},
+      render: async (req) =>
+        delayed(() =>
+          req.job.kind === "reply"
+            ? makeResult("reply", freshFrame(), { state: turnedAway })
+            : chainAdvancingResult(req),
+        ),
+    });
+    pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    pipeline.nextClip();
+    queue.push(REPLY_JOB);
+    pipeline.onRequestEnqueued();
+    await vi.advanceTimersByTimeAsync(RENDER_DELAY_MS);
+    expect(pipeline.nextClip()?.jobKind).toBe("reply");
+    // Same garments, prop, pose and framing, but she faces the camera in the idle and away at the reply's end.
+    expect(pipeline.nextFallbackClip()).toBeNull();
+  });
+
+  describe("bridge idle for a fresh chain tail", () => {
+    const pendingSwap: ClipSwapReport = {
+      status: "pending",
+      swapMs: 0,
+      frames: 0,
+      framesWithFace: 0,
+      msPerFrame: 0,
+      similarityBefore: null,
+      similarityAfter: null,
+      restored: false,
+      reason: null,
+    };
+    type SwapLanded = {
+      videoUrl: string;
+      costUsd: number;
+      report: ClipSwapReport;
+    };
+    const setup = () => {
+      const queue = makeJobQueue();
+      const renders: { req: ClipRequest; done: Deferred<ClipResult> }[] = [];
+      const swaps: { result: ClipResult; done: Deferred<SwapLanded> }[] = [];
+      const pipeline = trackedPipeline({
+        backend: "swap",
+        now: nowFn,
+        onEvent: () => {},
+        render: (req) => {
+          const done = defer<ClipResult>();
+          renders.push({ req, done });
+          return done.promise;
+        },
+        finalizeSwap: (result) => {
+          if (result.jobKind === "greeting") {
+            return Promise.resolve({
+              videoUrl: result.videoUrl,
+              costUsd: 0,
+              report: { ...SWAPPED_REPORT },
+            });
+          }
+          const done = defer<SwapLanded>();
+          swaps.push({ result, done });
+          return done.promise;
+        },
+      });
+      const settled = new Set<(typeof renders)[number]>();
+      const renderOf = (predicate: (req: ClipRequest) => boolean) => {
+        const found = renders.find(
+          (entry) => predicate(entry.req) && !settled.has(entry),
+        );
+        if (!found) throw new Error("no such render");
+        settled.add(found);
+        return found;
+      };
+      const land = (entry: (typeof renders)[number]) =>
+        entry.done.resolve({
+          ...chainAdvancingResult(entry.req),
+          swap: { ...pendingSwap },
+        });
+      const isIdle = (req: ClipRequest) => req.job.kind === "idle";
+      return { queue, renders, swaps, pipeline, renderOf, land, isIdle };
+    };
+
+    it("renders the bridge while old-anchor fillers are still rendering and the reply swaps", async () => {
+      const { queue, renders, pipeline, renderOf, land, isIdle } = setup();
+      pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+      land(renderOf((req) => req.job.kind === "greeting"));
+      await vi.advanceTimersByTimeAsync(0);
+      pipeline.nextClip();
+      expect(renders.filter((r) => isIdle(r.req)).length).toBe(2);
+
+      queue.push(REPLY_JOB);
+      pipeline.onRequestEnqueued();
+      land(renderOf((req) => req.job.kind === "reply"));
+      await vi.advanceTimersByTimeAsync(0);
+      const tail = pipeline.getCurrentAnchorFrameUrl();
+      expect(tail).not.toBe(ANCHOR_0);
+      expect(
+        renders.filter(
+          (r) => isIdle(r.req) && r.req.session.seedFrameUrl === tail,
+        ),
+      ).toHaveLength(1);
+    });
+
+    it("swaps the bridge ahead of an older filler queued before it, while the frame on screen still has a filler to loop", async () => {
+      const { queue, swaps, pipeline, renderOf, land, isIdle } = setup();
+      pipeline.start({ kind: "greeting" }, () => snapshot, queue.next);
+      land(renderOf((req) => req.job.kind === "greeting"));
+      await vi.advanceTimersByTimeAsync(0);
+      pipeline.nextClip();
+      land(renderOf(isIdle));
+      land(renderOf(isIdle));
+      await vi.advanceTimersByTimeAsync(0);
+      for (const swap of swaps) {
+        swap.done.resolve({
+          videoUrl: `${swap.result.videoUrl}.swapped.mp4`,
+          costUsd: 0,
+          report: { ...SWAPPED_REPORT },
+        });
+      }
+      await vi.advanceTimersByTimeAsync(0);
+      expect(pipeline.nextClip()?.jobKind).toBe("idle");
+
+      // Both filler slots held elsewhere, so the old filler and then the bridge queue.
+      const releases = [pipeline.holdSwapSlot(), pipeline.holdSwapSlot()];
+      land(renderOf(isIdle));
+      queue.push(REPLY_JOB);
+      pipeline.onRequestEnqueued();
+      land(renderOf((req) => req.job.kind === "reply"));
+      await vi.advanceTimersByTimeAsync(0);
+      const tail = pipeline.getCurrentAnchorFrameUrl();
+      land(renderOf((req) => isIdle(req) && req.session.seedFrameUrl === tail));
+      await vi.advanceTimersByTimeAsync(0);
+      const startedBefore = swaps.length;
+
+      releases[0]?.();
+      await vi.advanceTimersByTimeAsync(0);
+      const next = swaps[startedBefore];
+      expect(next?.result.jobKind).toBe("idle");
+      expect(next?.result.seedFrameUrl).toBe(tail);
+      releases[1]?.();
+    });
+  });
+
   it("swap mode starts a bridge idle for a new chain tail while two old-anchor idles are still in flight", async () => {
     const requests: ClipRequest[] = [];
     const queue = makeJobQueue();

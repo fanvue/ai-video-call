@@ -555,3 +555,158 @@ describe("directorInputFor", () => {
     });
   });
 });
+
+describe("validateDirectorPlan: framing, toys and visibility", () => {
+  const errorsFor = (mutate: (plan: Plan) => void, i: number) => {
+    const { input, output } = example(i);
+    mutate(output);
+    return validateDirectorPlan(output, input);
+  };
+  const withInput = (
+    i: number,
+    change: (input: ReturnType<typeof example>["input"]) => void,
+  ) => {
+    const { input, output } = example(i);
+    const copy = structuredClone(input);
+    change(copy);
+    return { input: copy, output };
+  };
+
+  it("keeps the current framing unless the viewer asks her to come closer or step back", () => {
+    const widened = (plan: Plan) => {
+      plan.framing = "wider";
+      plan.endState.framing = "wider";
+    };
+    expect(errorsFor(widened, 0)).toContain(
+      "framing must stay medium: she moves nearer or farther only when the viewer asks her to come closer or step back",
+    );
+    expect(
+      errorsFor((plan) => {
+        widened(plan);
+        plan.interpretation.push("step back from the camera");
+      }, 0),
+    ).toEqual([]);
+  });
+
+  it("never fetches a toy that is already in the scene", () => {
+    const { input, output } = withInput(0, (copy) => {
+      copy.now.props = [
+        {
+          item: "pink silicone dildo",
+          kind: "dildo",
+          at: "placed",
+          where: "on the duvet beside her left knee",
+        },
+      ];
+    });
+    expect(validateDirectorPlan(output, input)).toContain(
+      "props[0]: the pink silicone dildo is already on the duvet beside her left knee; use that one instead of fetching another",
+    );
+  });
+
+  it("allows one entry per toy", () => {
+    expect(
+      errorsFor((plan) => {
+        plan.props.push({
+          ...plan.props[0]!,
+          ends: "placed",
+          endsWhere: "on the duvet",
+        });
+      }, 0),
+    ).toContain("only one of each prop exists: one props entry per kind");
+  });
+
+  it("wants the toy drawn out and held in a named hand by the last beat", () => {
+    expect(
+      errorsFor((plan) => {
+        plan.beats[plan.beats.length - 1]!.action =
+          "She holds still on all fours, right hand still holding the dildo inside her, eyes on the lens.";
+      }, 4),
+    ).toContain(
+      "by the last beat the toy is drawn out of her and held in a named hand or set down on a named surface, never inside her, at her mouth or against her",
+    );
+    expect(
+      errorsFor((plan) => {
+        plan.props[0]!.endsWhere =
+          "the dildo half-inserted and resting in her hand";
+      }, 4).join(" "),
+    ).toMatch(/drawn out of her.*props\[0\]\.endsWhere must name the hand/);
+  });
+
+  it("puts penetration from all fours with her back or side to the lens", () => {
+    expect(
+      errorsFor((plan) => {
+        plan.endState.facing = "camera";
+      }, 4),
+    ).toContain(
+      "from all fours or bent over, penetration is visible only with her back or side to the webcam: facing away or side, looking back over her shoulder",
+    );
+  });
+});
+
+describe("Director scene props", () => {
+  const dildoHeld = {
+    ...session.state,
+    body: {
+      ...session.state.body,
+      pose: "onAllFours" as const,
+      facing: "away" as const,
+      hands: "holdingProp" as const,
+      prop: "dildo" as const,
+    },
+    sceneProps: [
+      {
+        item: "pink silicone dildo",
+        kind: "dildo" as const,
+        at: "held" as const,
+        where: "in her right hand, resting on the duvet beside her right hip",
+      },
+    ],
+  };
+
+  it("tells the Director where each toy is, from state", () => {
+    const input = directorInputFor({
+      state: dildoHeld,
+      creator: session.creator,
+      transcript: [],
+      request: "again",
+      speechMode: "text",
+      clipSec: 10,
+    });
+    expect(input.now.props).toEqual(dildoHeld.sceneProps);
+    // The catalogue set it down out of frame since: the entry follows body.prop.
+    const setDown = directorInputFor({
+      state: { ...dildoHeld, body: session.state.body },
+      creator: session.creator,
+      transcript: [],
+      request: "again",
+      speechMode: "text",
+      clipSec: 10,
+    });
+    expect(setDown.now.props).toEqual([
+      { ...dildoHeld.sceneProps[0], at: "offscreen", where: "off-screen" },
+    ]);
+  });
+
+  it("persists where the Director left each prop, one per kind", () => {
+    const { output } = example(4);
+    const plan = directorClipPlan({
+      plan: output,
+      session: {
+        ...session,
+        state: { ...session.state, sceneProps: example(4).input.now.props },
+      },
+      job: reply("fuck urself with it"),
+      speechMode: "text",
+      durationSec: 10,
+    });
+    expect(plan.expectedState.sceneProps).toEqual([
+      {
+        item: "pink silicone dildo",
+        kind: "dildo",
+        at: "held",
+        where: "in her right hand, resting on the duvet beside her right hip",
+      },
+    ]);
+  });
+});

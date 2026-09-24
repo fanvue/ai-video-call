@@ -85,6 +85,15 @@ export const bodySchema = z.object({
 });
 export type Body = z.infer<typeof bodySchema>;
 
+// An object the Director brought into the scene, and where it was left, so later clips reuse the same one instead of fetching a second.
+const scenePropSchema = z.object({
+  item: z.string().min(1).max(60),
+  kind: z.enum(["vibrator", "dildo", "drink", "phone", "other"]),
+  at: z.enum(["held", "placed", "offscreen"]),
+  where: z.string().min(1).max(120),
+});
+export type SceneProp = z.infer<typeof scenePropSchema>;
+
 const liveStateSchema = z.object({
   wardrobe: wardrobeSchema,
   body: bodySchema,
@@ -94,6 +103,8 @@ const liveStateSchema = z.object({
   world: z.string().max(420),
   // Fixed description of the place. Never changes during a session.
   surroundings: z.string().max(1000),
+  // Absent on sessions that never ran the Director; body.prop stays the source of truth for what is held.
+  sceneProps: z.array(scenePropSchema).max(6).optional(),
 });
 export type LiveState = z.infer<typeof liveStateSchema>;
 
