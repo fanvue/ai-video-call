@@ -76,13 +76,14 @@ class ClipRequest(BaseModel):
 @app.cls(
     image=image,
     gpu="H100",
-    cpu=8,
-    memory=98304,
+    # Detection and paste-back for the swap run on 3 threads; 4 cores and 64 GB (the 14B loads through CPU) are enough.
+    cpu=4,
+    memory=65536,
     secrets=[modal.Secret.from_name("ai-video-swap-token")],
     volumes={"/weights": weights, PERSONA_ROOT: personas_volume},
-    # Scale to zero between sessions; a minute without a clip means the stream ended.
+    # Scale to zero between sessions: a chain asks for its next clip as soon as one returns, so 30 s idle means the stream ended.
     min_containers=0,
-    scaledown_window=60,
+    scaledown_window=30,
     # One stream per container: the chain is sequential, so a second container never speeds up one stream.
     max_containers=2,
     timeout=900,
@@ -121,6 +122,18 @@ class Wan14bService:
         faces = self.swap.detector.get(bgr)
         return max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])) if faces else None
 
+    def seed_similarity(self, bgr, source_face):
+        import cv2
+
+        similarity = self.swap.similarity(bgr, source_face)
+        if similarity is None:
+            # The detector misses a face that fills a tight portrait; retry with a border, as source_face_from_image does.
+            height, width = bgr.shape[:2]
+            similarity = self.swap.similarity(
+                cv2.copyMakeBorder(bgr, height // 2, height // 2, width // 2, width // 2, cv2.BORDER_REPLICATE), source_face
+            )
+        return similarity
+
     def reference_stats(self, persona, tone_reference: bytes | None):
         import seed_lock
 
@@ -156,7 +169,7 @@ class Wan14bService:
         seed_bgr = self.swap.decode_image(seed_bytes)
         if seed_bgr is None:
             raise ValueError("seed image is unreadable")
-        seed_gate(self.swap.similarity(seed_bgr, source_face))
+        seed_gate(self.seed_similarity(seed_bgr, source_face))
         frames, timings = self.engine.generate(Image.fromarray(cv2.cvtColor(seed_bgr, cv2.COLOR_BGR2RGB)), prompt, num_frames,
                                                seed=42 if body.get("seed") is None else body["seed"])
         mark = time.perf_counter()
@@ -186,7 +199,7 @@ class Wan14bService:
         timings["encode_ms"] = int((time.perf_counter() - mark) * 1000)
         timings["total_ms"] = int((time.perf_counter() - started) * 1000)
         stats = {**timings, "num_frames": int(frames.shape[0]), "fps": 16, "tone_locked": tone_locked,
-                 "similarity_after": self.swap.similarity(seed_out, source_face)}
+                 "similarity_after": self.seed_similarity(seed_out, source_face)}
         print(f"wan14b: {stats}", flush=True)
         return {
             "video_base64": base64.b64encode(video).decode("ascii"),
