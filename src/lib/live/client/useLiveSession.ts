@@ -10,7 +10,12 @@ import {
   fetchClipSource,
   releaseClipSource,
 } from "@/lib/live/client/clipSource";
-import { ClipPipeline, type PipelineEvent } from "@/lib/live/client/pipeline";
+import { clipEngineFor, type ClipEngine } from "@/lib/live/client/clipEngine";
+import {
+  ClipPipeline,
+  type ClipPipelineOptions,
+  type PipelineEvent,
+} from "@/lib/live/client/pipeline";
 import { createEarlySwaps, splitSwap } from "@/lib/live/client/earlySwaps";
 import type { SwapFrameRange } from "@/lib/live/client/api";
 import {
@@ -106,6 +111,8 @@ export type UseLiveSessionDeps = {
   ) => Promise<{ url: string | null; costUsd: number }>;
   // Swap mode only; starts the GPU container before the first clip needs it.
   warmSwap: () => Promise<void>;
+  // Premium only: true once the Wan container is loaded; the greeting waits on it.
+  warmWan14b?: () => Promise<boolean>;
   // Swap mode only: second phase of a clip that came back with swap.status "pending".
   swapRenderedClip?: (
     result: Pick<ClipResult, "videoUrl" | "jobKind">,
@@ -155,6 +162,7 @@ export type StudioTimings = {
 export type ConnectStage =
   | "uploading"
   | "capturingLook"
+  | "warmingPremium"
   | "renderingFirstClip"
   | "primingBuffer";
 
@@ -237,6 +245,8 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     null,
   );
   const [lastTimings, setLastTimings] = useState<StudioTimings | null>(null);
+  // The engine behind the clip on screen, for the Premium badge.
+  const [playingEngine, setPlayingEngine] = useState<ClipEngine | null>(null);
   const [renderStats, setRenderStats] = useState<RenderPercentiles | null>(
     null,
   );
@@ -563,6 +573,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     (clipId: string) => {
       currentPlayingClipIdRef.current = clipId;
       const result = clipMetaRef.current.get(clipId);
+      setPlayingEngine(result ? clipEngineFor(result) : null);
       if (result) {
         pipelineRef.current?.onClipStarted(result.seedFrameUrl, clipId);
       }
@@ -599,6 +610,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         clipId,
         kind: result?.jobKind ?? "unknown",
         durationSec: result?.durationSec ?? null,
+        engine: result ? clipEngineFor(result) : null,
       });
       // A request typed during the intro is already queued behind the greeting, or rendering as its reply; she is seen reading it now.
       if (
@@ -1043,6 +1055,20 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       if (isSwapSession(options.backend)) {
         deps.warmSwap().catch(() => undefined);
       }
+      // Started now so the Wan boot overlaps the upload; awaited just before the greeting, capped so a dead service cannot hold the join.
+      const premiumWarm =
+        options.backend === "wan14b" && deps.warmWan14b
+          ? Promise.race([
+              deps.warmWan14b().catch(() => false),
+              new Promise<boolean>((resolve) =>
+                setTimeout(
+                  () => resolve(false),
+                  LIVE_TUNABLES.WAN14B_WARM_WAIT_MS,
+                ),
+              ),
+            ])
+          : null;
+      setPlayingEngine(null);
       greetingPlayedRef.current = false;
       clipMetaRef.current = new Map();
       currentPlayingClipIdRef.current = null;
@@ -1119,6 +1145,21 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       setViewerCount(room.getViewerCount());
       setQueueStrip(EMPTY_QUEUE_STRIP);
 
+      // A greeting sent to a cold Wan container would spend its 40 s budget on the boot and fall back anyway, so it waits for the warm-up and plays on swap if that fails.
+      let greetingOnSwap = false;
+      if (premiumWarm) {
+        setConnectStage("warmingPremium");
+        const warmStartedAt = Date.now();
+        if (!(await premiumWarm)) {
+          greetingOnSwap = true;
+          reportTelemetry?.("premiumFallback", {
+            kind: "greeting",
+            wanMs: Date.now() - warmStartedAt,
+            reason: "warm-up failed or timed out",
+          });
+        }
+      }
+
       const swapRenderedClip = deps.swapRenderedClip;
       const runSwap = swapRenderedClip
         ? (
@@ -1167,18 +1208,24 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         isSwapSession(options.backend) &&
         earlySwaps !== null &&
         LIVE_TUNABLES.SWAP_DEFER_CLIP;
+      const renderClip: ClipPipelineOptions["render"] = earlyReplySwaps
+        ? (req) => {
+            const kind = req.job.kind;
+            return deps.renderClip(
+              req,
+              kind === "reply" || kind === "greeting"
+                ? (videoUrl) => earlySwaps.start(videoUrl, kind)
+                : undefined,
+            );
+          }
+        : deps.renderClip;
       const pipeline = new ClipPipeline({
-        render: earlyReplySwaps
-          ? (req) => {
-              const kind = req.job.kind;
-              return deps.renderClip(
-                req,
-                kind === "reply" || kind === "greeting"
-                  ? (videoUrl) => earlySwaps.start(videoUrl, kind)
-                  : undefined,
-              );
-            }
-          : deps.renderClip,
+        render: greetingOnSwap
+          ? (req) =>
+              renderClip(
+                req.job.kind === "greeting" ? { ...req, backend: "swap" } : req,
+              )
+          : renderClip,
         now: () => Date.now(),
         onEvent: handlePipelineEvent,
         backend: options.backend ?? "turbo",
@@ -1388,6 +1435,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       speechMode,
       anchorChangedAtMs,
       lastTimings,
+      playingEngine,
       renderStats,
       connectStage,
       roomEvents,
@@ -1427,6 +1475,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       speechMode,
       anchorChangedAtMs,
       lastTimings,
+      playingEngine,
       renderStats,
       connectStage,
       roomEvents,

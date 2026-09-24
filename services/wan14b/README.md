@@ -27,9 +27,11 @@ Fictional, company-owned synthetic personas only: `persona_id` must resolve in t
 - `prompt` up to 4,000 characters (the app's planner prompts run about 2,000 to 2,300).
 - `num_frames` is 4k+1 in 17..81, or `duration_s` rounds to that grid (16 fps, so 81 frames is 5.06 s). Default 81.
 - Response: `{video_base64 (h264 mp4, 480x832, 16 fps), last_frame_base64 (PNG, next seed), last_frame_format, stats}`; `stats` carries `render_ms`, `decode_ms`, `swap_ms`, `encode_ms`, `total_ms`, `num_frames`, `fps`, `frames_with_face`, `tone_locked`, `similarity_after`.
+- `POST /warm` (Bearer token): answers once the container has loaded Wan and the swap; the app's Premium warm-up. A cold one took 85.8 s in the smoke.
+- Face detection pads the frame by half on every side when the raw pass finds nothing (`face_detect.py`): a Wan headshot's face is ~440 px of a 480 px frame, past SCRFD's range at det_size 640.
 - `GET /health`. Modal-authenticated `Wan14bService.clip_bytes(body)` for laptop smoke tests.
 
-H100, `min_containers=0`, `scaledown_window=30`, `max_containers=2`, one clip per container.
+H100, `min_containers=0`, `scaledown_window=300`, `max_containers=2`, one clip per container.
 
 ## Deploy and smoke
 
@@ -42,7 +44,7 @@ H100, `min_containers=0`, `scaledown_window=30`, `max_containers=2`, one clip pe
 ## Tests
 
 ```bash
-cd services/wan14b && ../../.venv-fal/bin/python -m unittest -v test_clip_request test_seed_lock
+cd services/wan14b && ../../.venv-fal/bin/python -m unittest -v test_clip_request test_seed_lock test_face_detect
 ```
 
 ## App integration (Premium render mode)

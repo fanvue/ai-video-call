@@ -66,6 +66,8 @@ type SetupScreenProps = {
   onRegisterSwapPersona?: (file: File, name: string) => Promise<{ id: string }>;
   preparation?: { status: PrepareStatus; seedUrl: string | null };
   onSubmit: (values: SetupSubmit) => void;
+  // Picking Premium starts the Wan container's ~100 s boot while the rest of setup is filled in.
+  onChoosePremium?: () => void;
 };
 
 // Long enough that flicking through the scenes does not stage a still ($0.03) for each one.
@@ -88,6 +90,7 @@ export const SetupScreen = ({
   onRegisterSwapPersona,
   preparation,
   onSubmit,
+  onChoosePremium,
 }: SetupScreenProps) => {
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -276,7 +279,12 @@ export const SetupScreen = ({
                 name="renderMode"
                 value={mode.id}
                 checked={renderMode === mode.id}
-                onChange={() => setRenderMode(mode.id)}
+                onChange={() => {
+                  setRenderMode(mode.id);
+                  if (mode.id === "wan14b") {
+                    onChoosePremium?.();
+                  }
+                }}
               />
               {mode.label}
             </span>

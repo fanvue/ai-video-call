@@ -9,11 +9,14 @@ type LobbyOverlayProps = {
   viewerCount: number;
   // The frame the greeting will start on, shown dimmed behind the milestones so going live is a fade, not a jump.
   posterUrl?: string | null;
+  // Premium sessions add the Wan warm-up step; other sessions never pass through it.
+  premium?: boolean;
 };
 
 const STAGES: { id: ConnectStage; label: string }[] = [
   { id: "uploading", label: "Uploading your reference photo" },
   { id: "capturingLook", label: "Capturing her look and staging the room" },
+  { id: "warmingPremium", label: "Warming up premium…" },
   { id: "renderingFirstClip", label: "Rendering the first clip" },
   { id: "primingBuffer", label: "Priming the buffer" },
 ];
@@ -24,8 +27,12 @@ export const LobbyOverlay = ({
   stage,
   viewerCount,
   posterUrl = null,
+  premium = false,
 }: LobbyOverlayProps) => {
-  const activeIndex = STAGES.findIndex((entry) => entry.id === stage);
+  const stages = STAGES.filter(
+    (entry) => premium || entry.id !== "warmingPremium",
+  );
+  const activeIndex = stages.findIndex((entry) => entry.id === stage);
   const initial = displayName.trim().charAt(0).toUpperCase() || "?";
   return (
     <div
@@ -52,7 +59,7 @@ export const LobbyOverlay = ({
       </div>
       <p className="text-sm font-semibold text-white">Connecting to room…</p>
       <ul className="flex flex-col gap-1.5">
-        {STAGES.map((entry, index) => (
+        {stages.map((entry, index) => (
           <li
             key={entry.id}
             aria-current={index === activeIndex ? "step" : undefined}

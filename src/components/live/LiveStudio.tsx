@@ -10,7 +10,9 @@ import {
   uploadReference,
   upscaleSeed,
   warmSwap,
+  warmWan14b,
 } from "@/lib/live/client/api";
+import { CLIP_ENGINE_LABEL } from "@/lib/live/client/clipEngine";
 import {
   DEFAULT_TIP_MENU,
   type TipMenuAction,
@@ -76,6 +78,7 @@ export const LiveStudio = () => {
     uploadReference,
     upscaleSeed,
     warmSwap,
+    warmWan14b,
     swapRenderedClip,
     reportTelemetry,
   });
@@ -302,6 +305,7 @@ export const LiveStudio = () => {
           seedUrl: session.preparedSeedUrl,
         }}
         onSubmit={handleSubmitSetup}
+        onChoosePremium={() => void warmWan14b()}
       />
     );
   }
@@ -415,7 +419,23 @@ export const LiveStudio = () => {
             stage={session.connectStage}
             viewerCount={session.viewerCount}
             posterUrl={session.posterUrl}
+            premium={session.backend === "wan14b"}
           />
+        ) : null}
+
+        {session.backend === "wan14b" && session.playingEngine ? (
+          <span
+            role="status"
+            aria-label={`Clip engine: ${CLIP_ENGINE_LABEL[session.playingEngine]}`}
+            className={
+              "pointer-events-none absolute right-3 top-28 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide " +
+              (session.playingEngine === "premium"
+                ? "bg-black/50 text-white/80"
+                : "bg-[var(--danger)]/70 text-white")
+            }
+          >
+            {CLIP_ENGINE_LABEL[session.playingEngine]}
+          </span>
         ) : null}
 
         {session.needsTap ? (

@@ -234,6 +234,40 @@ export const warmSwap = async (): Promise<void> => {
   await postJson<{ warm: boolean }>("/api/live/swapWarm", {});
 };
 
+// One warm-up in flight at a time: the setup screen and the session start both ask, and two concurrent cold calls would boot two H100s.
+let wan14bWarm: { promise: Promise<boolean>; readyAtMs: number | null } | null =
+  null;
+// Under the service's 300 s scaledown, so a remembered "ready" still has a live container behind it.
+const WAN14B_WARM_REUSE_MS = 240_000;
+
+// Resolves true once the Premium container has loaded Wan and the swap (a cold boot is about 100 s), false on any failure.
+export const warmWan14b = (): Promise<boolean> => {
+  const current = wan14bWarm;
+  if (
+    current &&
+    (current.readyAtMs === null ||
+      Date.now() - current.readyAtMs < WAN14B_WARM_REUSE_MS)
+  ) {
+    return current.promise;
+  }
+  const entry: { promise: Promise<boolean>; readyAtMs: number | null } = {
+    promise: postJson<{ warm: boolean }>("/api/live/wan14bWarm", {})
+      .then((response) => response.warm)
+      .catch(() => false)
+      .then((warm) => {
+        if (warm) {
+          entry.readyAtMs = Date.now();
+        } else if (wan14bWarm === entry) {
+          wan14bWarm = null;
+        }
+        return warm;
+      }),
+    readyAtMs: null,
+  };
+  wan14bWarm = entry;
+  return entry.promise;
+};
+
 export type TelemetryDetail = Record<string, string | number | boolean | null>;
 
 // Fire-and-forget: playback stalls are invisible in production logs otherwise.

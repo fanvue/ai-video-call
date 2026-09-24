@@ -507,4 +507,6 @@ export const LIVE_TUNABLES = {
   WAN14B_NUM_FRAMES: 81,
   // Modal H100 list price; charged per clip on the service's reported total time.
   WAN14B_COST_PER_SEC_USD: 3.95 / 3600,
+  // The Premium greeting waits this long for the container to boot and load before it plays on swap; later clips keep their 40 s fallback.
+  WAN14B_WARM_WAIT_MS: 120_000,
 } as const;

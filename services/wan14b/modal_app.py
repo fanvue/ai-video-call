@@ -56,7 +56,7 @@ image = (
         "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
     })
     # Not "engine": services/longlive is on sys.path first and its engine.py shadowed this one in the image.
-    .add_local_python_source("clip_request", "seed_lock", "wan_engine", "swap_core", "persona")
+    .add_local_python_source("clip_request", "face_detect", "seed_lock", "wan_engine", "swap_core", "persona")
 )
 
 
@@ -122,8 +122,9 @@ class Wan14bService:
         return PERSONA_ROOT
 
     def largest_face(self, bgr):
-        faces = self.swap.detector.get(bgr)
-        return max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])) if faces else None
+        import face_detect
+
+        return face_detect.largest(face_detect.detect_faces(self.swap.detector, bgr)[0])
 
     def seed_similarity(self, bgr, source_face):
         import cv2
@@ -137,18 +138,23 @@ class Wan14bService:
             )
         return similarity
 
-    def reference_stats(self, persona, tone_reference: bytes | None):
+    def reference_stats(self, persona, tone_reference: bytes | None, seed_bgr):
         import seed_lock
 
-        bgr = self.swap.decode_image(tone_reference) if tone_reference else None
-        if bgr is None:
+        # First reference with a findable face wins, so a seed with a face is always tone locked: the session's tone frame, the persona photo, then this clip's own seed.
+        def persona_bgr():
             with open(persona.path, "rb") as handle:
-                bgr = self.swap.decode_image(handle.read())
-        face = self.largest_face(bgr)
-        if face is None:
-            return None
-        stats, _ = seed_lock.face_stats(bgr, face.kps)
-        return stats
+                return self.swap.decode_image(handle.read())
+
+        for load in (lambda: self.swap.decode_image(tone_reference) if tone_reference else None, persona_bgr, lambda: seed_bgr):
+            bgr = load()
+            face = self.largest_face(bgr) if bgr is not None else None
+            if face is None:
+                continue
+            stats, _ = seed_lock.face_stats(bgr, face.kps)
+            if stats is not None:
+                return stats
+        return None
 
     def render(self, body: dict) -> dict:
         import cv2
@@ -156,6 +162,7 @@ class Wan14bService:
         from PIL import Image
 
         import clip_request
+        import face_detect
         import seed_lock
         from wan_engine import encode_mp4
         from persona import resolve_persona
@@ -180,7 +187,7 @@ class Wan14bService:
 
             def one(frame):
                 bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                faces = self.swap.detector.get(bgr)
+                faces, _ = face_detect.detect_faces(self.swap.detector, bgr)
                 out = self.swap.swap_frame(bgr, source_face, faces, model="inswapper_fp16", restore=False, recipe="legacy")
                 return cv2.cvtColor(out, cv2.COLOR_BGR2RGB), bool(faces)
 
@@ -192,13 +199,13 @@ class Wan14bService:
         else:
             # Unswapped playback still seeds from a swapped tail, as swap mode's /swapTail does.
             last_bgr = cv2.cvtColor(frames[-1], cv2.COLOR_RGB2BGR)
-            last_bgr = self.swap.swap_frame(last_bgr, source_face, self.swap.detector.get(last_bgr), model="inswapper_fp16",
-                                            restore=False, recipe="legacy")
+            last_bgr = self.swap.swap_frame(last_bgr, source_face, face_detect.detect_faces(self.swap.detector, last_bgr)[0],
+                                            model="inswapper_fp16", restore=False, recipe="legacy")
             frames_with_face = 0
         timings["swap_ms"] = int((time.perf_counter() - mark) * 1000)
         face = self.largest_face(last_bgr)
         seed_out, tone_locked = seed_lock.tone_lock(last_bgr, face.kps if face is not None else None,
-                                                    self.reference_stats(persona, tone_bytes))
+                                                    self.reference_stats(persona, tone_bytes, seed_bgr))
         mark = time.perf_counter()
         video = encode_mp4(frames)
         timings["encode_ms"] = int((time.perf_counter() - mark) * 1000)
@@ -227,6 +234,13 @@ class Wan14bService:
         @api.get("/health")
         def health() -> dict[str, str]:
             return {"status": "ok"}
+
+        # Premium's warm-up: answering at all means @modal.enter has loaded Wan and the swap, so the greeting lands warm.
+        @api.post("/warm")
+        def warm(authorization: str | None = Header(default=None)) -> dict[str, str]:
+            if not token_allowed(bearer_token(authorization)):
+                raise HTTPException(status_code=403, detail="unauthorized")
+            return {"status": "ready"}
 
         # Sync handler on purpose: FastAPI runs it in a worker thread so the GPU work never blocks the event loop.
         @api.post("/clip")
