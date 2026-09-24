@@ -187,11 +187,19 @@ const physicalSent = () =>
   )?.[0].physical;
 
 describe("generateClip planner routing", () => {
-  it("never calls the Director for a session on the default catalogue planner", async () => {
-    await generateClip(requestFor(undefined));
+  it("an explicit catalogue session never calls the Director", async () => {
     await generateClip(requestFor("catalogue"));
     expect(directClip).not.toHaveBeenCalled();
-    expect(render).toHaveBeenCalledTimes(2);
+    expect(render).toHaveBeenCalledOnce();
+  });
+
+  it("a default session is directed", async () => {
+    directClip.mockResolvedValue(directorPlan());
+    await generateClip(requestFor(undefined));
+    expect(directClip).toHaveBeenCalledOnce();
+    expect(render).toHaveBeenCalledWith(
+      expect.objectContaining({ prompt: "0-2s: DIRECTED BEATS" }),
+    );
   });
 
   it("renders the Director's plan and hands writeReply what she does", async () => {

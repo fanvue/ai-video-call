@@ -267,7 +267,7 @@ export type SpeechMode = z.infer<typeof speechModeSchema>;
 const intentParserSchema = z.enum(["regex", "hybrid", "llm"]);
 export type IntentParser = z.infer<typeof intentParserSchema>;
 
-// Who plans a reply clip: the regex catalogue (default), or the Director LLM, which writes the clip's timed beats itself and falls back to the catalogue.
+// Who plans a reply clip: the Director LLM (default), which writes the clip's timed beats itself and falls back to the catalogue, or the regex catalogue alone.
 const plannerSchema = z.enum(["catalogue", "director"]);
 export type Planner = z.infer<typeof plannerSchema>;
 
@@ -327,7 +327,7 @@ export const clipRequestSchema = z.object({
   // Swap mode's swap source, resolved against the persona manifest; absent, clips play unswapped.
   personaId: personaIdSchema.optional(),
   intentParser: intentParserSchema.optional(),
-  // Absent is the same as "catalogue".
+  // Absent is the same as "director".
   planner: plannerSchema.optional(),
   // Gates the reference backend's dual (identity + current-frame) reference; see consumeIdentityReferenceDue.
   useIdentityReference: z.boolean().default(false),

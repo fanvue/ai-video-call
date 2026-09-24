@@ -294,7 +294,7 @@ export const generateClip = async (
       : Promise.resolve(undefined);
   const directed =
     held ??
-    (job.kind === "reply" && request.planner === "director"
+    (job.kind === "reply" && request.planner !== "catalogue"
       ? await directClip({ session, job, speechMode, backend })
       : null);
   const parsedIntents = directed ? undefined : await parsedIntentsPromise;

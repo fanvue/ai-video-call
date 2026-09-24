@@ -52,8 +52,8 @@ const RENDER_MODES: { id: RenderMode; label: string; hint: string }[] = [
 
 // Every render mode offers both; the Director falls back to the catalogue per reply.
 const PLANNERS: { id: Planner; label: string }[] = [
-  { id: "catalogue", label: "Catalogue (fast)" },
   { id: "director", label: "Director (LLM, any action)" },
+  { id: "catalogue", label: "Catalogue (fast)" },
 ];
 
 // Face lock and Hand mask tune the swap recipe; Premium swaps inside its own service, so they would do nothing there.
@@ -160,7 +160,7 @@ export const SetupScreen = ({
   const [swapFaceLock, setSwapFaceLock] = useState(true);
   const [swapHandMask, setSwapHandMask] = useState(false);
   const [renderMode, setRenderMode] = useState<RenderMode>("swap");
-  const [planner, setPlanner] = useState<Planner>("catalogue");
+  const [planner, setPlanner] = useState<Planner>("director");
   const [maxMinutesInput, setMaxMinutesInput] = useState(
     String(LIVE_TUNABLES.DEFAULT_SESSION_MINUTES),
   );
@@ -488,7 +488,7 @@ export const SetupScreen = ({
           onChange={(event) =>
             setPlanner(
               PLANNERS.find((option) => option.id === event.target.value)?.id ??
-                "catalogue",
+                "director",
             )
           }
           className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--foreground)] outline-none"

@@ -123,14 +123,11 @@ describe("SetupScreen planner", () => {
     costCapInput: "40",
   };
 
-  it("offers both planners with the catalogue selected by default", () => {
+  it("offers both planners, Director first and selected by default", () => {
     const html = markup();
     expect(html).toContain("Planner");
     expect(html).toContain(
-      '<option value="catalogue" selected="">Catalogue (fast)</option>',
-    );
-    expect(html).toContain(
-      '<option value="director">Director (LLM, any action)</option>',
+      '<option value="director" selected="">Director (LLM, any action)</option><option value="catalogue">Catalogue (fast)</option>',
     );
   });
 
