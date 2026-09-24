@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   LIVE_TUNABLES,
   usesSwapService,
+  type CreatorGender,
   type PersonaOption,
   type Planner,
   type SceneId,
@@ -56,6 +57,11 @@ const PLANNERS: { id: Planner; label: string }[] = [
   { id: "catalogue", label: "Catalogue (fast)" },
 ];
 
+const GENDERS: { id: CreatorGender; label: string }[] = [
+  { id: "female", label: "Female" },
+  { id: "male", label: "Male" },
+];
+
 // Face lock and Hand mask tune the swap recipe; Premium swaps inside its own service, so they would do nothing there.
 export const showsSwapTuning = (mode: RenderMode): boolean => mode === "swap";
 // The persona is the swap's source face; Commercial never swaps, so its picker would do nothing.
@@ -65,6 +71,7 @@ export type SetupSubmit = {
   file: File;
   sceneId: SceneId;
   displayName: string;
+  gender: CreatorGender;
   speechMode: SpeechMode;
   renderMode: RenderMode;
   planner: Planner;
@@ -80,6 +87,7 @@ export const setupSubmitFor = (fields: {
   file: File;
   sceneId: SceneId;
   displayName: string;
+  gender: CreatorGender;
   voiceExperimental: boolean;
   renderMode: RenderMode;
   planner: Planner;
@@ -92,9 +100,11 @@ export const setupSubmitFor = (fields: {
   file: fields.file,
   sceneId: fields.sceneId,
   displayName: fields.displayName.trim(),
+  gender: fields.gender,
   speechMode: fields.voiceExperimental ? "native" : "text",
   renderMode: fields.renderMode,
-  planner: fields.planner,
+  // The catalogue only choreographs a woman's body, so a male creator is always directed.
+  planner: fields.gender === "male" ? "director" : fields.planner,
   // Hidden for Premium, so its swap fallback runs the default legacy recipe, the one the Wan service swaps with.
   swapFaceLock: showsSwapTuning(fields.renderMode) && fields.swapFaceLock,
   swapHandMask: showsSwapTuning(fields.renderMode) && fields.swapHandMask,
@@ -118,6 +128,7 @@ type SetupScreenProps = {
     sceneId: SceneId,
     stage: boolean,
     swapService: boolean,
+    gender: CreatorGender,
   ) => void;
   // Swap mode's own list and registration, served without a GPU.
   loadSwapPersonas?: PersonaLoader;
@@ -133,10 +144,10 @@ const PREPARE_DEBOUNCE_MS = 300;
 
 const PREPARATION_LABEL: Record<PrepareStatus, string | null> = {
   idle: null,
-  staging: "Staging her scene, 20 to 35 seconds",
+  staging: "Staging the scene, 20 to 35 seconds",
   ready: "Scene ready",
   uploaded: "Photo ready",
-  unstaged: "Scene staging unavailable, she starts from your photo",
+  unstaged: "Scene staging unavailable, the stream starts from your photo",
   failed: "Could not prepare the photo, it will be retried on start",
 };
 
@@ -154,6 +165,7 @@ export const SetupScreen = ({
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [sceneId, setSceneId] = useState<SceneId>("bedroom");
   const [displayName, setDisplayName] = useState("");
+  const [gender, setGender] = useState<CreatorGender>("female");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [voiceExperimental, setVoiceExperimental] = useState(false);
   // On by default: the persona recipe held identity best in testing, for about 2.3x the swap GPU time.
@@ -187,11 +199,12 @@ export const SetupScreen = ({
     }
     // Swap mode sets the scene inside its greeting, so the reference step skips the staged still.
     const timeoutId = setTimeout(
-      () => onPrepare(file, sceneId, false, usesSwapService(renderMode)),
+      () =>
+        onPrepare(file, sceneId, false, usesSwapService(renderMode), gender),
       PREPARE_DEBOUNCE_MS,
     );
     return () => clearTimeout(timeoutId);
-  }, [file, sceneId, onPrepare, renderMode]);
+  }, [file, sceneId, onPrepare, renderMode, gender]);
 
   useEffect(() => {
     if (!loadSwapPersonas) {
@@ -296,9 +309,31 @@ export const SetupScreen = ({
           value={displayName}
           maxLength={40}
           onChange={(event) => setDisplayName(event.target.value)}
-          placeholder="Her"
+          placeholder={gender === "male" ? "Him" : "Her"}
           className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--foreground)] outline-none"
         />
+      </label>
+
+      <label className="flex flex-col gap-1">
+        <span className="text-sm font-medium text-[var(--foreground)]">
+          Creator
+        </span>
+        <select
+          value={gender}
+          onChange={(event) =>
+            setGender(
+              GENDERS.find((option) => option.id === event.target.value)?.id ??
+                "female",
+            )
+          }
+          className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--foreground)] outline-none"
+        >
+          {GENDERS.map((option) => (
+            <option key={option.id} value={option.id}>
+              {option.label}
+            </option>
+          ))}
+        </select>
       </label>
 
       <div className="flex flex-col gap-2">
@@ -484,7 +519,8 @@ export const SetupScreen = ({
           Planner
         </span>
         <select
-          value={planner}
+          value={gender === "male" ? "director" : planner}
+          disabled={gender === "male"}
           onChange={(event) =>
             setPlanner(
               PLANNERS.find((option) => option.id === event.target.value)?.id ??
@@ -499,6 +535,11 @@ export const SetupScreen = ({
             </option>
           ))}
         </select>
+        {gender === "male" ? (
+          <span className="text-xs text-[var(--muted)]">
+            Male creators always use the Director
+          </span>
+        ) : null}
       </label>
 
       <div className="flex gap-2">
@@ -569,6 +610,7 @@ export const SetupScreen = ({
               file,
               sceneId,
               displayName,
+              gender,
               voiceExperimental,
               renderMode,
               planner,
@@ -587,7 +629,7 @@ export const SetupScreen = ({
             : "bg-[var(--surface-raised)] text-[var(--muted)]")
         }
       >
-        {busy ? "Connecting…" : staging ? "Staging her scene…" : "Go live"}
+        {busy ? "Connecting…" : staging ? "Staging the scene…" : "Go live"}
       </button>
 
       {error ? (

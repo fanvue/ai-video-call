@@ -18,6 +18,7 @@ import {
   type ObservedState,
   type Pose,
 } from "../contract";
+import { personaFor } from "../persona";
 import { captureRoom } from "./captureRoom";
 import { directClip, hardLimitHold } from "./directClip";
 import { guardFrame } from "./frameGuard";
@@ -25,7 +26,7 @@ import { fitForSwap, planClip, typingLeadSecFor } from "./planClip";
 import { reconcilePose, reconcileWardrobe } from "./reconcileState";
 import { llmIntentsFor } from "./requestIntents";
 import { renderBackendFor } from "./renderClip";
-import { STAGE_ROOM_BY_SCENE } from "./sceneRooms";
+import { stageRoomFor } from "./sceneRooms";
 import {
   failedSwapReport,
   pendingSwapReport,
@@ -282,6 +283,9 @@ export const generateClip = async (
       : request.backend;
 
   const planStarted = Date.now();
+  const persona = personaFor(session.creator);
+  // The catalogue's choreography is written for a woman's body, so a male creator is always directed.
+  const directs = request.planner !== "catalogue" || persona.gender === "male";
   // Checked before any LLM sees the request, on either planner.
   const held =
     job.kind === "reply"
@@ -289,12 +293,12 @@ export const generateClip = async (
       : null;
   // Started alongside the Director, so a Director fallback does not wait on the parse after spending its budget.
   const parsedIntentsPromise =
-    job.kind === "reply" && !held
+    job.kind === "reply" && !held && persona.gender !== "male"
       ? llmIntentsFor(job.text, session.state, request.intentParser)
       : Promise.resolve(undefined);
   const directed =
     held ??
-    (job.kind === "reply" && request.planner !== "catalogue"
+    (job.kind === "reply" && directs
       ? await directClip({ session, job, speechMode, backend })
       : null);
   const parsedIntents = directed ? undefined : await parsedIntentsPromise;
@@ -359,7 +363,7 @@ export const generateClip = async (
       backend = "swap";
       // A Director plan keeps its beats and holds the settled pose for the longer swap clip.
       plan = directed
-        ? fitForSwap(directed)
+        ? fitForSwap(directed, LIVE_TUNABLES.SWAP_ACTION_CLIP_SEC, persona)
         : planClip({ session, job, speechMode, backend, parsedIntents });
     }
   }
@@ -413,7 +417,7 @@ export const generateClip = async (
 
   // The reference model has no first frame to inherit the room from, so the prompt establishes it and pins the upload to identity only.
   const prompt = greetingFromReference
-    ? `Image 1 is the woman's identity only: face, hair, skin tone and build. Do not copy its pose, clothing or background. Scene: ${STAGE_ROOM_BY_SCENE[session.creator.sceneId]} ${plan.prompt}`
+    ? `Image 1 is the ${persona.noun}'s identity only: face, hair, skin tone and build. Do not copy its pose, clothing or background. Scene: ${stageRoomFor(session.creator.sceneId, persona)} ${plan.prompt}`
     : plan.prompt;
   const renderPromise = premiumClip
     ? Promise.resolve({

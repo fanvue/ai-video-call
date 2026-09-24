@@ -21,9 +21,14 @@ export const tipMenuItemSchema = z.object({
 });
 export type TipMenuItem = z.infer<typeof tipMenuItemSchema>;
 
+const creatorGenderSchema = z.enum(["female", "male"]);
+export type CreatorGender = z.infer<typeof creatorGenderSchema>;
+
 const creatorProfileSchema = z.object({
   id: z.string().min(1),
   displayName: z.string().min(1).max(40),
+  // Absent is female, so requests from before male creators still parse; read it through personaFor.
+  gender: creatorGenderSchema.optional(),
   // Free-text look lock captured from the reference photo (hair, skin, build). Never a real
   // person's identifying data; describes the rendered persona only.
   lookLock: z.string().max(600),

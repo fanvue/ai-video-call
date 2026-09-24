@@ -1,9 +1,10 @@
 import { LIVE_TUNABLES, type SceneId } from "@/lib/live/contract";
+import type { Persona } from "@/lib/live/persona";
 import {
   pollSceneStillUntilComplete,
   submitSceneStill,
 } from "@/lib/fal/requestSceneStill";
-import { STAGE_ROOM_BY_SCENE } from "./sceneRooms";
+import { stageRoomFor } from "./sceneRooms";
 
 // Seedream v4 edit list price per image.
 export const STAGE_SEED_COST_USD = 0.03;
@@ -13,12 +14,19 @@ const STILL_SIZE = { width: 1024, height: 1820 };
 
 export type StagedSeed = { url: string; costUsd: number };
 
-const buildStagePrompt = (sceneId: SceneId, lookLock: string): string =>
+const buildStagePrompt = (
+  sceneId: SceneId,
+  lookLock: string,
+  p: Persona,
+): string =>
   [
-    `Candid photo of the same woman as in the reference image, identical face, hair, skin tone and build (${lookLock}).`,
-    STAGE_ROOM_BY_SCENE[sceneId],
-    "She faces the viewer at eye level, medium shot from the waist up, relaxed natural smile, hands resting in her lap.",
-    "She wears a plain white bra and matching plain white panties.",
+    `Candid photo of the same ${p.noun} as in the reference image, identical face, hair, skin tone and build (${lookLock}).`,
+    stageRoomFor(sceneId, p),
+    `${p.Subject} faces the viewer at eye level, medium shot from the waist up, relaxed natural smile, hands resting in ${p.possessive} lap.`,
+    // Matches the reference route's canon wardrobe for each gender.
+    p.gender === "male"
+      ? "He wears a plain white crew-neck t-shirt and plain grey boxer briefs."
+      : "She wears a plain white bra and matching plain white panties.",
     "Photorealistic, natural skin texture, slight soft focus.",
   ].join(" ");
 
@@ -27,15 +35,17 @@ export const stageSeed = async ({
   referenceUrl,
   sceneId,
   lookLock,
+  persona,
 }: {
   referenceUrl: string;
   sceneId: SceneId;
   lookLock: string;
+  persona: Persona;
 }): Promise<StagedSeed | null> => {
   const started = Date.now();
   try {
     const submitted = await submitSceneStill({
-      prompt: buildStagePrompt(sceneId, lookLock),
+      prompt: buildStagePrompt(sceneId, lookLock, persona),
       image_urls: [referenceUrl],
       num_images: 1,
       image_size: STILL_SIZE,

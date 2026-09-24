@@ -1311,3 +1311,106 @@ describe("planClip: Commercial plans exactly like swap", () => {
     expect(commercial).toEqual(swap);
   });
 });
+
+describe("planClip: creator gender", () => {
+  const FEMALE_WORDS = /\b(she|her|hers|herself|woman|women|panties)\b/i;
+  const male = session({
+    creator: {
+      ...creator,
+      gender: "male",
+      lookLock: "short dark hair, tanned skin, lean build",
+    },
+    state: state({
+      wardrobe: wardrobe({
+        top: { on: true, description: "white crew-neck t-shirt" },
+        bottom: { on: false, description: "bottoms" },
+        bra: { on: false, description: "bra" },
+        panties: { on: true, description: "grey boxer briefs" },
+      }),
+    }),
+  });
+  const prompts = (s: LiveSessionSnapshot, backend: "swap" | "turbo") => [
+    planClip({
+      session: s,
+      job: { kind: "greeting" },
+      speechMode: "native",
+      backend,
+    }).prompt,
+    ...[0, 1, 2, 3, 4, 5].map(
+      (variant) =>
+        planClip({
+          session: s,
+          job: { kind: "idle", variant },
+          speechMode: "text",
+          backend,
+        }).prompt,
+    ),
+    planClip({
+      session: s,
+      job: { kind: "checkIn", channel: "chat" },
+      speechMode: "text",
+      backend,
+    }).prompt,
+    planClip({
+      session: {
+        ...s,
+        state: {
+          ...s.state,
+          body: body({
+            pose: "onAllFours",
+            facing: "away",
+            hands: "onBody",
+            contact: "self",
+          }),
+        },
+      },
+      job: { kind: "idle" },
+      speechMode: "text",
+      backend,
+    }).prompt,
+    planClip({
+      session: {
+        ...s,
+        state: {
+          ...s.state,
+          body: body({
+            pose: "onAllFours",
+            facing: "away",
+            hands: "holdingProp",
+            prop: "dildo",
+          }),
+        },
+      },
+      job: {
+        kind: "beat",
+        beat: { id: "b1", intent: { type: "rest" }, attempt: 0 },
+      },
+      speechMode: "text",
+      backend,
+    }).prompt,
+  ];
+
+  it("names one adult man with his pronouns in every greeting, idle, check-in and settle prompt", () => {
+    for (const backend of ["swap", "turbo"] as const) {
+      for (const prompt of prompts(male, backend)) {
+        expect(prompt).toContain("exactly one adult man");
+        expect(prompt).toMatch(/\b(he|his|him)\b/);
+        expect(prompt).not.toMatch(FEMALE_WORDS);
+      }
+    }
+    const greeting = prompts(male, "turbo")[0] as string;
+    expect(greeting).toContain("GREETING: he looks up");
+    expect(greeting).toContain("his underwear (grey boxer briefs)");
+    expect(greeting).toContain("swap him. One person only.");
+  });
+
+  it("leaves a female creator's prompts in her voice", () => {
+    for (const prompt of prompts(session(), "turbo")) {
+      expect(prompt).toContain("exactly one adult woman");
+      expect(prompt).not.toMatch(/\b(he|his|him|man)\b/);
+    }
+    const greeting = prompts(session(), "turbo")[0] as string;
+    expect(greeting).toContain("GREETING: she looks up");
+    expect(greeting).toContain("her panties (black lace panties)");
+  });
+});

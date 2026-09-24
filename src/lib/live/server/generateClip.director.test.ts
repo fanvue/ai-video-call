@@ -228,6 +228,19 @@ describe("generateClip planner routing", () => {
     expect(directClip).not.toHaveBeenCalled();
   });
 
+  it("directs a male creator even on the catalogue planner, without the catalogue's intent parse", async () => {
+    directClip.mockResolvedValue(directorPlan());
+    await generateClip({
+      ...requestFor("catalogue"),
+      session: { ...session, creator: { ...session.creator, gender: "male" } },
+    });
+    expect(directClip).toHaveBeenCalledOnce();
+    expect(parseIntentsWithLlm).not.toHaveBeenCalled();
+    expect(render).toHaveBeenCalledWith(
+      expect.objectContaining({ prompt: "0-2s: DIRECTED BEATS" }),
+    );
+  });
+
   it("holds a hard-limit request on the catalogue planner before any LLM reads it", async () => {
     hardLimitHold.mockReturnValue({ ...directorPlan(), prompt: "HELD" });
     await generateClip(requestFor("catalogue"));

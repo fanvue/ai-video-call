@@ -1,8 +1,9 @@
 // Server-side hard limits shared by the LongLive action path and the Director; a match fails closed to a neutral hold, never to another planner.
 
 // A request with a minor cue fails closed to the neutral reaction, before it reaches the LLM or a template.
+// The boy cues cover male creators; "twink" names an adult body type and stays allowed.
 export const MINOR_CUE_RE =
-  /\b(teen\w*|child\w*|kid|kids|minor|minors|underage|under-age|schoolgirl\w*|school uniform|loli\w*|little girl|barely legal|jailbait)\b/i;
+  /\b(teen\w*|pre-?teen\w*|child\w*|kid|kids|minor|minors|underage|under-age|schoolgirl\w*|schoolboy\w*|school boy|school uniform|loli\w*|shota\w*|little girl|little boys?|young boys?|barely legal|jailbait)\b/i;
 
 // Conservative lexicon for the other hard limits (incest, animals, non-consent, scat, gore); the Director's own refusal covers what words cannot, such as real named people.
 export const HARD_LIMIT_CUE_RE =

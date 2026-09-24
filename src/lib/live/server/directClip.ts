@@ -22,6 +22,7 @@ import {
   type SpeechMode,
   type Wardrobe,
 } from "../contract";
+import { personaFor, type Persona } from "../persona";
 import { correctActionTypos } from "./actionTypos";
 import { HARD_LIMIT_CUE_RE, MINOR_CUE_RE } from "./contentSafety";
 import {
@@ -30,17 +31,17 @@ import {
   type DirectorInput,
 } from "./directorPrompt";
 import {
-  ANATOMY_LOCK,
   CLIP_ENDS_LINE,
-  CONTENT_LOCK_PERMISSIVE,
-  GARMENT_PHYSICS_LINE,
   NO_OVERLAY_LOCK,
-  PHYSICS_LOCK,
   addGarment,
+  anatomyLock,
   cameraLockLine,
+  contentLockPermissive,
   currentSceneProps,
   describeState,
+  garmentPhysicsLine,
   lookLockLine,
+  physicsLock,
   planClip,
   removeGarment,
   speechLockLine,
@@ -124,11 +125,14 @@ const isTrackedProp = (prop: string): boolean =>
 const DISTANCE_REQUEST_RE =
   /\b(closer|nearer|step(?:s|ping)? back|move(?:s|ing)? back|back(?:s|ing)? up|(?:further|farther) (?:back|away)|(?:toward|towards|away from) the (?:camera|lens|webcam))\b/i;
 const TOY_KINDS = new Set(["dildo", "vibrator"]);
+// A sleeve is an "other" item (it can never stay held), so only its name marks it as a toy.
+const SLEEVE_ITEM_RE = /\b(sleeve|stroker|masturbator)\b/i;
 // A toy still in use at the hold: the next clip's NOW line would put it in her hand while h3 still draws it inside her.
+// A sleeve still around his penis at the hold is engaged the same way.
 const TOY_ENGAGED_RE =
-  /\b(inside|insert\w*|penetrat\w*|half[- ]in\w*|in her (?:mouth|vagina|pussy|ass|anus)|at her (?:lips|mouth)|on her (?:lower|upper) lip|between her (?:lips|labia)|against her (?:clit|vulva|labia|pussy|lips|mouth|entrance|anus|ass|nipples?|breasts?|crotch))\b/i;
+  /\b(inside|insert\w*|penetrat\w*|half[- ]in\w*|in (?:her|his) (?:mouth|vagina|pussy|ass|anus)|at (?:her|his) (?:lips|mouth)|on (?:her|his) (?:lower|upper) lip|between her (?:lips|labia)|against (?:her|his) (?:clit|vulva|labia|pussy|lips|mouth|entrance|anus|ass|nipples?|breasts?|crotch|penis|cock|shaft|balls)|(?:around|over|on) his (?:penis|cock|shaft|erection))\b/i;
 const PENETRATION_RE =
-  /\b(insert\w*|penetrat\w*|inside her|(?:slides?|pushes?|eases?|sinks?) (?:it|the [\w-]+(?: [\w-]+)?) (?:in|into))\b/i;
+  /\b(insert\w*|penetrat\w*|inside (?:her|him)|(?:slides?|pushes?|eases?|sinks?) (?:it|the [\w-]+(?: [\w-]+)?) (?:in|into))\b/i;
 
 // Physical consistency against frame 0; each message is written to be sent back to the model as a repair instruction.
 export const validateDirectorPlan = (
@@ -137,6 +141,7 @@ export const validateDirectorPlan = (
 ): string[] => {
   const errors: string[] = [];
   const { beats } = plan;
+  const p = personaFor(input.performer);
   if (beats[0]?.fromSec !== 0) errors.push("beats[0].fromSec must be 0");
   beats.forEach((beat, i) => {
     if (beat.toSec <= beat.fromSec)
@@ -200,13 +205,15 @@ export const validateDirectorPlan = (
     !DISTANCE_REQUEST_RE.test(plan.interpretation.join("; "))
   )
     errors.push(
-      `framing must stay ${startFraming}: she moves nearer or farther only when the viewer asks her to come closer or step back`,
+      `framing must stay ${startFraming}: ${p.subject} moves nearer or farther only when the viewer asks ${p.object} to come closer or step back`,
     );
 
   const startProp = input.now.body.prop;
   plan.props.forEach((prop, i) => {
     if (prop.source === "held" && prop.kind !== startProp)
-      errors.push(`props[${i}]: she is not holding a ${prop.kind} at frame 0`);
+      errors.push(
+        `props[${i}]: ${p.subject} is not holding a ${prop.kind} at frame 0`,
+      );
     if (prop.useBeat >= beats.length)
       errors.push(`props[${i}].useBeat is not a beat`);
     if (prop.kind === "other" && prop.ends === "held")
@@ -231,7 +238,7 @@ export const validateDirectorPlan = (
         : inScene.find((scene) => scene.kind === prop.kind);
     if (existing && prop.source === "offscreen")
       errors.push(
-        `props[${i}]: the ${existing.item} is already ${existing.at === "held" ? "in her hand" : existing.where}; use that one instead of fetching another`,
+        `props[${i}]: the ${existing.item} is already ${existing.at === "held" ? `in ${p.possessive} hand` : existing.where}; use that one instead of fetching another`,
       );
   });
   const kinds = plan.props
@@ -239,7 +246,9 @@ export const validateDirectorPlan = (
     .map((prop) => prop.kind);
   if (new Set(kinds).size !== kinds.length)
     errors.push("only one of each prop exists: one props entry per kind");
-  const toys = plan.props.filter((prop) => TOY_KINDS.has(prop.kind));
+  const toys = plan.props.filter(
+    (prop) => TOY_KINDS.has(prop.kind) || SLEEVE_ITEM_RE.test(prop.item),
+  );
   if (
     last &&
     toys.length > 0 &&
@@ -250,7 +259,7 @@ export const validateDirectorPlan = (
     )
   )
     errors.push(
-      "by the last beat the toy is drawn out of her and held in a named hand or set down on a named surface, never inside her, at her mouth or against her",
+      `by the last beat the toy is drawn off or out of ${p.object} and held in a named hand or set down on a named surface, never inside ${p.object}, at ${p.possessive} mouth or against ${p.object}`,
     );
   plan.props.forEach((prop, i) => {
     if (
@@ -269,7 +278,7 @@ export const validateDirectorPlan = (
     beats.some((beat) => PENETRATION_RE.test(beat.action))
   )
     errors.push(
-      "from all fours or bent over, penetration is visible only with her back or side to the webcam: facing away or side, looking back over her shoulder",
+      `from all fours or bent over, penetration is visible only with ${p.possessive} back or side to the webcam: facing away or side, looking back over ${p.possessive} shoulder`,
     );
   const heldAtEnd = plan.props.filter((prop) => prop.ends === "held");
   const endProp = plan.endState.prop;
@@ -292,7 +301,7 @@ export const validateDirectorPlan = (
     !plan.props.some((p) => p.source === "held")
   )
     errors.push(
-      `she holds a ${startProp} at frame 0: add its props entry saying where it goes`,
+      `${p.subject} holds a ${startProp} at frame 0: add its props entry saying where it goes`,
     );
   if ((plan.endState.hands === "holdingProp") !== (endProp !== "none"))
     errors.push(
@@ -410,7 +419,11 @@ export const directorInputFor = ({
 }): DirectorInput => ({
   clipSec,
   speechMode,
-  performer: { displayName: creator.displayName, look: creator.lookLock },
+  performer: {
+    displayName: creator.displayName,
+    gender: personaFor(creator).gender,
+    look: creator.lookLock,
+  },
   room: state.surroundings,
   world: state.world,
   now: {
@@ -426,7 +439,7 @@ export const directorInputFor = ({
       ]),
     ) as DirectorInput["now"]["wardrobe"],
     body: state.body,
-    props: currentSceneProps(state),
+    props: currentSceneProps(state, personaFor(creator)),
   },
   // Role and text only: viewer handles are not needed to plan the motion.
   recentChat: transcript.slice(-TRANSCRIPT_ENTRIES).map((entry) => ({
@@ -438,11 +451,11 @@ export const directorInputFor = ({
 
 // --- Prompt assembly ---------------------------------------------------------
 
-const DIRECTOR_FOCUS_LINE =
-  "She performs exactly these timed steps, in this order, and nothing else.";
+const directorFocusLine = (p: Persona): string =>
+  `${p.Subject} performs exactly these timed steps, in this order, and nothing else.`;
 
-const CONTENT_LOCK_NON_EXPLICIT =
-  "CONTENT: authorized fictional content, one consenting adult woman, 18+ only; nothing sexual happens in this clip.";
+const contentLockNonExplicit = (p: Persona): string =>
+  `CONTENT: authorized fictional content, one consenting adult ${p.noun}, 18+ only; nothing sexual happens in this clip.`;
 
 const trimAtWord = (text: string, max: number): string => {
   const cut = text.slice(0, max);
@@ -500,27 +513,29 @@ export const buildDirectorPrompt = ({
   const holdsWardrobe = GARMENT_IDS.every(
     (id) => state.wardrobe[id].on === nextWardrobe[id].on,
   );
+  const p = personaFor(creator);
+  const focusLine = directorFocusLine(p);
   const locks = [
-    cameraLockLine(plan.framing),
-    ANATOMY_LOCK,
-    lookLockLine(creator.lookLock),
+    cameraLockLine(plan.framing, p),
+    anatomyLock(p),
+    lookLockLine(creator.lookLock, p),
     `ROOM: ${state.surroundings}`,
-    `NOW: she is ${describeState(state.wardrobe, state.body, currentSceneProps(state))}`,
-    holdsWardrobe ? wardrobeLockLine(nextWardrobe) : null,
-    `By ${durationSec}s she is ${lowerFirst(plan.endDescription)}, still. ${CLIP_ENDS_LINE}`,
-    PHYSICS_LOCK,
-    holdsWardrobe ? null : GARMENT_PHYSICS_LINE,
+    `NOW: ${p.subject} is ${describeState(state.wardrobe, state.body, currentSceneProps(state, p), p)}`,
+    holdsWardrobe ? wardrobeLockLine(nextWardrobe, p) : null,
+    `By ${durationSec}s ${p.subject} is ${lowerFirst(plan.endDescription)}, still. ${CLIP_ENDS_LINE}`,
+    physicsLock(p),
+    holdsWardrobe ? null : garmentPhysicsLine(p),
     NO_OVERLAY_LOCK,
-    explicit ? CONTENT_LOCK_PERMISSIVE : CONTENT_LOCK_NON_EXPLICIT,
-    speechLockLine(speechMode),
+    explicit ? contentLockPermissive(p) : contentLockNonExplicit(p),
+    speechLockLine(speechMode, p),
   ]
     .filter((line): line is string => line !== null)
     .join(" ");
   const beats = fitBeats(
     plan.beats,
-    DIRECTOR_PROMPT_MAX_CHARS - locks.length - DIRECTOR_FOCUS_LINE.length - 2,
+    DIRECTOR_PROMPT_MAX_CHARS - locks.length - focusLine.length - 2,
   );
-  return `${beats} ${DIRECTOR_FOCUS_LINE} ${locks}`;
+  return `${beats} ${focusLine} ${locks}`;
 };
 
 // --- ClipPlan -----------------------------------------------------------------
@@ -537,7 +552,11 @@ const wardrobeAfter = (wardrobe: Wardrobe, plan: DirectorPlan): Wardrobe =>
     );
 
 // Each prop replaces the earlier entry of its kind (or its name, for an "other" item), so the scene holds one of each.
-const scenePropsAfter = (state: LiveState, plan: DirectorPlan): SceneProp[] =>
+const scenePropsAfter = (
+  state: LiveState,
+  plan: DirectorPlan,
+  p: Persona,
+): SceneProp[] =>
   plan.props
     .reduce<SceneProp[]>(
       (props, prop) => [
@@ -553,7 +572,7 @@ const scenePropsAfter = (state: LiveState, plan: DirectorPlan): SceneProp[] =>
           where: prop.endsWhere,
         },
       ],
-      currentSceneProps(state),
+      currentSceneProps(state, p),
     )
     .slice(-6);
 
@@ -597,7 +616,7 @@ export const directorClipPlan = ({
       ...state,
       wardrobe: nextWardrobe,
       body: { pose, facing, hands, contact, prop, framing },
-      sceneProps: scenePropsAfter(state, plan),
+      sceneProps: scenePropsAfter(state, plan, personaFor(creator)),
     },
     // The whole request plays in this one clip, and the next one chains from where it ends.
     followUps: [],
@@ -623,24 +642,29 @@ export const directorClipPlan = ({
 
 // --- Director step ------------------------------------------------------------
 
-const HOLD_LINE =
-  "She smiles softly, gives a small slow shake of her head, and settles back into her pose, hands resting where they were.";
+const holdLine = (p: Persona): string =>
+  `${p.Subject} smiles softly, gives a small slow shake of ${p.possessive} head, and settles back into ${p.possessive} pose, hands resting where they were.`;
 // Fixed so the reply LLM never sees a request that tripped a hard limit.
 const DECLINE_REPLY = "not that, babe. ask me something else";
+// The catalogue's choreography is written for a woman's body, so a male creator's failed Director call holds and asks again.
+const RETRY_REPLY = "mm, say that one more time for me";
 
 const holdPlan = (
   args: DirectArgs,
   reason: string,
   started: number,
+  replyText: string = DECLINE_REPLY,
 ): ClipPlan => {
   console.log(
     `directClip: hold reason=${reason} model=${DIRECTOR_MODEL} ms=${Date.now() - started}`,
   );
   const plan = planClip({
     ...args,
-    parsedIntents: [{ type: "hold", line: HOLD_LINE }],
+    parsedIntents: [
+      { type: "hold", line: holdLine(personaFor(args.session.creator)) },
+    ],
   });
-  return { ...plan, needsReplyText: false, fixedReplyText: DECLINE_REPLY };
+  return { ...plan, needsReplyText: false, fixedReplyText: replyText };
 };
 
 class DirectorTimeoutError extends Error {}
@@ -669,7 +693,7 @@ export const hardLimitHold = (args: DirectArgs): ClipPlan | null => {
   return null;
 };
 
-// Null falls back to the catalogue; a hard-limit cue returns a hold clip, never the catalogue.
+// Null falls back to the catalogue (female creators only; a male one gets a hold); a hard-limit cue returns a hold clip, never the catalogue.
 export const directClip = async (
   args: DirectArgs,
 ): Promise<ClipPlan | null> => {
@@ -678,7 +702,9 @@ export const directClip = async (
   const request = correctActionTypos(job.text);
   const held = hardLimitHold(args);
   if (held) return held;
-  const fallback = (reason: string): null => {
+  const fallback = (reason: string): ClipPlan | null => {
+    if (personaFor(session.creator).gender === "male")
+      return holdPlan(args, `fallback:${reason}`, started, RETRY_REPLY);
     console.log(
       `directClip: fallback reason=${reason} model=${DIRECTOR_MODEL} ms=${Date.now() - started}`,
     );

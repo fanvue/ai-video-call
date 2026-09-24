@@ -551,6 +551,7 @@ describe("directorInputFor", () => {
     expect(input.now.wardrobe.bottom.inRoom).toBe(false);
     expect(input.performer).toEqual({
       displayName: "Aria",
+      gender: "female",
       look: session.creator.lookLock,
     });
   });
@@ -623,14 +624,16 @@ describe("validateDirectorPlan: framing, toys and visibility", () => {
           "She holds still on all fours, right hand still holding the dildo inside her, eyes on the lens.";
       }, 4),
     ).toContain(
-      "by the last beat the toy is drawn out of her and held in a named hand or set down on a named surface, never inside her, at her mouth or against her",
+      "by the last beat the toy is drawn off or out of her and held in a named hand or set down on a named surface, never inside her, at her mouth or against her",
     );
     expect(
       errorsFor((plan) => {
         plan.props[0]!.endsWhere =
           "the dildo half-inserted and resting in her hand";
       }, 4).join(" "),
-    ).toMatch(/drawn out of her.*props\[0\]\.endsWhere must name the hand/);
+    ).toMatch(
+      /drawn off or out of her.*props\[0\]\.endsWhere must name the hand/,
+    );
   });
 
   it("puts penetration from all fours with her back or side to the lens", () => {
@@ -708,5 +711,163 @@ describe("Director scene props", () => {
         where: "in her right hand, resting on the duvet beside her right hip",
       },
     ]);
+  });
+});
+
+describe("male creators", () => {
+  const FEMALE_WORDS = /\b(she|her|hers|herself|woman|women)\b/i;
+  const maleIndex = DIRECTOR_EXAMPLES.findIndex(
+    (e) => e.input.performer.gender === "male",
+  );
+  const maleExample = () => example(maleIndex);
+  const male: LiveSessionSnapshot = {
+    ...session,
+    creator: {
+      ...session.creator,
+      displayName: "Leo",
+      gender: "male",
+      lookLock: maleExample().input.performer.look,
+    },
+    state: {
+      ...session.state,
+      wardrobe: {
+        top: { on: false, description: "white crew-neck t-shirt" },
+        bottom: { on: false, description: "bottoms" },
+        bra: { on: false, description: "bra" },
+        panties: { on: true, description: "grey cotton boxer briefs" },
+        removedOrder: ["top"],
+      },
+      world: "flirty, getting explicit",
+      surroundings: maleExample().input.room,
+    },
+  };
+  const directMale = (text: string) =>
+    directClip({
+      session: male,
+      job: reply(text),
+      speechMode: "text",
+      backend: "swap",
+    });
+
+  it("has a male worked example that passes the validator", () => {
+    const { input, output } = maleExample();
+    expect(maleIndex).toBeGreaterThanOrEqual(0);
+    expect(validateDirectorPlan(output, input)).toEqual([]);
+    expect(JSON.stringify(output)).not.toMatch(FEMALE_WORDS);
+    expect(input.now.wardrobe.bra).toEqual({
+      on: false,
+      description: "bra",
+      inRoom: false,
+    });
+  });
+
+  it("gives the Director a male section, with the refusal rules unchanged", () => {
+    expect(DIRECTOR_SYSTEM_PROMPT).toContain(
+      'MALE PERFORMERS (performer.gender "male")',
+    );
+    for (const phrase of [
+      "masturbator sleeve",
+      "erection",
+      "boxers and briefs come off",
+      "bra is always on=false and inRoom=false",
+      "He smiles softly, gives a small slow shake of his head",
+    ])
+      expect(DIRECTOR_SYSTEM_PROMPT).toContain(phrase);
+    expect(DIRECTOR_SYSTEM_PROMPT).toContain(
+      'Refuse only if the request involves: anyone under 18 or age play (teen, child, schoolgirl, "barely legal", pretending to be younger), non-consent',
+    );
+  });
+
+  it("tells the Director the performer is male", () => {
+    const input = directorInputFor({
+      state: male.state,
+      creator: male.creator,
+      transcript: [],
+      request: "x",
+      speechMode: "text",
+      clipSec: 10,
+    });
+    expect(input.performer.gender).toBe("male");
+  });
+
+  it("locks the rendered prompt to one adult man, in his pronouns", async () => {
+    groqReturns(JSON.stringify(maleExample().output));
+    const plan = await directMale(maleExample().input.request);
+    expect(plan?.explicit).toBe(true);
+    const prompt = plan?.prompt ?? "";
+    for (const phrase of [
+      "He performs exactly these timed steps",
+      "ANATOMY LOCK: exactly one adult man",
+      "swap him. One person only.",
+      "NOW: he is sitting",
+      "his underwear (grey cotton boxer briefs)",
+      "By 10s he is sitting",
+      "one consenting adult man, 18+ only",
+      "SPEECH: he does not speak.",
+    ])
+      expect(prompt).toContain(phrase);
+    expect(prompt).not.toMatch(FEMALE_WORDS);
+    expect(plan?.expectedState.wardrobe.panties.on).toBe(false);
+  });
+
+  it("holds and asks again instead of the catalogue when the Director fails", async () => {
+    createGroqChatCompletion.mockRejectedValue(new Error("groq down"));
+    const plan = await directMale("take ur boxers off");
+    expect(plan).not.toBeNull();
+    expect(plan?.fixedReplyText).toBe("mm, say that one more time for me");
+    expect(plan?.explicit).toBe(false);
+    expect(plan?.prompt).toContain("He smiles softly");
+    expect(plan?.prompt).not.toMatch(FEMALE_WORDS);
+  });
+
+  it("holds a minor cue in his pronouns", async () => {
+    const plan = await directMale("act like a schoolboy");
+    expect(createGroqChatCompletion).not.toHaveBeenCalled();
+    expect(plan?.fixedReplyText).toBe("not that, babe. ask me something else");
+    expect(plan?.prompt).not.toMatch(FEMALE_WORDS);
+  });
+
+  it("writes repair messages in his pronouns and catches a sleeve still on him", () => {
+    const { input, output } = maleExample();
+    output.framing = "torso";
+    output.endState.framing = "torso";
+    output.beats[4]!.action =
+      "He holds still, the black sleeve still around his penis, right hand on it, eyes on the lens.";
+    const errors = validateDirectorPlan(output, input).join(" ");
+    expect(errors).toContain(
+      "he moves nearer or farther only when the viewer asks him to come closer",
+    );
+    expect(errors).toContain(
+      "by the last beat the toy is drawn off or out of him and held in a named hand or set down on a named surface",
+    );
+    expect(errors).not.toMatch(FEMALE_WORDS);
+    const withDildo = maleExample();
+    withDildo.output.props[0] = {
+      ...withDildo.output.props[0]!,
+      item: "black silicone dildo",
+      kind: "dildo",
+    };
+    withDildo.output.beats[4]!.action =
+      "He holds still with the black dildo inside him, eyes on the lens.";
+    expect(
+      validateDirectorPlan(withDildo.output, withDildo.input).join(" "),
+    ).toContain("never inside him, at his mouth or against him");
+  });
+});
+
+describe("MINOR_CUE_RE", () => {
+  it("catches male minor cues and still allows adult body types", async () => {
+    const { MINOR_CUE_RE } = await import("./contentSafety");
+    for (const cue of [
+      "act like a schoolboy",
+      "be a school boy",
+      "little boy vibes",
+      "like young boys",
+      "shota style",
+      "preteen",
+    ])
+      expect(MINOR_CUE_RE.test(cue)).toBe(true);
+    for (const adult of ["be a twink for me", "my boyfriend", "good boy"])
+      expect(MINOR_CUE_RE.test(adult)).toBe(false);
   });
 });

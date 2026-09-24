@@ -57,6 +57,7 @@ describe("SetupScreen session limits", () => {
     file: new File(["x"], "me.jpg", { type: "image/jpeg" }),
     sceneId: "bedroom" as const,
     displayName: " Aria ",
+    gender: "female" as const,
     voiceExperimental: false,
     renderMode: "swap" as const,
     planner: "catalogue" as const,
@@ -115,6 +116,7 @@ describe("SetupScreen planner", () => {
     file: new File(["x"], "me.jpg", { type: "image/jpeg" }),
     sceneId: "bedroom" as const,
     displayName: "Aria",
+    gender: "female" as const,
     voiceExperimental: false,
     swapFaceLock: true,
     swapHandMask: false,
@@ -137,5 +139,32 @@ describe("SetupScreen planner", () => {
         setupSubmitFor({ ...fields, renderMode, planner: "director" }).planner,
       ).toBe("director");
     }
+  });
+
+  it("keeps a female creator's catalogue choice", () => {
+    expect(
+      setupSubmitFor({ ...fields, renderMode: "swap", planner: "catalogue" }),
+    ).toMatchObject({ gender: "female", planner: "catalogue" });
+  });
+
+  it("submits a male creator on the Director even when the catalogue was picked", () => {
+    expect(
+      setupSubmitFor({
+        ...fields,
+        gender: "male",
+        renderMode: "swap",
+        planner: "catalogue",
+      }),
+    ).toMatchObject({ gender: "male", planner: "director" });
+  });
+});
+
+describe("SetupScreen creator", () => {
+  it("offers Female and Male, Female selected by default", () => {
+    const html = markup();
+    expect(html).toContain("Creator");
+    expect(html).toContain(
+      '<option value="female" selected="">Female</option><option value="male">Male</option>',
+    );
   });
 });

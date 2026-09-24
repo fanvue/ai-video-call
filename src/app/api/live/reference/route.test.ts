@@ -277,3 +277,50 @@ describe("POST /api/live/reference — canon wardrobe", () => {
     expect(data.wardrobe.panties.description).toBe("white panties");
   });
 });
+
+describe("POST /api/live/reference: male creator", () => {
+  it("starts him in a t-shirt and boxer briefs with no bra, and captures and stages him as a man", async () => {
+    captureOk();
+    const response = await POST(
+      jsonBody({
+        imageBase64: "abcd",
+        contentType: "image/jpeg",
+        sceneId: "bedroom",
+        gender: "male",
+      }),
+    );
+    const data = (await response.json()) as {
+      wardrobe: Record<string, { on: boolean; description: string }>;
+    };
+    expect(data.wardrobe).toMatchObject({
+      top: { on: true, description: "white crew-neck t-shirt" },
+      bra: { on: false },
+      panties: { on: true, description: "grey boxer briefs" },
+      removedOrder: [],
+    });
+    const capture = vi
+      .mocked(createGroqVisionCompletion)
+      .mock.calls.at(-1)?.[0].prompt;
+    expect(capture).toContain("reference photo of an adult man");
+    expect(capture).not.toMatch(/\b(she|her|woman|lingerie)\b/i);
+    expect(stageSeed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        persona: expect.objectContaining({ gender: "male" }),
+      }),
+    );
+  });
+
+  it("keeps a request with no gender on the female canon", async () => {
+    captureOk();
+    const response = await POST(
+      jsonBody({ imageBase64: "abcd", contentType: "image/jpeg" }),
+    );
+    const data = (await response.json()) as {
+      wardrobe: Record<string, { on: boolean; description: string }>;
+    };
+    expect(data.wardrobe.bra).toEqual({ on: true, description: "white bra" });
+    expect(
+      vi.mocked(createGroqVisionCompletion).mock.calls.at(-1)?.[0].prompt,
+    ).toContain("reference photo of an adult woman");
+  });
+});

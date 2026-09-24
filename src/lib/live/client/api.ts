@@ -5,6 +5,7 @@ import {
   clipSwapReportSchema,
   type ClipRequest,
   type ClipResult,
+  type CreatorGender,
   personaOptionSchema,
   type PersonaOption,
   type SceneId,
@@ -61,8 +62,7 @@ const postJson = async <T>(url: string, body: unknown): Promise<T> => {
     body: JSON.stringify(body),
   });
   const data = (await res.json().catch(() => null)) as
-    | (T & { error?: string })
-    | null;
+    (T & { error?: string }) | null;
   if (!res.ok || !data) {
     throw new Error(data?.error ?? `Request to ${url} failed (${res.status})`);
   }
@@ -176,6 +176,7 @@ export const uploadReference = async (
   stage = true,
   // False keeps the upload off the swap service (Commercial).
   faceCrop = true,
+  gender: CreatorGender = "female",
 ): Promise<ReferenceUploadResult> => {
   // The server only accepts jpeg/png; HEIC and webp are rejected upfront rather than as a 400.
   if (file.type && file.type !== "image/jpeg" && file.type !== "image/png") {
@@ -190,6 +191,7 @@ export const uploadReference = async (
     sceneId,
     stage,
     faceCrop,
+    gender,
   });
 };
 

@@ -4,8 +4,13 @@ import { uploadReferenceImageToFal } from "@/lib/fal/uploadImage";
 import { getCurrentUser } from "@/lib/fanvue";
 import { createGroqVisionCompletion, stripThinkBlock } from "@/lib/groq";
 import { SURROUNDINGS_BY_SCENE } from "@/lib/live/client/defaultLiveState";
-import { sceneIdSchema, type Wardrobe } from "@/lib/live/contract";
-import { STAGE_ROOM_BY_SCENE } from "@/lib/live/server/sceneRooms";
+import {
+  sceneIdSchema,
+  type CreatorGender,
+  type Wardrobe,
+} from "@/lib/live/contract";
+import { personaFor, type Persona } from "@/lib/live/persona";
+import { stageRoomFor } from "@/lib/live/server/sceneRooms";
 import { stageSeed } from "@/lib/live/server/stageSeed";
 import { swapServiceFaceCrop } from "@/lib/live/server/swapClip";
 
@@ -20,26 +25,38 @@ const bodySchema = z.object({
   stage: z.boolean().optional(),
   // LongLive streams from the whole seed, so it skips the crop rather than wake the swap GPUs it would queue behind.
   faceCrop: z.boolean().optional(),
+  // Absent is female, as before male creators.
+  gender: z.enum(["female", "male"]).optional(),
 });
 
 // She always starts a session in lingerie — top/bottom start off, bra/panties white, regardless of what capture reports.
-const DEFAULT_WARDROBE: Wardrobe = {
-  top: { on: false, description: "top" },
-  bottom: { on: false, description: "bottoms" },
-  bra: { on: true, description: "white bra" },
-  panties: { on: true, description: "white panties" },
-  removedOrder: [],
+// He starts in a white t-shirt and grey boxer briefs; his panties slot is his underwear and he never has a bra (off and never removed, so it can never appear).
+const DEFAULT_WARDROBE: Record<CreatorGender, Wardrobe> = {
+  female: {
+    top: { on: false, description: "top" },
+    bottom: { on: false, description: "bottoms" },
+    bra: { on: true, description: "white bra" },
+    panties: { on: true, description: "white panties" },
+    removedOrder: [],
+  },
+  male: {
+    top: { on: true, description: "white crew-neck t-shirt" },
+    bottom: { on: false, description: "bottoms" },
+    bra: { on: false, description: "bra" },
+    panties: { on: true, description: "grey boxer briefs" },
+    removedOrder: [],
+  },
 };
 
 // Bra/panties are fixed canon (white), so this only needs identity/scene facts, not a lingerie judgment.
-const CAPTURE_PROMPT =
-  "Look at this reference photo of an adult woman, who is starting this session in lingerie. Describe " +
-  "her, her surroundings, and camera framing. Return ONLY JSON: " +
+const capturePrompt = (p: Persona): string =>
+  `Look at this reference photo of an adult ${p.noun}, who is starting this session in ${p.gender === "male" ? "underwear" : "lingerie"}. Describe ` +
+  `${p.object}, ${p.possessive} surroundings, and camera framing. Return ONLY JSON: ` +
   '{"lookLock":"...","surroundings":"...","framing":"wider|medium|torso"}. ' +
   "lookLock describes hair, skin tone, and build only — never a real person's identity. " +
   "surroundings is a short factual description of the actual room and camera setup visible in the " +
   "background of THIS photo (furniture, lighting, wall, any webcam/desk framing) — never an invented or " +
-  "generic room, only what is actually visible. framing is how much of her body this exact photo shows: " +
+  `generic room, only what is actually visible. framing is how much of ${p.possessive} body this exact photo shows: ` +
   '"wider" for full body or most of it, "medium" for roughly waist-up, "torso" for a tight chest-up or ' +
   "closer crop — match the actual crop of this photo, not a guess.";
 
@@ -77,13 +94,14 @@ export async function POST(request: Request) {
     );
   }
   const { imageBase64, contentType, sceneId } = parsed.data;
+  const persona = personaFor(parsed.data);
 
   // The vision capture only needs pixels, not a hosted URL, so it starts on the data URI instead of waiting on the fal upload.
   const captureLook = async (): Promise<WardrobeCapture | null> => {
     try {
       const completion = await createGroqVisionCompletion({
         imageUrl: `data:${contentType};base64,${imageBase64}`,
-        prompt: CAPTURE_PROMPT,
+        prompt: capturePrompt(persona),
         responseFormat: { type: "json_object" },
       });
       return parseCapture(
@@ -117,7 +135,8 @@ export async function POST(request: Request) {
     cropIdentity(),
   ]);
   const lookLock =
-    capture?.lookLock?.slice(0, 600) || "an adult woman with a natural build";
+    capture?.lookLock?.slice(0, 600) ||
+    `an adult ${persona.noun} with a natural build`;
   // Stage an in-scene still (selected room, canon lingerie) from the upload before the greeting; the raw photo's clothes and room otherwise contradict the prompt and the first clip visibly morphs.
   const staged =
     sceneId && parsed.data.stage !== false
@@ -125,6 +144,7 @@ export async function POST(request: Request) {
           referenceUrl: anchorFrameUrl,
           sceneId,
           lookLock,
+          persona,
         })
       : null;
   const captured = capture !== null;
@@ -139,15 +159,15 @@ export async function POST(request: Request) {
     seedFrameUrl: staged?.url ?? anchorFrameUrl,
     staged: staged !== null,
     stageCostUsd: staged?.costUsd ?? 0,
-    wardrobe: DEFAULT_WARDROBE,
+    wardrobe: DEFAULT_WARDROBE[persona.gender],
     lookLock,
     // Staged: the still is the room, so its preset describes what the first clip shows; otherwise the photo's own background.
-    // Swap mode's greeting draws the room from STAGE_ROOM_BY_SCENE, so the chain prompts start from that same text instead of the upload's room.
+    // Swap mode's greeting draws the room from stageRoomFor, so the chain prompts start from that same text instead of the upload's room.
     surroundings:
       staged && sceneId
         ? SURROUNDINGS_BY_SCENE[sceneId]
         : parsed.data.stage === false && sceneId
-          ? STAGE_ROOM_BY_SCENE[sceneId]
+          ? stageRoomFor(sceneId, persona)
           : capture?.surroundings?.slice(0, 400) || undefined,
     framing: staged ? "medium" : capturedFraming,
     captured,

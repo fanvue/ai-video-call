@@ -2,9 +2,9 @@ import { createGroqVisionCompletion } from "@/lib/groq";
 
 const ROOM_PROMPT =
   "This is a frame from a fixed webcam. Describe only the room and the objects actually visible, not the person. " +
-  'Return ONLY JSON: {"room":"..."}. room is one or two short factual sentences: the furniture she is on or at, ' +
+  'Return ONLY JSON: {"room":"..."}. room is one or two short factual sentences: the furniture the person is on or at, ' +
   "the wall and window, the light source and its direction, then every other object in frame with where it sits " +
-  "(left, right, behind her). Name nothing that is not visible; no laptop, desk or screen unless one is in frame.";
+  "(left, right, behind the person). Name nothing that is not visible; no laptop, desk or screen unless one is in frame.";
 
 const ROOM_MAX_CHARS = 400;
 

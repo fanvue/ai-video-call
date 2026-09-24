@@ -17,6 +17,7 @@ import {
   type SpeechMode,
   type Wardrobe,
 } from "../contract";
+import { personaFor, type Persona } from "../persona";
 import { correctActionTypos } from "./actionTypos";
 
 export type ClipPlan = {
@@ -73,13 +74,17 @@ const scaleChoreoTimes = (
       (_match, start: string, end: string) =>
         `${Math.round(Number(start) * scale)}-${Math.round(Number(end) * scale)}s:`,
     )
-    .replace(`By ${fromSec}s she is`, `By ${toSec}s she is`);
+    .replace(
+      new RegExp(`By ${fromSec}s (she|he) is`),
+      (_match, subject: string) => `By ${toSec}s ${subject} is`,
+    );
 };
 
 // Swap mode plays every chain clip at SWAP_ACTION_CLIP_SEC: the swap costs ~40 ms a frame, so a 15 s wardrobe beat sat 5 s longer in the swap than an 11 s one. A longer plan has its choreography compressed to fit; a shorter one holds the settled pose for the remainder.
 export const fitForSwap = (
   plan: ClipPlan,
-  durationSec: number = LIVE_TUNABLES.SWAP_ACTION_CLIP_SEC,
+  durationSec: number,
+  persona: Persona,
 ): ClipPlan => {
   if (plan.durationSec === durationSec) {
     return plan;
@@ -96,7 +101,7 @@ export const fitForSwap = (
     durationSec,
     prompt: plan.prompt.replace(
       CLIP_ENDS_LINE,
-      `She then holds that position, still and natural with small grounded life, until the clip ends at ${durationSec}s.`,
+      `${persona.Subject} then holds that position, still and natural with small grounded life, until the clip ends at ${durationSec}s.`,
     ),
   };
 };
@@ -116,51 +121,49 @@ export const typingLeadSecFor = (text: string): number => {
 // --- Universal locks -------------------------------------------------------
 
 // A concrete shot size, since "webcam" alone let the model pick its own crop per clip.
-const FRAMING_DESCRIPTION: Record<Body["framing"], string> = {
-  wider: "wide shot, her body from head to knees in frame",
-  medium: "medium shot, framed from head to hips",
-  torso: "close medium shot, framed from head to waist",
-};
+const framingDescription = (framing: Body["framing"], p: Persona): string =>
+  ({
+    wider: `wide shot, ${p.possessive} body from head to knees in frame`,
+    medium: "medium shot, framed from head to hips",
+    torso: "close medium shot, framed from head to waist",
+  })[framing];
 
-export const cameraLockLine = (framing: Body["framing"]): string =>
-  `FIXED WEBCAM: static webcam, ${FRAMING_DESCRIPTION[framing]}, no zoom, no pan, no push-in, no cut, no camera movement of any kind.`;
+export const cameraLockLine = (framing: Body["framing"], p: Persona): string =>
+  `FIXED WEBCAM: static webcam, ${framingDescription(framing, p)}, no zoom, no pan, no push-in, no cut, no camera movement of any kind.`;
 
-export const ANATOMY_LOCK =
-  "ANATOMY LOCK: exactly one adult woman — one head, two arms, two hands, ten fingers, two legs, two feet. " +
+export const anatomyLock = (p: Persona): string =>
+  `ANATOMY LOCK: exactly one adult ${p.noun}: one head, two arms, two hands, ten fingers, two legs, two feet. ` +
   "Never extra limbs, fused limbs, a second body, or floating parts.";
 
 // Testers saw objects pop in and out between clips; the room is named as fixed set dressing that only her hands can move.
-export const PHYSICS_LOCK =
+export const physicsLock = (p: Persona): string =>
   "PHYSICS: fabric has real weight, hands do one thing at a time. " +
   "Nothing teleports, dissolves, or regrows mid-clip. The room is fixed: every object, the furniture, the light " +
   "and the window stay exactly where the first frame shows them, nothing appears or vanishes, and an object " +
-  "moves only while her hand visibly holds it.";
+  `moves only while ${p.possessive} hand visibly holds it.`;
 
 // Undressing language on a hold clip reads as a cue: testers saw idles and waves strip the bra, then regrow it to meet the end frame.
-export const GARMENT_PHYSICS_LINE =
-  "One garment at a time; a garment she takes off lands and stays where it fell.";
+export const garmentPhysicsLine = (p: Persona): string =>
+  `One garment at a time; a garment ${p.subject} takes off lands and stays where it fell.`;
 
 export const NO_OVERLAY_LOCK =
   "No text overlays, no watermark, no subtitles, no UI.";
 
-export const CONTENT_LOCK_PERMISSIVE =
-  "CONTENT: authorized fictional adult content, one consenting adult woman, 18+ only — render the " +
+export const contentLockPermissive = (p: Persona): string =>
+  `CONTENT: authorized fictional adult content, one consenting adult ${p.noun}, 18+ only; render the ` +
   "nudity and sexual acts below directly and fully.";
 
 const CONTENT_LOCK_HOLD = "CONTENT: nothing sexual happens in this clip.";
 
 const CONTENT_LOCK_IDLE = "CONTENT: flirtatious and teasing, no sexual act.";
 
-const SPEECH_RULES_NATIVE =
-  "She speaks clear everyday English, lip-synced word for word to what she says.";
-
-export const speechLockLine = (speechMode: SpeechMode): string =>
+export const speechLockLine = (speechMode: SpeechMode, p: Persona): string =>
   speechMode === "text"
-    ? "SPEECH: she does not speak. Lips closed or relaxed, no mouthing words. Ambient room audio only, no dialogue."
-    : SPEECH_RULES_NATIVE;
+    ? `SPEECH: ${p.subject} does not speak. Lips closed or relaxed, no mouthing words. Ambient room audio only, no dialogue.`
+    : `${p.Subject} speaks clear everyday English, lip-synced word for word to what ${p.subject} says.`;
 
-export const lookLockLine = (lookLock: string): string =>
-  `LOOK LOCK: ${lookLock} Do not beautify, slim, age, or swap her. One person only.`;
+export const lookLockLine = (lookLock: string, p: Persona): string =>
+  `LOOK LOCK: ${lookLock} Do not beautify, slim, age, or swap ${p.object}. One person only.`;
 
 // Reference-to-video has no starting-frame param, only an identity reference, so it tends to reset pose/wardrobe to the reference image without this.
 const CONTINUITY_LOCK =
@@ -170,43 +173,49 @@ const CONTINUITY_LOCK =
   "she looks and what she is wearing right now.";
 
 const GARMENT_ORDER: GarmentId[] = ["top", "bottom", "bra", "panties"];
-const GARMENT_LABEL: Record<GarmentId, string> = {
-  top: "top",
-  bottom: "bottoms",
-  bra: "bra",
-  panties: "panties",
-};
+// A male creator's panties slot holds his underwear (boxers or briefs, by its description).
+const garmentLabel = (id: GarmentId, p: Persona): string =>
+  id === "panties" && p.gender === "male"
+    ? "underwear"
+    : { top: "top", bottom: "bottoms", bra: "bra", panties: "panties" }[id];
 
-const PROP_LABEL: Record<"vibrator" | "dildo" | "drink" | "phone", string> = {
-  vibrator: "a vibrator",
-  dildo: "a dildo",
-  drink: "a drink",
-  phone: "her phone",
-};
+const propLabel = (
+  prop: "vibrator" | "dildo" | "drink" | "phone",
+  p: Persona,
+): string =>
+  ({
+    vibrator: "a vibrator",
+    dildo: "a dildo",
+    drink: "a drink",
+    phone: `${p.possessive} phone`,
+  })[prop];
 
-const POSE_DESCRIPTION: Record<Pose, string> = {
-  // Furniture-neutral: naming a chair or desk the greeting never drew pulled one into the room.
-  sitting: "sitting in the same seat as the first frame",
-  standing: "standing",
-  leaning: "leaning back against the furniture behind her",
-  kneeling: "kneeling",
-  lying: "lying down",
-  onAllFours: "on her hands and knees",
-  bentOver: "bent over, hands braced",
-};
+const poseDescription = (pose: Pose, p: Persona): string =>
+  ({
+    // Furniture-neutral: naming a chair or desk the greeting never drew pulled one into the room.
+    sitting: "sitting in the same seat as the first frame",
+    standing: "standing",
+    leaning: `leaning back against the furniture behind ${p.object}`,
+    kneeling: "kneeling",
+    lying: "lying down",
+    onAllFours: `on ${p.possessive} hands and knees`,
+    bentOver: "bent over, hands braced",
+  })[pose];
 
-const FACING_TRANSITION_LABEL: Record<Body["facing"], string> = {
-  camera: "facing the webcam",
-  away: "with her back to the webcam",
-  side: "at an angle to the webcam",
-};
+const facingLabel = (facing: Body["facing"], p: Persona): string =>
+  ({
+    camera: "facing the webcam",
+    away: `with ${p.possessive} back to the webcam`,
+    side: "at an angle to the webcam",
+  })[facing];
 
-const HANDS_DESC: Record<Body["hands"], string> = {
-  free: "empty",
-  typing: "on the keyboard",
-  onBody: "on her own body",
-  holdingProp: "holding it",
-};
+const handsDescription = (hands: Body["hands"], p: Persona): string =>
+  ({
+    free: "empty",
+    typing: "on the keyboard",
+    onBody: `on ${p.possessive} own body`,
+    holdingProp: "holding it",
+  })[hands];
 
 const FRAMING_STEPS: Body["framing"][] = ["wider", "medium", "torso"];
 
@@ -251,6 +260,7 @@ const bareRegions = (wardrobe: Wardrobe): string[] => {
 // A held entry counts only while body.prop still holds that kind: the catalogue sets a held prop down out of frame, or fetches one, without touching sceneProps.
 export const currentSceneProps = (
   state: Pick<LiveState, "body" | "sceneProps">,
+  p: Persona,
 ): SceneProp[] => {
   const held = state.body.prop;
   const props = (state.sceneProps ?? []).map((prop) =>
@@ -263,7 +273,7 @@ export const currentSceneProps = (
   if (index === -1) {
     return [
       ...props,
-      { item: held, kind: held, at: "held", where: "in her hand" },
+      { item: held, kind: held, at: "held", where: `in ${p.possessive} hand` },
     ];
   }
   const existing = props[index] as SceneProp;
@@ -271,39 +281,40 @@ export const currentSceneProps = (
     ? props
     : props.map((prop, i) =>
         i === index
-          ? { ...prop, at: "held" as const, where: "in her hand" }
+          ? { ...prop, at: "held" as const, where: `in ${p.possessive} hand` }
           : prop,
       );
 };
 
 // Names the held prop the way the Director left it, so the next clip draws that one object in that hand and not a second.
-const heldPropPart = (body: Body, props: SceneProp[]): string => {
+const heldPropPart = (body: Body, props: SceneProp[], p: Persona): string => {
   if (body.prop === "none" || body.prop === "fetching") return "";
   const held = props.find(
     (prop) => prop.at === "held" && prop.kind === body.prop,
   );
   return held
     ? `, holding the ${held.item} ${held.where}`
-    : `, holding ${PROP_LABEL[body.prop]}`;
+    : `, holding ${propLabel(body.prop, p)}`;
 };
 
 // Positive-only: describes what she wears and what is bare, never names an absent garment.
 export const describeState = (
   wardrobe: Wardrobe,
   body: Body,
-  props: SceneProp[] = [],
+  props: SceneProp[],
+  p: Persona,
 ): string => {
   const worn = GARMENT_ORDER.filter((id) => wardrobe[id].on);
   const bare = bareRegions(wardrobe);
   const clothing =
     worn.length === 0
-      ? "She is completely nude."
-      : `She is wearing ${worn.map((id) => `her ${GARMENT_LABEL[id]} (${wardrobe[id].description})`).join(" and ")}${bare.length > 0 ? `; ${bare.join(" and ")} bare` : ""}.`;
+      ? `${p.Subject} is completely nude.`
+      : `${p.Subject} is wearing ${worn.map((id) => `${p.possessive} ${garmentLabel(id, p)} (${wardrobe[id].description})`).join(" and ")}${bare.length > 0 ? `; ${bare.join(" and ")} bare` : ""}.`;
   const placed = props
     .filter((prop) => prop.at === "placed")
     .map((prop) => ` The ${prop.item} is ${prop.where}.`)
     .join("");
-  return `${POSE_DESCRIPTION[body.pose]}, ${FACING_TRANSITION_LABEL[body.facing]}, hands ${HANDS_DESC[body.hands]}${heldPropPart(body, props)}, ${FRAMING_DESCRIPTION[body.framing]}. ${clothing}${placed}`;
+  return `${poseDescription(body.pose, p)}, ${facingLabel(body.facing, p)}, hands ${handsDescription(body.hands, p)}${heldPropPart(body, props, p)}, ${framingDescription(body.framing, p)}. ${clothing}${placed}`;
 };
 
 const wardrobeUnchanged = (a: Wardrobe, b: Wardrobe): boolean =>
@@ -314,29 +325,33 @@ const wardrobeUnchanged = (a: Wardrobe, b: Wardrobe): boolean =>
     a.removedOrder.length === b.removedOrder.length &&
     a.removedOrder.every((id, i) => id === b.removedOrder[i]));
 
-const GARMENT_HOLD_PHRASE: Record<GarmentId, string> = {
-  top: "stays on",
-  bottom: "stay on",
-  bra: "stays fastened on her chest, both straps on her shoulders",
-  panties: "stay on her hips",
-};
+const garmentHoldPhrase = (id: GarmentId, p: Persona): string =>
+  ({
+    top: "stays on",
+    bottom: "stay on",
+    bra: `stays fastened on ${p.possessive} chest, both straps on ${p.possessive} shoulders`,
+    panties: `stay on ${p.possessive} hips`,
+  })[id];
 
 // Positive-only, like describeState: every worn garment is named as staying put, so a hold clip never mentions undressing.
-export const wardrobeLockLine = (wardrobe: Wardrobe): string | null => {
+export const wardrobeLockLine = (
+  wardrobe: Wardrobe,
+  p: Persona,
+): string | null => {
   const worn = GARMENT_ORDER.filter((id) => wardrobe[id].on);
   if (worn.length === 0) return null;
   const garments = worn
     .map(
       (id) =>
-        `her ${GARMENT_LABEL[id]} (${wardrobe[id].description}) ${GARMENT_HOLD_PHRASE[id]}`,
+        `${p.possessive} ${garmentLabel(id, p)} (${wardrobe[id].description}) ${garmentHoldPhrase(id, p)}`,
     )
     .join(", ");
   return `WARDROBE LOCK: from the first frame to the last, ${garments}.`;
 };
 
 // Requested-clip only: names this the one and only action, ahead of every lock, since a video model weights earlier tokens more heavily.
-const ONLY_ACTION_LINE =
-  "She performs only this one action for the entire clip — no turning away, no walking off.";
+const onlyActionLine = (p: Persona): string =>
+  `${p.Subject} performs only this one action for the entire clip: no turning away, no walking off.`;
 
 const buildPrompt = (params: {
   state: LiveState;
@@ -355,26 +370,27 @@ const buildPrompt = (params: {
     params.state.wardrobe,
     params.nextWardrobe,
   );
-  const props = currentSceneProps(params.state);
+  const p = personaFor(params.creator);
+  const props = currentSceneProps(params.state, p);
   const setupLines = [
-    cameraLockLine(params.state.body.framing),
-    ANATOMY_LOCK,
-    lookLockLine(params.creator.lookLock),
+    cameraLockLine(params.state.body.framing, p),
+    anatomyLock(p),
+    lookLockLine(params.creator.lookLock, p),
     `ROOM: ${params.state.surroundings}`,
-    `NOW: she is ${describeState(params.state.wardrobe, params.state.body, props)}`,
-    holdsWardrobe ? wardrobeLockLine(params.nextWardrobe) : null,
+    `NOW: ${p.subject} is ${describeState(params.state.wardrobe, params.state.body, props, p)}`,
+    holdsWardrobe ? wardrobeLockLine(params.nextWardrobe, p) : null,
   ];
   const closingLines = [
-    `By ${params.durationSec}s she is ${describeState(params.nextWardrobe, params.nextBody, props)}, still, eyes on the lens. ${CLIP_ENDS_LINE}`,
-    PHYSICS_LOCK,
-    holdsWardrobe ? null : GARMENT_PHYSICS_LINE,
+    `By ${params.durationSec}s ${p.subject} is ${describeState(params.nextWardrobe, params.nextBody, props, p)}, still, eyes on the lens. ${CLIP_ENDS_LINE}`,
+    physicsLock(p),
+    holdsWardrobe ? null : garmentPhysicsLine(p),
     NO_OVERLAY_LOCK,
     params.contentLine ??
-      (params.explicit ? CONTENT_LOCK_PERMISSIVE : CONTENT_LOCK_HOLD),
-    speechLockLine(params.speechMode),
+      (params.explicit ? contentLockPermissive(p) : CONTENT_LOCK_HOLD),
+    speechLockLine(params.speechMode, p),
   ];
   const lines = params.leadWithAction
-    ? [params.action, ONLY_ACTION_LINE, ...setupLines, ...closingLines]
+    ? [params.action, onlyActionLine(p), ...setupLines, ...closingLines]
     : [...setupLines, params.action, ...closingLines];
   return lines.filter((line): line is string => line !== null).join(" ");
 };
@@ -772,8 +788,9 @@ const SIT_UP_SEC = 2;
 
 const propSetDownLine = (
   prop: Exclude<Body["prop"], "none" | "fetching">,
+  p: Persona,
 ): string =>
-  `0-${PROP_SETDOWN_SEC}s: she sets ${PROP_LABEL[prop]} down out of frame.`;
+  `0-${PROP_SETDOWN_SEC}s: ${p.subject} sets ${propLabel(prop, p)} down out of frame.`;
 
 const SIT_UP_LINE = `0-${SIT_UP_SEC}s: she shifts to sit up on the edge of the bed.`;
 
@@ -797,6 +814,7 @@ const planBeatIntentCore = (
   wardrobe: Wardrobe,
   body: Body,
   baselineBody: Body,
+  p: Persona,
 ): BeatPlan => {
   switch (intent.type) {
     case "removeGarment":
@@ -818,8 +836,8 @@ const planBeatIntentCore = (
     case "pose":
       return {
         physical:
-          `She moves from her current pose into ${POSE_DESCRIPTION[intent.pose]}, turning as she settles ` +
-          `so she ends up ${FACING_TRANSITION_LABEL[intent.facing]}. The fixed webcam does not move. She ` +
+          `${p.Subject} moves from ${p.possessive} current pose into ${poseDescription(intent.pose, p)}, turning as ${p.subject} settles ` +
+          `so ${p.subject} ends up ${facingLabel(intent.facing, p)}. The fixed webcam does not move. ${p.Subject} ` +
           "does not spin or turn a full circle.",
         nextWardrobe: wardrobe,
         nextBody: { ...body, pose: intent.pose, facing: intent.facing },
@@ -829,8 +847,8 @@ const planBeatIntentCore = (
     case "framing":
       return {
         physical:
-          "She moves relative to the fixed webcam, unhurried — the camera itself never moves, only " +
-          "her distance changes, adjusting how much of her fills the frame.",
+          `${p.Subject} moves relative to the fixed webcam, unhurried; the camera itself never moves, only ` +
+          `${p.possessive} distance changes, adjusting how much of ${p.object} fills the frame.`,
         nextWardrobe: wardrobe,
         nextBody: { ...body, framing: intent.framing },
         durationSec: ACTION_BEAT_SEC,
@@ -838,7 +856,7 @@ const planBeatIntentCore = (
       };
     case "fetchProp":
       return {
-        physical: `One hand reaches off-screen and returns holding one ${intent.prop}, her weight visibly gripping it. Only one object is visible.`,
+        physical: `One hand reaches off-screen and returns holding one ${intent.prop}, ${p.possessive} weight visibly gripping it. Only one object is visible.`,
         nextWardrobe: wardrobe,
         nextBody: { ...body, prop: intent.prop, hands: "holdingProp" },
         durationSec: ACTION_BEAT_SEC,
@@ -891,20 +909,22 @@ const planBeatIntentCore = (
     }
     case "rest": {
       const propLine = HELD_OBJECTS.has(body.prop)
-        ? `She sets the ${body.prop} down out of frame. `
+        ? `${p.Subject} sets the ${body.prop} down out of frame. `
         : "";
       const handLine =
-        body.hands === "onBody" ? "Her hand eases off her own body. " : "";
+        body.hands === "onBody"
+          ? `${p.Possessive} hand eases off ${p.possessive} own body. `
+          : "";
       // Rest settles all the way back to her baseline resting pose, not just free hands — otherwise
       // "resting" could still leave her kneeling or bent over from whatever she was just doing.
       const poseChanged =
         body.pose !== baselineBody.pose || body.facing !== baselineBody.facing;
       const poseLine = poseChanged
-        ? `She settles back into ${POSE_DESCRIPTION[baselineBody.pose]}, turning to end up ` +
-          `${FACING_TRANSITION_LABEL[baselineBody.facing]}. `
+        ? `${p.Subject} settles back into ${poseDescription(baselineBody.pose, p)}, turning to end up ` +
+          `${facingLabel(baselineBody.facing, p)}. `
         : "";
       return {
-        physical: `${propLine}${handLine}${poseLine}Her hands come to rest, empty, still.`,
+        physical: `${propLine}${handLine}${poseLine}${p.Possessive} hands come to rest, empty, still.`,
         nextWardrobe: wardrobe,
         // Framing stays: on a fixed webcam a distance change is a visible reframe, and nothing in this settle walks her toward or away from the lens.
         nextBody: { ...baselineBody, framing: body.framing },
@@ -948,8 +968,8 @@ const planBeatIntentCore = (
     case "verbatim":
       return {
         physical:
-          `She does exactly this, one clear continuous action, and holds the result: "${intent.text}". ` +
-          "The fixed webcam does not move; she stays fully in frame throughout.",
+          `${p.Subject} does exactly this, one clear continuous action, and holds the result: "${intent.text}". ` +
+          `The fixed webcam does not move; ${p.subject} stays fully in frame throughout.`,
         nextWardrobe: wardrobe,
         nextBody: body,
         durationSec: ACTION_BEAT_SEC,
@@ -963,6 +983,8 @@ const planBeatIntentCore = (
 export const planBeatIntent = (
   intent: BeatIntent,
   state: LiveState,
+  // LongLive calls without one: its prompts are not gender-aware yet, so they stay female.
+  p: Persona = personaFor(),
 ): BeatPlan => {
   const { wardrobe, body, baselineBody } = state;
 
@@ -979,10 +1001,16 @@ export const planBeatIntent = (
       hands: "free",
       contact: "none",
     };
-    const base = planBeatIntentCore(intent, wardrobe, freedBody, baselineBody);
+    const base = planBeatIntentCore(
+      intent,
+      wardrobe,
+      freedBody,
+      baselineBody,
+      p,
+    );
     return {
       ...base,
-      physical: `${propSetDownLine(prop)} ${shiftChoreoTimes(base.physical, PROP_SETDOWN_SEC, base.durationSec)}`,
+      physical: `${propSetDownLine(prop, p)} ${shiftChoreoTimes(base.physical, PROP_SETDOWN_SEC, base.durationSec)}`,
     };
   }
 
@@ -997,6 +1025,7 @@ export const planBeatIntent = (
       wardrobe,
       sittingBody,
       baselineBody,
+      p,
     );
     return {
       ...base,
@@ -1004,7 +1033,7 @@ export const planBeatIntent = (
     };
   }
 
-  return planBeatIntentCore(intent, wardrobe, body, baselineBody);
+  return planBeatIntentCore(intent, wardrobe, body, baselineBody, p);
 };
 
 // --- Reply intent catalog ---------------------------------------------------
@@ -1543,9 +1572,9 @@ export const resolveIntents = (
 const alreadyLine = (intent: BeatIntent): string => {
   switch (intent.type) {
     case "removeGarment":
-      return `Her ${GARMENT_LABEL[intent.garment]} is already off. She stays exactly as she is and smiles.`;
+      return `Her ${garmentLabel(intent.garment, personaFor())} is already off. She stays exactly as she is and smiles.`;
     case "addGarment":
-      return `She is already wearing her ${GARMENT_LABEL[intent.garment]}. She stays exactly as she is and smiles.`;
+      return `She is already wearing her ${garmentLabel(intent.garment, personaFor())}. She stays exactly as she is and smiles.`;
     case "pose":
     case "framing":
     case "fetchProp":
@@ -1582,10 +1611,11 @@ const planGreeting = (
   speechMode: SpeechMode,
 ): ClipPlan => {
   const { state, creator } = session;
+  const p = personaFor(creator);
   const nextBody = { ...state.baselineBody };
   const action =
-    "GREETING: she looks up and notices the room, a few viewers already here, gives a warm wave and " +
-    "smile, then settles back into exactly the pose and framing she started in.";
+    `GREETING: ${p.subject} looks up and notices the room, a few viewers already here, gives a warm wave and ` +
+    `smile, then settles back into exactly the pose and framing ${p.subject} started in.`;
   const expectedState: LiveState = { ...state, body: nextBody };
   const durationSec = LIVE_TUNABLES.ACTION_CLIP_SEC;
   const prompt = buildPrompt({
@@ -1615,31 +1645,35 @@ const planGreeting = (
 };
 
 // Testers found swaying-in-place idles read as AI; these are what a cam model does between messages, each returning to the start frame since idles loop start=end.
-const IDLE_LIFE_VARIANTS: readonly string[] = [
-  "she leans in a touch to read the chat on the screen just below the lens, eyes scanning line by line, then smiles at something she read and looks up into the lens",
-  "she twirls a strand of hair around one finger, holding the lens with a playful look, then lets it drop back",
-  "she bites her lower lip lightly and gives the lens a slow, knowing look, one eyebrow lifting",
-  "she trails her fingertips slowly along her collarbone and down her arm, eyes on the lens, then rests her hand back where it was",
-  "she reads the chat below the lens, laughs softly at a message, then glances up at the lens with a teasing smile",
-  "she runs one hand slowly along the top of her thigh, looking up at the lens through her lashes, then settles it back",
+const idleLifeVariants = (p: Persona): string[] => [
+  `${p.subject} leans in a touch to read the chat on the screen just below the lens, eyes scanning line by line, then smiles at something ${p.subject} read and looks up into the lens`,
+  // Hair twirl reads as a feminine tic; a man rubs his jaw instead.
+  p.gender === "male"
+    ? "he rubs his jaw slowly with one hand, holding the lens with a playful look, then lets his hand drop back"
+    : "she twirls a strand of hair around one finger, holding the lens with a playful look, then lets it drop back",
+  `${p.subject} bites ${p.possessive} lower lip lightly and gives the lens a slow, knowing look, one eyebrow lifting`,
+  `${p.subject} trails ${p.possessive} fingertips slowly along ${p.possessive} collarbone and down ${p.possessive} arm, eyes on the lens, then rests ${p.possessive} hand back where it was`,
+  `${p.subject} reads the chat below the lens, laughs softly at a message, then glances up at the lens with a teasing smile`,
+  `${p.subject} runs one hand slowly along the top of ${p.possessive} thigh, looking up at the lens through ${p.possessive} lashes, then settles it back`,
 ];
 // Only when a bra is worn: plays with the strap and lets it settle back on her shoulder.
 const IDLE_STRAP_VARIANT =
   "she runs a fingertip along her bra strap with a flirty look at the lens, the strap staying on her shoulder, then lowers her hand";
 // If she's already holding her phone, reading it in place is more natural than the generic catalogue.
-const IDLE_PHONE_VARIANT =
-  "glancing down at the phone already in her hand, thumb moving briefly like she's reading something, then looking back up at the lens";
+const idlePhoneVariant = (p: Persona): string =>
+  `glancing down at the phone already in ${p.possessive} hand, thumb moving briefly like ${p.subject}'s reading something, then looking back up at the lens`;
 
 const idleLifeLine = (
   elapsedSec: number,
   hasPhone: boolean,
   braOn: boolean,
+  p: Persona,
   variant?: number,
 ): string => {
-  if (hasPhone) return IDLE_PHONE_VARIANT;
+  if (hasPhone) return idlePhoneVariant(p);
   const variants = braOn
-    ? [...IDLE_LIFE_VARIANTS, IDLE_STRAP_VARIANT]
-    : IDLE_LIFE_VARIANTS;
+    ? [...idleLifeVariants(p), IDLE_STRAP_VARIANT]
+    : idleLifeVariants(p);
   const index =
     (variant ?? Math.floor(elapsedSec / LIVE_TUNABLES.IDLE_CLIP_SEC)) %
     variants.length;
@@ -1651,6 +1685,7 @@ const planIdle = (
   job: Extract<ClipJob, { kind: "idle" }>,
 ): ClipPlan => {
   const { state, creator } = session;
+  const p = personaFor(creator);
   // Idle never advances an act, even mid-act: a self-touch pauses; a held prop stays put.
   const nextBody: Body =
     state.body.contact === "self"
@@ -1662,28 +1697,29 @@ const planIdle = (
       : state.body;
   const pauseLine =
     state.body.contact === "self"
-      ? "Her hand that was on her own body eases off and rests at her side or on her leg — she is paused, not mid-act."
+      ? `${p.Possessive} hand that was on ${p.possessive} own body eases off and rests at ${p.possessive} side or on ${p.possessive} leg; ${p.subject} is paused, not mid-act.`
       : state.body.hands === "holdingProp"
-        ? "The current prop stays held still in her hand; she does not use it this clip."
+        ? `The current prop stays held still in ${p.possessive} hand; ${p.subject} does not use it this clip.`
         : "";
   const lifeLine = idleLifeLine(
     session.elapsedSec,
     nextBody.prop === "phone",
     state.wardrobe.bra.on,
+    p,
     job.variant,
   );
   const action = [
-    `IDLE, between requests, like a real webcam model waiting on her chat. She stays ${nextBody.pose} the entire clip, ` +
-      `relaxed, natural and quietly enticing: ${lifeLine}. Her movement is unhurried and human, her body grounded ` +
-      "in place, never a rhythmic sway or rocking loop; she never leaves the pose she starts in.",
-    `FORBIDDEN this clip: no change of pose category (if she is ${nextBody.pose} now, she never sits, stands, ` +
-      "kneels, or lies down — she stays exactly that way start to finish), no new prop, " +
+    `IDLE, between requests, like a real webcam model waiting on ${p.possessive} chat. ${p.Subject} stays ${nextBody.pose} the entire clip, ` +
+      `relaxed, natural and quietly enticing: ${lifeLine}. ${p.Possessive} movement is unhurried and human, ${p.possessive} body grounded ` +
+      `in place, never a rhythmic sway or rocking loop; ${p.subject} never leaves the pose ${p.subject} starts in.`,
+    `FORBIDDEN this clip: no change of pose category (if ${p.subject} is ${nextBody.pose} now, ${p.subject} never sits, stands, ` +
+      `kneels, or lies down; ${p.subject} stays exactly that way start to finish), no new prop, ` +
       "no sexual act starting or continuing, no leaving frame.",
-    "Her hands move only for that and come back to where the first frame shows them, never onto a new object.",
+    `${p.Possessive} hands move only for that and come back to where the first frame shows them, never onto a new object.`,
     pauseLine,
-    "The clip must END in the same pose, framing, expression baseline, and hand position it started in — " +
+    "The clip must END in the same pose, framing, expression baseline, and hand position it started in; " +
       "treat any motion as a small excursion that always returns to the exact start.",
-    "By the last second she is settled back in that exact starting pose, still.",
+    `By the last second ${p.subject} is settled back in that exact starting pose, still.`,
   ]
     .filter(Boolean)
     .join(" ");
@@ -1719,8 +1755,9 @@ const planCheckIn = (
   speechMode: SpeechMode,
 ): ClipPlan => {
   const { state, creator } = session;
+  const p = personaFor(creator);
   const action =
-    "She stays in her exact pose, glances at the chat, and gives a short check-in — small grounded " +
+    `${p.Subject} stays in ${p.possessive} exact pose, glances at the chat, and gives a short check-in: small grounded ` +
     "life only, nothing else changes.";
   const durationSec = LIVE_TUNABLES.ACTION_CLIP_SEC;
   const prompt = buildPrompt({
@@ -1765,7 +1802,7 @@ const planReply = (
     : (intents[dropped] as BeatIntent);
   const restIntents = allSatisfied ? [] : intents.slice(dropped + 1);
 
-  const beatPlan = planBeatIntent(first, state);
+  const beatPlan = planBeatIntent(first, state, personaFor(creator));
   const durationSec = clampDuration(beatPlan.durationSec);
 
   // No typing lead-in on camera: it asked for a laptop or phone the room does not have, and testers saw on-screen animations while she typed. The chat's own "typing…" label carries the beat.
@@ -1850,7 +1887,7 @@ const planBeat = (
   job: Extract<ClipJob, { kind: "beat" }>,
 ): ClipPlan => {
   const { state, creator } = session;
-  const beatPlan = planBeatIntent(job.beat.intent, state);
+  const beatPlan = planBeatIntent(job.beat.intent, state, personaFor(creator));
   const durationSec = clampDuration(beatPlan.durationSec);
   const expectedState: LiveState = {
     ...state,
@@ -1927,8 +1964,9 @@ export const planClip = ({
   const loopingGreeting =
     job.kind === "greeting" && session.seedFrameUrl !== session.anchorFrameUrl;
   // Premium renders 81 frames, so every chain clip, the greeting included (Wan has no end frame to loop on), fits 5 s the way swap fits 10 s.
+  const persona = personaFor(session.creator);
   if (backend === "wan14b" && job.kind !== "idle") {
-    return fitForSwap(plan, LIVE_TUNABLES.WAN14B_CLIP_SEC);
+    return fitForSwap(plan, LIVE_TUNABLES.WAN14B_CLIP_SEC, persona);
   }
   if (rendersLikeSwap(backend) && job.kind !== "idle" && !loopingGreeting) {
     return fitForSwap(
@@ -1936,6 +1974,7 @@ export const planClip = ({
       job.kind === "greeting"
         ? LIVE_TUNABLES.SWAP_GREETING_CLIP_SEC
         : LIVE_TUNABLES.SWAP_ACTION_CLIP_SEC,
+      persona,
     );
   }
   // Greeting has no "earlier moment" yet (the reference image IS its starting frame).

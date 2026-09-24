@@ -1,5 +1,10 @@
 // Data, not code: the default tip menu and creator shell shown before a reference photo exists.
-import type { CreatorProfile, SceneId, TipMenuItem } from "@/lib/live/contract";
+import type {
+  CreatorGender,
+  CreatorProfile,
+  SceneId,
+  TipMenuItem,
+} from "@/lib/live/contract";
 
 // Superset of TipMenuItem for the tip menu UI (emoji + 18+ badge); the extra fields are dropped
 // wherever only a TipMenuItem is expected (e.g. CreatorProfile.tipMenu).
@@ -92,9 +97,11 @@ export const defaultCreatorProfile = (
   displayName: string,
   sceneId: SceneId,
   lookLock: string,
+  gender: CreatorGender = "female",
 ): CreatorProfile => ({
   id: "spike-creator",
-  displayName: displayName || "Her",
+  displayName: displayName || (gender === "male" ? "Him" : "Her"),
+  gender,
   lookLock,
   sceneId,
   tipMenu: DEFAULT_TIP_MENU.map(({ id, label, request, priceCents }) => ({

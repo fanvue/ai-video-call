@@ -49,6 +49,7 @@ import {
   type ClipRequest,
   type ClipResult,
   type ClipSwapReport,
+  type CreatorGender,
   type InputChannel,
   type LiveState,
   type Planner,
@@ -96,8 +97,10 @@ export type StartOptions = {
   swapHandMask?: boolean;
   // Swap mode only: the manifest persona id the swap uses as its source, never an image.
   swapPersonaId?: string;
-  // Absent plans replies on the catalogue.
+  // Absent plans replies on the Director; the server always directs a male creator.
   planner?: Planner;
+  // Absent is a female creator.
+  gender?: CreatorGender;
   // The setup screen's session limits; missing or invalid fall back to the defaults, never to no limit.
   maxMinutes?: number;
   costCapUsd?: number;
@@ -113,6 +116,7 @@ export type UseLiveSessionDeps = {
     sceneId: SceneId,
     stage?: boolean,
     faceCrop?: boolean,
+    gender?: CreatorGender,
   ) => Promise<ReferenceUploadResult>;
   upscaleSeed?: (
     frameUrl: string,
@@ -235,6 +239,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
     sceneId: SceneId;
     stage: boolean;
     swapService: boolean;
+    gender: CreatorGender;
     promise: Promise<ReferenceUploadResult>;
   } | null>(null);
   const [prepareStatus, setPrepareStatus] = useState<PrepareStatus>("idle");
@@ -998,14 +1003,21 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
   const uploadReference = deps.uploadReference;
   const warmSwap = deps.warmSwap;
   const prepare = useCallback(
-    (file: File, sceneId: SceneId, stage = true, swapService = true) => {
+    (
+      file: File,
+      sceneId: SceneId,
+      stage = true,
+      swapService = true,
+      gender: CreatorGender = "female",
+    ) => {
       const current = preparedReferenceRef.current;
       if (
         current &&
         current.file === file &&
         current.sceneId === sceneId &&
         current.stage === stage &&
-        current.swapService === swapService
+        current.swapService === swapService &&
+        current.gender === gender
       ) {
         return;
       }
@@ -1013,8 +1025,14 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       if (!stage && swapService) {
         warmSwap().catch(() => undefined);
       }
-      const promise = uploadReference(file, sceneId, stage, swapService);
-      const entry = { file, sceneId, stage, swapService, promise };
+      const promise = uploadReference(
+        file,
+        sceneId,
+        stage,
+        swapService,
+        gender,
+      );
+      const entry = { file, sceneId, stage, swapService, gender, promise };
       preparedReferenceRef.current = entry;
       setPrepareStatus("staging");
       setPreparedSeedUrl(null);
@@ -1106,15 +1124,23 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
       const stage = !isSwapSession(options.backend);
       // The face crop runs on the swap service and only feeds swap-served clips, so Commercial skips it.
       const swapService = usesSwapService(options.backend);
+      const gender = options.gender ?? "female";
       const prepared = preparedReferenceRef.current;
       const reference =
         prepared &&
         prepared.file === file &&
         prepared.sceneId === sceneId &&
         prepared.stage === stage &&
-        prepared.swapService === swapService
+        prepared.swapService === swapService &&
+        prepared.gender === gender
           ? await prepared.promise
-          : await deps.uploadReference(file, sceneId, stage, swapService);
+          : await deps.uploadReference(
+              file,
+              sceneId,
+              stage,
+              swapService,
+              gender,
+            );
       preparedReferenceRef.current = null;
       setPrepareStatus("idle");
       setPreparedSeedUrl(null);
@@ -1127,6 +1153,7 @@ export function useLiveSession(deps: UseLiveSessionDeps) {
         options.displayName,
         sceneId,
         reference.lookLock,
+        gender,
       );
       const initialLiveState = defaultLiveState(
         sceneId,

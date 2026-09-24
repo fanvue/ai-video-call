@@ -177,14 +177,16 @@ export const LiveStudio = () => {
     (values: SetupSubmit) => {
       setStarting(true);
       setStartError(null);
-      setDisplayName(values.displayName || "Her");
+      const fallbackName = values.gender === "male" ? "Him" : "Her";
+      setDisplayName(values.displayName || fallbackName);
       setSessionLimits({
         maxMinutes: values.maxMinutes,
         costCapUsd: values.costCapUsd,
       });
       session
         .start(values.file, values.sceneId, {
-          displayName: values.displayName || "Her",
+          displayName: values.displayName || fallbackName,
+          gender: values.gender,
           backend: values.renderMode,
           speechMode: values.speechMode,
           swapFaceLock: values.swapFaceLock,

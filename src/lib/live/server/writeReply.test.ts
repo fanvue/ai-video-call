@@ -4,6 +4,7 @@ import {
   clampSpokenLine,
   isRefusal,
   isTooSimilarToPrior,
+  writeCheckIn,
   writeReply,
 } from "./writeReply";
 
@@ -306,5 +307,54 @@ describe("writeReply", () => {
     expect(systemMessage.content).toMatch(
       /never claim a change of location, clothing, pose, or props/i,
     );
+  });
+});
+
+describe("persona voice by creator gender", () => {
+  const systemPrompt = () =>
+    (
+      createGroqChatCompletion.mock.calls[0]?.[0] as {
+        messages: { content: string }[];
+      }
+    ).messages[0]?.content ?? "";
+  const answer = () =>
+    createGroqChatCompletion.mockResolvedValue(
+      completionWith(JSON.stringify({ chatText: "mmm okay", nextWorld: "w" })),
+    );
+
+  it("speaks as an adult man for a male creator, in replies and check-ins", async () => {
+    const male = { ...creator, gender: "male" as const };
+    answer();
+    await writeReply({
+      transcript: [],
+      requestText: "hi",
+      physical: "beat",
+      creator: male,
+      channel: "chat",
+      world: "w",
+    });
+    expect(systemPrompt()).toContain("You are an adult man live on a webcam");
+    expect(systemPrompt()).toContain("what he is doing");
+    expect(systemPrompt()).not.toMatch(/\b(she|her|woman)\b/i);
+    createGroqChatCompletion.mockClear();
+    await writeCheckIn({
+      transcript: [],
+      creator: male,
+      channel: "chat",
+      world: "w",
+    });
+    expect(systemPrompt()).toContain("You are an adult man live on a webcam");
+  });
+
+  it("stays an adult woman when no gender is set", async () => {
+    answer();
+    await writeCheckIn({
+      transcript: [],
+      creator,
+      channel: "chat",
+      world: "w",
+    });
+    expect(systemPrompt()).toContain("You are an adult woman live on a webcam");
+    expect(systemPrompt()).toContain("what she is doing");
   });
 });
