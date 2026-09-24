@@ -55,7 +55,8 @@ image = (
         "TOKENIZERS_PARALLELISM": "false",
         "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
     })
-    .add_local_python_source("clip_request", "seed_lock", "engine", "swap_core", "persona")
+    # Not "engine": services/longlive is on sys.path first and its engine.py shadowed this one in the image.
+    .add_local_python_source("clip_request", "seed_lock", "wan_engine", "swap_core", "persona")
 )
 
 
@@ -98,7 +99,7 @@ class Wan14bService:
         import onnxruntime
 
         onnxruntime.preload_dlls()
-        from engine import WanEngine
+        from wan_engine import WanEngine
         from swap_core import SwapEngine
 
         started = time.perf_counter()
@@ -156,7 +157,7 @@ class Wan14bService:
 
         import clip_request
         import seed_lock
-        from engine import encode_mp4
+        from wan_engine import encode_mp4
         from persona import resolve_persona
 
         started = time.perf_counter()
